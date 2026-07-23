@@ -1,7 +1,22 @@
-"""Training manager for managing training runs."""
+"""Training manager for managing training runs.
+
+The manager owns the training-run lifecycle. Orchestrators and trackers must
+go through the manager — they must not directly mutate TrainingRun rows.
+
+Public methods:
+    create_run(...)
+    start_run(...)
+    complete_run(...)
+    fail_run(...)
+    cancel_run(...)
+    attach_mlflow_run(...)
+    get_run(...)
+    list_runs(...)
+    update_metadata(...)
+"""
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from sqlalchemy import select
@@ -14,16 +29,7 @@ from mlops_framework.exceptions import (
     DatasetVersionNotFoundError,
     InvalidStatusTransitionError,
 )
-
-
-# Define valid status transitions
-VALID_STATUS_TRANSITIONS: dict[RunStatus, set[RunStatus]] = {
-    RunStatus.PENDING: {RunStatus.RUNNING, RunStatus.CANCELLED},
-    RunStatus.RUNNING: {RunStatus.SUCCESS, RunStatus.FAILED, RunStatus.CANCELLED},
-    RunStatus.SUCCESS: set(),  # Terminal state
-    RunStatus.FAILED: set(),  # Terminal state
-    RunStatus.CANCELLED: set(),  # Terminal state
-}
+from mlops_framework.training.lifecycle import is_terminal, validate_transition
 
 
 class TrainingManager:
@@ -31,12 +37,17 @@ class TrainingManager:
 
     This manager provides business logic for:
     - Creating training runs
-    - Updating run status
+    - Driving the run lifecycle (PENDING -> RUNNING -> terminal)
     - Validating status transitions
-    - Ensuring runs are linked to valid dataset versions
+    - Linking runs to dataset versions
+    - Linking runs to MLflow run IDs
     """
 
-    def __init__(self, session: Session, dataset_manager: Optional[DatasetManager] = None) -> None:
+    def __init__(
+        self,
+        session: Session,
+        dataset_manager: Optional[DatasetManager] = None,
+    ) -> None:
         """Initialize training manager.
 
         Args:
@@ -46,60 +57,68 @@ class TrainingManager:
         self._session = session
         self._dataset_manager = dataset_manager
 
+    # ------------------------------------------------------------------ #
+    # Internal helpers
+    # ------------------------------------------------------------------ #
+
     def _get_dataset_manager(self) -> DatasetManager:
-        """Get or create dataset manager."""
         if self._dataset_manager is None:
             self._dataset_manager = DatasetManager(self._session)
         return self._dataset_manager
 
-    def _validate_status_transition(self, current_status: RunStatus, new_status: RunStatus) -> None:
-        """Validate that a status transition is allowed.
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
 
-        Args:
-            current_status: Current status
-            new_status: New status to transition to
+    def _parse_status(self, status: "str | RunStatus") -> RunStatus:
+        if isinstance(status, RunStatus):
+            return status
+        try:
+            return RunStatus(status.upper())
+        except ValueError as exc:
+            raise ValueError(f"Invalid status: {status}") from exc
 
-        Raises:
-            InvalidStatusTransitionError: If transition is not allowed
-        """
-        allowed = VALID_STATUS_TRANSITIONS.get(current_status, set())
-        if new_status not in allowed:
-            raise InvalidStatusTransitionError(
-                f"Invalid status transition from {current_status.value} to {new_status.value}"
-            )
+    # ------------------------------------------------------------------ #
+    # Creation
+    # ------------------------------------------------------------------ #
 
     def create_run(
         self,
         dataset_version_id: int,
-        trigger_type: str = "MANUAL",
+        trigger_type: "str | TriggerType" = TriggerType.MANUAL,
+        pipeline_id: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
     ) -> TrainingRun:
-        """Create a new training run.
+        """Create a new training run in PENDING state.
 
         Args:
-            dataset_version_id: ID of the dataset version to train on
-            trigger_type: Trigger type (MANUAL, SCHEDULED, DRIFT, API)
-            metadata: Optional metadata dictionary
+            dataset_version_id: ID of the dataset version to train on.
+            trigger_type: How the run was triggered.
+            pipeline_id: Optional orchestrator pipeline/DAG identifier.
+            metadata: Optional free-form metadata.
 
         Returns:
-            TrainingRun: Created training run
+            TrainingRun: Created training run.
 
         Raises:
-            DatasetVersionNotFoundError: If dataset version not found
+            DatasetVersionNotFoundError: If the dataset version does not exist.
         """
         # Validate that dataset version exists
         dataset_manager = self._get_dataset_manager()
-        dataset_version = dataset_manager.get_version(dataset_version_id)
+        dataset_manager.get_version(dataset_version_id)
 
         # Parse trigger type
-        try:
-            trigger = TriggerType(trigger_type.upper())
-        except ValueError:
-            trigger = TriggerType.MANUAL
+        if isinstance(trigger_type, TriggerType):
+            trigger = trigger_type
+        else:
+            try:
+                trigger = TriggerType(trigger_type.upper())
+            except ValueError:
+                trigger = TriggerType.MANUAL
 
-        # Create training run
         run = TrainingRun(
             dataset_version_id=dataset_version_id,
+            pipeline_id=pipeline_id,
             status=RunStatus.PENDING,
             trigger_type=trigger,
             metadata_json=json.dumps(metadata) if metadata else None,
@@ -110,118 +129,167 @@ class TrainingManager:
 
         return run
 
-    def get_run(self, run_id: int) -> TrainingRun:
-        """Get a training run by ID.
+    # ------------------------------------------------------------------ #
+    # Lifecycle transitions
+    # ------------------------------------------------------------------ #
+
+    def start_run(self, run_id: int, mlflow_run_id: Optional[str] = None) -> TrainingRun:
+        """Transition a run PENDING -> RUNNING.
 
         Args:
-            run_id: Training run ID
+            run_id: Training run ID.
+            mlflow_run_id: Optional MLflow run identifier to attach.
 
         Returns:
-            TrainingRun: The training run
+            TrainingRun: The updated run.
 
         Raises:
-            TrainingRunNotFoundError: If run not found
-        """
-        run = self._session.get(TrainingRun, run_id)
-        if run is None:
-            raise TrainingRunNotFoundError(f"TrainingRun with id {run_id} not found")
-        return run
-
-    def list_runs(self, dataset_version_id: Optional[int] = None) -> list[TrainingRun]:
-        """List training runs.
-
-        Args:
-            dataset_version_id: Optional filter by dataset version
-
-        Returns:
-            list[TrainingRun]: List of training runs
-        """
-        query = select(TrainingRun)
-        if dataset_version_id is not None:
-            query = query.where(TrainingRun.dataset_version_id == dataset_version_id)
-        return list(self._session.execute(query).scalars().all())
-
-    def update_status(
-        self,
-        run_id: int,
-        status: str,
-    ) -> TrainingRun:
-        """Update the status of a training run.
-
-        Args:
-            run_id: Training run ID
-            status: New status string
-
-        Returns:
-            TrainingRun: Updated training run
-
-        Raises:
-            TrainingRunNotFoundError: If run not found
-            InvalidStatusTransitionError: If transition is not allowed
+            TrainingRunNotFoundError: If the run does not exist.
+            InvalidStatusTransitionError: If the current status is not PENDING.
         """
         run = self.get_run(run_id)
+        if run.status != RunStatus.PENDING:
+            raise InvalidStatusTransitionError(
+                f"Cannot start run in status {run.status.value}; must be PENDING"
+            )
+        validate_transition(run.status, RunStatus.RUNNING)
 
-        # Parse new status
-        try:
-            new_status = RunStatus(status.upper())
-        except ValueError:
-            raise ValueError(f"Invalid status: {status}")
-
-        # Validate transition
-        self._validate_status_transition(run.status, new_status)
-
-        # Update status
-        run.status = new_status
-
-        # Set timestamps based on status
-        if new_status == RunStatus.RUNNING and run.started_at is None:
-            from datetime import datetime, timezone
-            run.started_at = datetime.now(timezone.utc)
-        elif new_status in {RunStatus.SUCCESS, RunStatus.FAILED, RunStatus.CANCELLED}:
-            from datetime import datetime, timezone
-            run.completed_at = datetime.now(timezone.utc)
+        run.status = RunStatus.RUNNING
+        run.started_at = self._now()
+        if mlflow_run_id is not None:
+            run.mlflow_run_id = mlflow_run_id
 
         self._session.flush()
-
         return run
+
+    def complete_run(self, run_id: int) -> TrainingRun:
+        """Transition a run RUNNING -> SUCCESS."""
+        run = self.get_run(run_id)
+        if is_terminal(run.status):
+            raise InvalidStatusTransitionError(
+                f"Cannot complete run in terminal status {run.status.value}"
+            )
+        validate_transition(run.status, RunStatus.SUCCESS)
+
+        run.status = RunStatus.SUCCESS
+        run.completed_at = self._now()
+        self._session.flush()
+        return run
+
+    def fail_run(self, run_id: int, error_message: Optional[str] = None) -> TrainingRun:
+        """Transition a run RUNNING -> FAILED, recording an error message."""
+        run = self.get_run(run_id)
+        if is_terminal(run.status):
+            raise InvalidStatusTransitionError(
+                f"Cannot fail run in terminal status {run.status.value}"
+            )
+        validate_transition(run.status, RunStatus.FAILED)
+
+        run.status = RunStatus.FAILED
+        run.completed_at = self._now()
+        if error_message is not None:
+            run.error_message = error_message
+
+        self._session.flush()
+        return run
+
+    def cancel_run(self, run_id: int) -> TrainingRun:
+        """Cancel a PENDING or RUNNING run."""
+        run = self.get_run(run_id)
+        if is_terminal(run.status):
+            raise InvalidStatusTransitionError(
+                f"Cannot cancel run in terminal status {run.status.value}"
+            )
+        validate_transition(run.status, RunStatus.CANCELLED)
+
+        run.status = RunStatus.CANCELLED
+        if run.started_at is None:
+            run.started_at = self._now()
+        run.completed_at = self._now()
+        self._session.flush()
+        return run
+
+    # ------------------------------------------------------------------ #
+    # Misc updates
+    # ------------------------------------------------------------------ #
+
+    def attach_mlflow_run(self, run_id: int, mlflow_run_id: str) -> TrainingRun:
+        """Attach an MLflow run ID to a training run."""
+        run = self.get_run(run_id)
+        run.mlflow_run_id = mlflow_run_id
+        self._session.flush()
+        return run
+
+    def update_metadata(self, run_id: int, metadata: dict[str, Any]) -> TrainingRun:
+        """Merge ``metadata`` into the run's stored metadata JSON."""
+        run = self.get_run(run_id)
+        existing: dict[str, Any] = {}
+        if run.metadata_json:
+            existing = json.loads(run.metadata_json)
+        existing.update(metadata)
+        run.metadata_json = json.dumps(existing)
+        self._session.flush()
+        return run
+
+    # ------------------------------------------------------------------ #
+    # Backwards-compatible generic API
+    # ------------------------------------------------------------------ #
+
+    def update_status(self, run_id: int, status: str) -> TrainingRun:
+        """Generic status update.
+
+        Kept for backwards compatibility. Prefer the typed
+        :meth:`start_run` / :meth:`complete_run` / :meth:`fail_run` /
+        :meth:`cancel_run` methods in new code.
+        """
+        new_status = self._parse_status(status)
+        if new_status == RunStatus.RUNNING:
+            return self.start_run(run_id)
+        if new_status == RunStatus.SUCCESS:
+            return self.complete_run(run_id)
+        if new_status == RunStatus.FAILED:
+            return self.fail_run(run_id)
+        if new_status == RunStatus.CANCELLED:
+            return self.cancel_run(run_id)
+        if new_status == RunStatus.PENDING:
+            raise InvalidStatusTransitionError(
+                "Cannot transition back to PENDING from a created run"
+            )
+        raise ValueError(f"Unsupported status: {status}")
 
     def update_run(
         self,
         run_id: int,
         metadata: Optional[dict[str, Any]] = None,
     ) -> TrainingRun:
-        """Update metadata for a training run.
-
-        Args:
-            run_id: Training run ID
-            metadata: New metadata dictionary
-
-        Returns:
-            TrainingRun: Updated training run
-        """
+        """Update metadata for a training run. Backwards-compatible alias."""
         run = self.get_run(run_id)
-
         if metadata is not None:
-            # Merge with existing metadata
-            existing = {}
-            if run.metadata_json:
-                existing = json.loads(run.metadata_json)
-            existing.update(metadata)
-            run.metadata_json = json.dumps(existing)
-
-        self._session.flush()
-
+            self.update_metadata(run_id, metadata)
+            # refresh local reference after flush
+            run = self.get_run(run_id)
         return run
 
+    # ------------------------------------------------------------------ #
+    # Queries
+    # ------------------------------------------------------------------ #
+
+    def get_run(self, run_id: int) -> TrainingRun:
+        """Get a training run by ID."""
+        run = self._session.get(TrainingRun, run_id)
+        if run is None:
+            raise TrainingRunNotFoundError(f"TrainingRun with id {run_id} not found")
+        return run
+
+    def list_runs(self, dataset_version_id: Optional[int] = None) -> list[TrainingRun]:
+        """List training runs, optionally filtered by dataset version."""
+        query = select(TrainingRun)
+        if dataset_version_id is not None:
+            query = query.where(TrainingRun.dataset_version_id == dataset_version_id)
+        return list(self._session.execute(query).scalars().all())
+
     def get_run_metadata(self, run_id: int) -> dict[str, Any]:
-        """Get parsed metadata for a training run.
-
-        Args:
-            run_id: Training run ID
-
-        Returns:
-            dict[str, Any]: Parsed metadata
-        """
+        """Get parsed metadata for a training run."""
         run = self.get_run(run_id)
         if run.metadata_json:
             return json.loads(run.metadata_json)

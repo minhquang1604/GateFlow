@@ -77,3 +77,66 @@ class SchemaHashError(MLopsFrameworkError):
     """Exception raised for schema hash-related errors."""
 
     pass
+
+
+# --- Orchestration ----------------------------------------------------- #
+
+
+class OrchestrationError(MLopsFrameworkError):
+    """Base exception for orchestrator-related errors."""
+
+    pass
+
+
+class ExecutionNotFoundError(OrchestrationError):
+    """Raised when an orchestrator has no record of the given execution ID."""
+
+    pass
+
+
+class OrchestratorConfigError(OrchestrationError):
+    """Raised when the orchestrator is mis-configured or cannot run."""
+
+    pass
+
+
+# --- Experiment tracking ----------------------------------------------- #
+
+
+class ExperimentTrackingError(MLopsFrameworkError):
+    """Base exception for experiment tracker errors."""
+
+    pass
+
+
+# --- Model lifecycle --------------------------------------------------- #
+
+
+class ModelError(MLopsFrameworkError):
+    """Base exception for model lifecycle errors."""
+
+    pass
+
+
+class ModelNotFoundError(ModelError):
+    """Raised when a Model is not found."""
+
+    pass
+
+
+class ModelVersionNotFoundError(ModelError):
+    """Raised when a ModelVersion is not found."""
+
+    pass
+
+
+class DuplicateModelNameError(ModelError):
+    """Raised when attempting to create a Model with a duplicate name."""
+
+    pass
+
+
+class InvalidModelStateTransitionError(ModelError):
+    """Raised when an invalid model lifecycle transition is attempted."""
+
+    pass

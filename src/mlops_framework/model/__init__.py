@@ -1,4 +1,5 @@
-"""Model package - Placeholder for model management."""
+"""Model package: register models, manage ModelVersion lifecycle."""
 
-# Placeholder for future ModelManager implementation
-# This module will be implemented in Week 2+
+from mlops_framework.model.manager import ModelManager
+
+__all__ = ["ModelManager"]

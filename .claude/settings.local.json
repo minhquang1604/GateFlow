@@ -2,7 +2,24 @@
   "permissions": {
     "allow": [
       "Bash(uv --version)",
-      "Bash(pip3 install *)"
+      "Bash(pip3 install *)",
+      "Bash(.venv/bin/pytest -v)",
+      "Bash(.venv/bin/python *)",
+      "Bash(.venv/bin/pytest tests/unit/test_airflow_orchestrator.py -v)",
+      "Bash(.venv/bin/pytest tests/unit/test_airflow_orchestrator.py::TestTriggerPipeline::test_returns_dag_run_id -v)",
+      "Bash(.venv/bin/pytest tests/unit/test_mlflow_tracker.py -v)",
+      "Bash(.venv/bin/alembic upgrade *)",
+      "Bash(.venv/bin/alembic current *)",
+      "Bash(.venv/bin/pytest tests/integration/test_model_lifecycle.py -v)",
+      "Bash(.venv/bin/pytest tests/integration/test_end_to_end_lifecycle.py -v)",
+      "Bash(.venv/bin/pytest tests/integration/test_end_to_end_lifecycle.py::TestEndToEndLifecycle::test_full_lifecycle_success -v)",
+      "Bash(.venv/bin/pytest tests/integration/test_end_to_end_lifecycle.py::TestEndToEndLifecycle::test_full_lifecycle_success -v -s)",
+      "Bash(.venv/bin/alembic history *)",
+      "Bash(.venv/bin/pytest tests/integration/test_complete_flow.py tests/unit/test_checksum.py tests/unit/test_schema_hash.py -v)",
+      "Bash(.venv/bin/pytest)",
+      "Bash(.venv/bin/pytest --collect-only -q)",
+      "Bash(.venv/bin/pytest tests/unit -q)",
+      "Bash(.venv/bin/pytest tests/integration -q)"
     ]
   }
 }

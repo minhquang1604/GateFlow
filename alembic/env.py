@@ -34,6 +34,8 @@ config.set_main_option("sqlalchemy.url", database_url)
 from mlops_framework.database.base import Base
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
+from mlops_framework.database.models.model import Model
+from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
 
 # Interpret the config file for Python logging
