@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Lineage - MLOps</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>MLOps</h1>
+    <nav class="main-nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/datasets">Datasets</a>
+      <a href="/runs">Runs</a>
+      <a href="/models">Models</a>
+      <a href="/lineage" class="active">Lineage</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Lineage</h2>
+    <p class="muted">
+      The lineage graph traces data from dataset version → training run → model version → serving.
+      Pick a node from the <a href="/models">Models</a> page to inspect its lineage.
+    </p>
+    <pre class="lineage-tree" id="lineage-out">Loading…</pre>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>initLineage();</script>
+</body>
+</html>

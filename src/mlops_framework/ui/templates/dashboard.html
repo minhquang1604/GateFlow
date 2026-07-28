@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dashboard - MLOps</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>MLOps</h1>
+    <nav class="main-nav">
+      <a href="/dashboard" class="active">Dashboard</a>
+      <a href="/datasets">Datasets</a>
+      <a href="/runs">Runs</a>
+      <a href="/models">Models</a>
+      <a href="/lineage">Lineage</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Dashboard</h2>
+    <div id="kpi-grid" class="kpi-grid"></div>
+    <h3>Quick links</h3>
+    <p>
+      <a class="btn" href="/datasets">Browse datasets</a>
+      <a class="btn" href="/runs">View training runs</a>
+      <a class="btn" href="/models">View models</a>
+    </p>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>initDashboard();</script>
+</body>
+</html>

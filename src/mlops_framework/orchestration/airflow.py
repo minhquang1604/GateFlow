@@ -26,6 +26,7 @@ from typing import Any, Optional
 
 import httpx
 
+from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import (
     ExecutionNotFoundError,
     OrchestratorConfigError,
@@ -64,30 +65,45 @@ def _parse_airflow_state(state: str) -> ExecutionState:
 class AirflowOrchestrator(Orchestrator):
     """Adapter that drives an Airflow 2.x deployment via its REST API.
 
+    Constructor precedence: explicit kwargs > environment-driven
+    :class:`Settings`. This keeps tests trivial (use the existing
+    ``_FakeAirflowClient`` pattern) and makes the production adapter
+    zero-config when the framework is deployed against the bundled
+    Compose stack.
+
     Args:
-        base_url: e.g. ``"http://localhost:8080"``.
-        username / password: HTTP basic auth credentials.
+        base_url: e.g. ``"http://airflow.internal:8080"``. Falls back
+            to ``Settings.airflow_base_url``.
+        username / password: HTTP basic auth credentials. Fall back to
+            ``Settings.airflow_{username,password}``.
         http_client: Optional pre-configured ``httpx.Client``. If not
             given, one is created with the supplied credentials.
     """
 
     def __init__(
         self,
-        base_url: str,
-        username: str = "airflow",
-        password: str = "airflow",
+        base_url: Optional[str] = None,
+        username: Optional[str] = None,
+        password: Optional[str] = None,
         http_client: Optional[httpx.Client] = None,
     ) -> None:
         # Set attributes first so __del__ is safe even if we raise below.
         self._owns_client = http_client is None
         self._client = http_client  # may remain None on error
-        if not base_url:
-            raise OrchestratorConfigError("AirflowOrchestrator requires a base_url")
-        self._base_url = base_url.rstrip("/")
+        settings = get_settings()
+        effective_url = base_url or settings.airflow_base_url
+        if not effective_url:
+            raise OrchestratorConfigError(
+                "AirflowOrchestrator requires a base_url "
+                "(explicit or AIRFLOW_BASE_URL env var)"
+            )
+        self._base_url = effective_url.rstrip("/")
+        effective_user = username or settings.airflow_username or "airflow"
+        effective_pass = password or settings.airflow_password or "airflow"
         if self._client is None:
             self._client = httpx.Client(
                 base_url=self._base_url,
-                auth=(username, password),
+                auth=(effective_user, effective_pass),
                 timeout=30.0,
             )
 
@@ -144,6 +160,29 @@ class AirflowOrchestrator(Orchestrator):
             )
         payload = response.json()
         return self._to_status(payload)
+
+    def get_task_instance_states(self, execution_id: str) -> dict[str, str]:
+        """Return a ``{task_id: state}`` map for a DAG run.
+
+        Optional secondary query used by callers that want finer-grained
+        reporting than the DAG-level state. Returns ``{}`` on a 404 or
+        any non-200 — this query is best-effort and never raises.
+        """
+        url = f"/api/v1/dagRuns/{execution_id}/taskInstances"
+        try:
+            response = self._client.get(url)
+        except Exception:
+            return {}
+        if response.status_code != 200:
+            return {}
+        payload = response.json()
+        out: dict[str, str] = {}
+        for entry in payload.get("task_instances", []) or []:
+            tid = entry.get("task_id")
+            state = entry.get("state")
+            if tid is not None and state is not None:
+                out[str(tid)] = str(state)
+        return out
 
     def cancel_execution(self, execution_id: str) -> ExecutionStatus:
         # Airflow does not support cancelling an arbitrary DAG run via

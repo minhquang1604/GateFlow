@@ -1,0 +1,146 @@
+"""Tests for the MLOpsProject SDK."""
+
+from __future__ import annotations
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from mlops_framework.database.base import Base
+from mlops_framework.database.session import DatabaseManager
+from mlops_framework.sdk import (
+    AlreadyExistsError,
+    MLOpsDataset,
+    MLOpsProject,
+    MLOpsRun,
+    NotFoundError,
+    PipelineNotRegisteredError,
+)
+from mlops_framework.sdk.exceptions import TrainingError
+
+
+@pytest.fixture()
+def project():
+    """Build an MLOpsProject backed by an isolated in-memory SQLite DB."""
+    engine = create_engine(
+        "sqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    mgr = DatabaseManager()
+    mgr._engine = engine  # type: ignore[attr-defined]
+    mgr._session_factory = factory  # type: ignore[attr-defined]
+
+    p = MLOpsProject("test", db_manager=mgr)
+    yield p
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+class TestPipelines:
+    def test_register_and_resolve(self, project):
+        project.register_pipeline("xgb", "pkg:train")
+        assert project.pipelines.resolve("xgb") == "pkg:train"
+
+    def test_unregistered_raises(self, project):
+        # The SDK's train() wraps the registry's PipelineNotFoundError into
+        # the SDK's PipelineNotRegisteredError, so the registry exception
+        # itself bubbles up when calling pipelines.resolve directly.
+        with pytest.raises(Exception):  # PipelineNotFoundError (KeyError subclass)
+            project.pipelines.resolve("nope")
+
+
+class TestDatasets:
+    def test_create_dataset(self, project):
+        ds = project.create_dataset("ds1", description="d")
+        assert isinstance(ds, MLOpsDataset)
+        assert ds.name == "ds1"
+        assert ds.versions == []
+        assert ds.latest_version is None
+
+    def test_duplicate_dataset_raises(self, project):
+        project.create_dataset("dup")
+        with pytest.raises(AlreadyExistsError):
+            project.create_dataset("dup")
+
+    def test_get_dataset(self, project):
+        project.create_dataset("a")
+        ds = project.get_dataset("a")
+        assert ds.name == "a"
+
+    def test_get_dataset_missing_raises(self, project):
+        with pytest.raises(NotFoundError):
+            project.get_dataset("nope")
+
+    def test_list_datasets(self, project):
+        project.create_dataset("a")
+        project.create_dataset("b")
+        assert {d.name for d in project.list_datasets()} == {"a", "b"}
+
+
+class TestVersions:
+    def test_create_and_list_versions(self, project):
+        ds = project.create_dataset("ds")
+        v1 = ds.create_version(
+            "s3://b/v1", 100,
+            metadata={"columns": [{"name": "x", "dtype": "int64"}]},
+        )
+        v2 = ds.create_version("s3://b/v2", 200)
+        assert [v.version_number for v in ds.versions] == [1, 2]
+        assert ds.latest_version.version_number == 2
+        assert v1.row_count == 100
+        assert v1.metadata == {"columns": [{"name": "x", "dtype": "int64"}]}
+
+
+class TestModels:
+    def test_create_model(self, project):
+        m = project.create_model("fraud-xgb", task="classification")
+        assert m.name == "fraud-xgb"
+        assert m.task == "classification"
+        assert m.versions == []
+        assert m.production_version is None
+
+    def test_duplicate_model_raises(self, project):
+        project.create_model("dup")
+        with pytest.raises(AlreadyExistsError):
+            project.create_model("dup")
+
+    def test_get_and_list(self, project):
+        project.create_model("a")
+        project.create_model("b")
+        assert {m.name for m in project.list_models()} == {"a", "b"}
+        assert project.get_model("a").name == "a"
+
+
+class TestReadiness:
+    def test_default_policy_passes(self, project):
+        ds = project.create_dataset("ds")
+        v = ds.create_version("s3://b/v1", 100)
+        result = project.readiness(v)
+        # Default policy has no required_size and no required columns,
+        # so 100 rows should pass.
+        assert result.is_ready is True
+
+
+class TestLineage:
+    def test_lineage_for_dataset_version(self, project):
+        ds = project.create_dataset("ds")
+        v = ds.create_version("s3://b/v1", 100)
+        g = project.lineage.for_dataset_version(v.id)
+        assert g["root_kind"] == "DatasetVersion"
+        types = {n["type"] for n in g["nodes"]}
+        assert "Dataset" in types
+        assert "DatasetVersion" in types
+
+
+class TestTrainErrors:
+    def test_unknown_pipeline_raises(self, project):
+        ds = project.create_dataset("ds")
+        v = ds.create_version("s3://b/v1", 100)
+        with pytest.raises(PipelineNotRegisteredError):
+            project.train(dataset_version=v, pipeline="nope", wait=False)

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Runs - MLOps</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>MLOps</h1>
+    <nav class="main-nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/datasets">Datasets</a>
+      <a href="/runs" class="active">Runs</a>
+      <a href="/models">Models</a>
+      <a href="/lineage">Lineage</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Training Runs</h2>
+    <div class="toolbar">
+      <label class="muted">Status:</label>
+      <select id="status-filter">
+        <option value="">All</option>
+        <option value="PENDING">Pending</option>
+        <option value="RUNNING">Running</option>
+        <option value="SUCCESS">Success</option>
+        <option value="FAILED">Failed</option>
+        <option value="CANCELLED">Cancelled</option>
+      </select>
+      <button id="refresh">Refresh</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>Status</th><th>Pipeline</th><th>Started</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>initRuns();</script>
+</body>
+</html>

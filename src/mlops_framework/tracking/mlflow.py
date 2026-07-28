@@ -6,12 +6,18 @@ not have MLflow installed (e.g. CI, the test suite).
 
 If MLflow is not installed, ``MLflowTracker`` will raise a clear
 :class:`ExperimentTrackingError` at construction time.
+
+Constructor precedence: explicit kwargs > environment-driven
+:class:`Settings`. This keeps tests trivial (pass the URI explicitly)
+and makes the production adapters zero-config when the framework is
+deployed against the bundled Compose stack.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
+from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import ExperimentTrackingError
 from mlops_framework.tracking.base import ExperimentTracker, RunStatus
 
@@ -28,24 +34,58 @@ def _import_mlflow():
     return mlflow
 
 
+def _map_run_status(status: "str | RunStatus") -> str:
+    """Map a framework :class:`RunStatus` to the MLflow run-status string.
+
+    The framework exposes three terminal states. MLflow uses
+    ``FINISHED`` for success, ``FAILED`` for failure and ``KILLED`` for
+    any external termination (e.g. an orchestrator cancelling a run).
+    """
+    value = status.value if isinstance(status, RunStatus) else str(status)
+    normalized = (value or "").upper()
+    if normalized == RunStatus.SUCCESS.value:
+        return "FINISHED"
+    if normalized == RunStatus.FAILED.value:
+        return "FAILED"
+    if normalized == RunStatus.CANCELLED.value:
+        return "KILLED"
+    # Unknown — MLflow accepts FINISHED as a generic "done" value; we
+    # be conservative and treat everything else as FAILED so the run is
+    # visually flagged for review in the MLflow UI.
+    return "FAILED"
+
+
 class MLflowTracker(ExperimentTracker):
     """Adapter that implements the framework's tracker ABC with MLflow.
 
     The adapter is intentionally thin — it maps the framework's
     ``ExperimentTracker`` methods onto MLflow's API. No business logic
     lives here.
+
+    Args:
+        tracking_uri: MLflow tracking URI. Falls back to
+            ``Settings.mlflow_tracking_uri`` when not provided.
+        experiment_name: MLflow experiment name. Falls back to
+            ``Settings.mlflow_experiment_name``.
     """
 
     def __init__(
         self,
         tracking_uri: Optional[str] = None,
-        experiment_name: str = "mlops-framework",
+        experiment_name: Optional[str] = None,
     ) -> None:
         mlflow = _import_mlflow()
         self._mlflow = mlflow
-        if tracking_uri:
-            mlflow.set_tracking_uri(tracking_uri)
-        mlflow.set_experiment(experiment_name)
+
+        settings = get_settings()
+        effective_uri = tracking_uri or settings.mlflow_tracking_uri
+        effective_experiment = (
+            experiment_name or settings.mlflow_experiment_name or "mlops-framework"
+        )
+
+        if effective_uri:
+            mlflow.set_tracking_uri(effective_uri)
+        mlflow.set_experiment(effective_experiment)
         self._active_run = None
 
     # ------------------------------------------------------------------ #
@@ -96,7 +136,7 @@ class MLflowTracker(ExperimentTracker):
     def end_run(self, status: "str | RunStatus" = RunStatus.SUCCESS) -> None:
         if self._active_run is None:
             return
-        mlflow_status = "FINISHED" if str(status) == RunStatus.SUCCESS.value else "FAILED"
+        mlflow_status = _map_run_status(status)
         self._mlflow.end_run(status=mlflow_status)
         self._active_run = None
 

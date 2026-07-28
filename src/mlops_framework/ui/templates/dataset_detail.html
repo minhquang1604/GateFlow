@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Dataset - MLOps</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>MLOps</h1>
+    <nav class="main-nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/datasets" class="active">Datasets</a>
+      <a href="/runs">Runs</a>
+      <a href="/models">Models</a>
+      <a href="/lineage">Lineage</a>
+    </nav>
+  </header>
+  <main>
+    <h2 id="ds-name">Loading…</h2>
+    <p class="muted" id="ds-desc"></p>
+    <h3>Versions</h3>
+    <table>
+      <thead><tr><th>#</th><th>Checksum</th><th>Schema</th><th>Rows</th><th>Storage</th><th>Readiness</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>
+    const parts = location.pathname.split("/").filter(Boolean);
+    initDatasetDetail(parts[parts.length - 1]);
+  </script>
+</body>
+</html>

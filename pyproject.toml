@@ -26,6 +26,14 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-dotenv>=1.0.0",
     "httpx>=0.25.0",
+    "scipy>=1.10.0",
+    "fastapi>=0.100.0",
+    "uvicorn>=0.23.0",
+    "mlflow>=2.20.0",
+    "xgboost>=2.0.0",
+    "scikit-learn>=1.5.0",
+    "pandas>=2.2.0",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]
@@ -68,5 +76,5 @@ ignore = [
 known-first-party = ["mlops_framework"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "case_studies"]
 asyncio_mode = "auto"

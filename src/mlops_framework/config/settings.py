@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # Database configuration
     database_url: str = Field(
-        default="postgresql+psycopg://postgres@localhost:5432/mlops_framework",
+        default="postgresql+psycopg://postgres:postgres@localhost:5432/mlops_framework",
         description="Database connection URL",
     )
 
@@ -39,6 +39,44 @@ class Settings(BaseSettings):
     database_echo: bool = Field(
         default=False,
         description="Echo SQL queries to stdout",
+    )
+
+    # MLflow tracking server
+    mlflow_tracking_uri: Optional[str] = Field(
+        default=None,
+        description="URI of the MLflow tracking server (e.g. http://mlflow:5000).",
+    )
+    mlflow_experiment_name: str = Field(
+        default="mlops-framework",
+        description="MLflow experiment name used by MLflowTracker.",
+    )
+    mlflow_artifact_root: Optional[str] = Field(
+        default=None,
+        description="Default MLflow artifact root (informational only).",
+    )
+    mlflow_s3_endpoint_url: Optional[str] = Field(
+        default=None,
+        description="S3-compatible endpoint URL used by MLflow artifact uploads.",
+    )
+
+    # Airflow orchestrator
+    airflow_base_url: Optional[str] = Field(
+        default=None,
+        description="Base URL of the Airflow webserver (used by AirflowOrchestrator).",
+    )
+    airflow_username: str = Field(
+        default="airflow",
+        description="Username for the Airflow REST API.",
+    )
+    airflow_password: str = Field(
+        default="airflow",
+        description="Password for the Airflow REST API.",
+    )
+
+    # FastAPI ServingBridge (used by the HTTP event publisher)
+    serving_bridge_url: Optional[str] = Field(
+        default=None,
+        description="Base URL of the FastAPI ServingBridge.",
     )
 
     # Application settings

@@ -175,3 +175,51 @@ class TestConfiguration:
         client._default_response = _Response(200, {"dag_run_id": "x"})
         exec_id = orch.trigger_pipeline("any", {})
         assert exec_id == "x"
+
+    def test_uses_env_var_when_no_constructor_args(self, monkeypatch):
+        """When AIRFLOW_BASE_URL is set, the adapter should pick it up."""
+        from mlops_framework.config.settings import get_settings
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("AIRFLOW_BASE_URL", "http://from-env:8080")
+        client = _FakeAirflowClient()
+        orch = AirflowOrchestrator(http_client=client)  # type: ignore[arg-type]
+        assert orch._base_url == "http://from-env:8080"
+
+    def test_explicit_base_url_overrides_env(self, monkeypatch):
+        from mlops_framework.config.settings import get_settings
+
+        get_settings.cache_clear()
+        monkeypatch.setenv("AIRFLOW_BASE_URL", "http://from-env:8080")
+        client = _FakeAirflowClient()
+        orch = AirflowOrchestrator(
+            base_url="http://explicit:9090",
+            http_client=client,  # type: ignore[arg-type]
+        )
+        assert orch._base_url == "http://explicit:9090"
+
+
+class TestTaskInstanceStates:
+    def test_returns_state_map_on_200(self):
+        body = {
+            "task_instances": [
+                {"task_id": "resolve_context", "state": "success"},
+                {"task_id": "train", "state": "running"},
+            ]
+        }
+        orch, _ = _make({("GET", "/api/v1/dagRuns/run-1/taskInstances"): _resp(body)})
+        states = orch.get_task_instance_states("run-1")
+        assert states == {"resolve_context": "success", "train": "running"}
+
+    def test_returns_empty_dict_on_404(self):
+        orch, _ = _make({
+            ("GET", "/api/v1/dagRuns/missing/taskInstances"):
+                _resp({"detail": "not found"}, status=404),
+        })
+        assert orch.get_task_instance_states("missing") == {}
+
+    def test_returns_empty_dict_on_500(self):
+        orch, _ = _make({
+            ("GET", "/api/v1/dagRuns/broken/taskInstances"): _resp({}, status=500),
+        })
+        assert orch.get_task_instance_states("broken") == {}

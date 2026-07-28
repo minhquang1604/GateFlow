@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Datasets - MLOps</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1>MLOps</h1>
+    <nav class="main-nav">
+      <a href="/dashboard">Dashboard</a>
+      <a href="/datasets" class="active">Datasets</a>
+      <a href="/runs">Runs</a>
+      <a href="/models">Models</a>
+      <a href="/lineage">Lineage</a>
+    </nav>
+  </header>
+  <main>
+    <h2>Datasets</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Description</th><th>Versions</th><th>Latest</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </main>
+  <script src="/static/app.js"></script>
+  <script>initDatasets();</script>
+</body>
+</html>

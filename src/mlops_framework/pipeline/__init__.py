@@ -1,4 +1,9 @@
-"""Pipeline package - Placeholder for pipeline management."""
+"""Pipeline package — registry of named pipelines."""
 
-# Placeholder for future PipelineManager implementation
-# This will be implemented in Week 2+ when Airflow integration is added
+from mlops_framework.pipeline.manager import (
+    PipelineEntry,
+    PipelineNotFoundError,
+    PipelineRegistry,
+)
+
+__all__ = ["PipelineEntry", "PipelineNotFoundError", "PipelineRegistry"]

@@ -1,4 +1,15 @@
-"""Lineage package - Placeholder for data lineage management."""
+"""Lineage package — end-to-end lineage traversal (Week 3, Day 21)."""
 
-# Placeholder for future LineageManager implementation
-# This will be implemented in later weeks
+from mlops_framework.lineage.manager import (
+    LineageEdge,
+    LineageGraph,
+    LineageManager,
+    LineageNode,
+)
+
+__all__ = [
+    "LineageManager",
+    "LineageNode",
+    "LineageEdge",
+    "LineageGraph",
+]

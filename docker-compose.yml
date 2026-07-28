@@ -1,22 +1,337 @@
-version: "3.8"
+# docker-compose.yml for the MLOps Framework stack.
+#
+# Brings up everything required to demonstrate the full MLOps
+# lifecycle against real services:
+#
+#   * postgres    — shared metadata database (framework + MLflow backend store)
+#   * minio       — S3-compatible artifact store for MLflow models / files
+#   * mlflow      — tracking server with a PostgreSQL backend and MinIO artifacts
+#   * airflow     — webserver + scheduler that run the framework's DAGs
+#   * app         — FastAPI Management API + UI (port 8000)
+#   * serving     — FastAPI ServingBridge (port 8001)
+#   * demo        — one-shot end-to-end runner (profile: demo)
+#
+# All inter-service traffic flows over the `mlops_network` bridge
+# network. The host only needs to publish Postgres (5432), MLflow
+# (5000), Airflow (8080), MinIO console (9001), app (8000), and
+# serving (8001).
 
 services:
+  # ------------------------------------------------------------------ #
+  # PostgreSQL — shared metadata store                                 #
+  # ------------------------------------------------------------------ #
   postgres:
     image: postgres:15-alpine
-    container_name: mlops_framework_db
+    container_name: mlops_framework_postgres
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: mlops_framework
+      POSTGRES_MULTIPLE_DATABASES: mlops_framework,mlflow,airflow
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init-databases.sh:/docker-entrypoint-initdb.d/20-init-databases.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # MinIO — S3-compatible artifact store for MLflow                     #
+  # ------------------------------------------------------------------ #
+  minio:
+    image: minio/minio:RELEASE.2024-10-29T16-01-48Z
+    container_name: mlops_framework_minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mlops_network
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-10-29T15-34-59Z
+    container_name: mlops_framework_minio_init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      set -e;
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      if ! mc ls local/mlflow-artifacts >/dev/null 2>&1; then
+        mc mb local/mlflow-artifacts;
+        echo 'created bucket mlflow-artifacts';
+      else
+        echo 'bucket mlflow-artifacts already exists';
+      fi;
+      "
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # MLflow tracking server                                              #
+  # ------------------------------------------------------------------ #
+  mlflow:
+    build:
+      context: ./infrastructure/mlflow
+    container_name: mlops_framework_mlflow
+    restart: unless-stopped
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mlflow
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MLFLOW_BUCKET: mlflow-artifacts
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/api/2.0/mlflow/experiments/search", "-o", "/dev/null", "-w", "%{http_code}"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # Airflow — init container (db migrate + admin user)                 #
+  # ------------------------------------------------------------------ #
+  airflow-common:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_airflow_common
+    restart: "no"
+    user: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+      AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+      - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
+    entrypoint: >
+      /bin/bash -c "
+      airflow db migrate;
+      airflow users create
+        --username $${AIRFLOW_USERNAME:-airflow}
+        --password $${AIRFLOW_PASSWORD:-airflow}
+        --firstname Admin --lastname User
+        --role Admin --email admin@example.com || true;
+      "
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # Airflow — webserver                                                #
+  # ------------------------------------------------------------------ #
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_airflow_webserver
+    restart: unless-stopped
+    user: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+      AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+    command: webserver
+    ports:
+      - "8080:8080"
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+      - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
+    depends_on:
+      airflow-common:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-u", "airflow:airflow", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # Airflow — scheduler                                                #
+  # ------------------------------------------------------------------ #
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_airflow_scheduler
+    restart: unless-stopped
+    user: airflow
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
+      AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+    command: scheduler
+    volumes:
+      - airflow_dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - airflow_plugins:/opt/airflow/plugins
+      - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
+    depends_on:
+      airflow-common:
+        condition: service_completed_successfully
+      airflow-webserver:
+        condition: service_healthy
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # Framework Management API + UI                                      #
+  # ------------------------------------------------------------------ #
+  app:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_app
+    restart: unless-stopped
+    user: airflow
+    command: >
+      /bin/bash -c "
+      cd /opt/framework;
+      PYTHONPATH=/opt/framework/src alembic upgrade head;
+      uvicorn mlops_framework.api.app:create_app --factory --host 0.0.0.0 --port 8000;
+      "
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mlops_framework
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: mlops-framework
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080
+      AIRFLOW_USERNAME: airflow
+      AIRFLOW_PASSWORD: airflow
+      SERVING_BRIDGE_URL: http://serving:8001
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+      serving:
+        condition: service_started
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # FastAPI ServingBridge — receives reloads from promotion events     #
+  # ------------------------------------------------------------------ #
+  serving:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_serving
+    restart: unless-stopped
+    user: airflow
+    command: >
+      /bin/bash -c "
+      cd /opt/framework;
+      PYTHONPATH=/opt/framework/src python -m mlops_framework.serving.run --host 0.0.0.0 --port 8001;
+      "
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mlops_framework
+    ports:
+      - "8001:8001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - mlops_network
+
+  # ------------------------------------------------------------------ #
+  # Demo — one-shot end-to-end runner                                  #
+  # ------------------------------------------------------------------ #
+  demo:
+    build:
+      context: .
+      dockerfile: infrastructure/airflow/Dockerfile
+    container_name: mlops_framework_demo
+    profiles: ["demo"]
+    user: airflow
+    command: >
+      /bin/bash -c "
+      cd /opt/framework;
+      PYTHONPATH=/opt/framework/src python -m scripts.run_end_to_end_demo;
+      "
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mlops_framework
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT_NAME: mlops-framework
+      AIRFLOW_BASE_URL: http://airflow-webserver:8080
+      AIRFLOW_USERNAME: airflow
+      AIRFLOW_PASSWORD: airflow
+      SERVING_BRIDGE_URL: http://serving:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+      serving:
+        condition: service_started
+    networks:
+      - mlops_network
 
 volumes:
   postgres_data:
+  minio_data:
+  airflow_dags:
+  airflow_logs:
+  airflow_plugins:
+
+networks:
+  mlops_network:
+    name: mlops_network
+    driver: bridge
