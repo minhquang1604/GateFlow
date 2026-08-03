@@ -61,16 +61,17 @@ export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 # every deploy / task replacement).                                      #
 # ---------------------------------------------------------------------- #
 python3 - <<PYEOF
-import psycopg
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-conn = psycopg.connect(
+conn = psycopg2.connect(
     host="${POSTGRES_HOST}",
     port=${POSTGRES_PORT},
     user="${POSTGRES_USER}",
     password="${POSTGRES_PASSWORD}",
     dbname="postgres",
-    autocommit=True,
 )
+conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
 with conn.cursor() as cur:
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("${POSTGRES_DB}",))
     if cur.fetchone() is None:
@@ -78,18 +79,17 @@ with conn.cursor() as cur:
 conn.close()
 PYEOF
 
-BACKEND_URI="postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
+# psycopg2 driver — see the Dockerfile's pip install comment for why
+# psycopg 3 breaks MLflow's experiment_id queries on Postgres.
+BACKEND_URI="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 ARTIFACT_ROOT="s3://${MLFLOW_BUCKET}"
 
 # ---------------------------------------------------------------------- #
 # Apply MLflow's alembic migrations.                                      #
 #                                                                          #
-# Without this, a schema created by one MLflow version can be left with  #
-# columns typed for an older/newer ORM revision (e.g. experiments.        #
-# experiment_id as INTEGER instead of the VARCHAR the current version's  #
-# queries expect), causing "operator does not exist: integer =           #
-# character varying" on Postgres. `mlflow db upgrade` is idempotent —     #
-# safe to run on every boot, no-ops when already at head.                #
+# Brings the backend store to the running MLflow version's schema         #
+# revision. Idempotent — safe to run on every boot, no-ops when already   #
+# at head.                                                                #
 # ---------------------------------------------------------------------- #
 echo "[mlflow] applying schema migrations..."
 mlflow db upgrade "${BACKEND_URI}"

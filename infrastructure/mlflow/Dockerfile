@@ -26,9 +26,17 @@ RUN apt-get update \
         netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
+# psycopg2, NOT psycopg 3. MLflow's ORM declares experiment_id as
+# String while the actual Postgres columns are INTEGER. psycopg2
+# sends parameters untyped, so Postgres coerces them silently and
+# MLflow works. psycopg 3 makes SQLAlchemy send explicitly-typed
+# parameters ($1::VARCHAR), and Postgres then rejects the comparison
+# with "operator does not exist: integer = character varying" on any
+# query that filters by experiment_id. MLflow is developed and tested
+# against psycopg2; its docs specify it for Postgres backends.
 RUN pip install --no-cache-dir \
         mlflow==2.20.3 \
-        psycopg[binary]==3.2.3 \
+        psycopg2-binary==2.9.10 \
         boto3==1.35.36
 
 COPY entrypoint.sh /entrypoint.sh

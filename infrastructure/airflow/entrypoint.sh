@@ -44,16 +44,17 @@ _build_connection_string() {
 
 _ensure_database_exists() {
     python3 - <<PYEOF
-import psycopg
+import psycopg2
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
-conn = psycopg.connect(
+conn = psycopg2.connect(
     host="${POSTGRES_HOST}",
     port=${POSTGRES_PORT},
     user="${POSTGRES_USER}",
     password="${POSTGRES_PASSWORD}",
     dbname="postgres",
-    autocommit=True,
 )
+conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
 with conn.cursor() as cur:
     cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("${POSTGRES_DB}",))
     if cur.fetchone() is None:

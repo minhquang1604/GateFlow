@@ -6,8 +6,11 @@
 #     for why (SQLAlchemy 1.4 vs 2.0 conflict with Airflow itself).
 #   * Versions are pinned for reproducibility; bump deliberately.
 
-# Database access (matches the framework's runtime).
-psycopg[binary]==3.2.3
+# Database access. psycopg2, not psycopg 3 — Airflow itself is built
+# on psycopg2 (the base image bundles it) and the entrypoint's
+# create-database step uses the same driver. Pinned explicitly rather
+# than relying on the base image's transitive copy.
+psycopg2-binary==2.9.10
 
 # Experiment tracking.
 mlflow==2.20.3
