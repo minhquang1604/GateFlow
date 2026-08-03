@@ -99,12 +99,14 @@ to run once too.
 | 4 SSM SecureString params | DB password, Airflow Fernet key, Airflow web secret, Airflow admin password |
 | 5 CloudWatch log groups | One per ECS service, 7-day retention |
 
-**Cost:** with the default `instance_count = 2` on `t3.small`, running
-both instances 24/7 for a full month is roughly 2 × 730 hrs ×
-$0.0208/hr ≈ **$30/month** (t3.small has no Free Tier). Set
-`instance_count = 1` to roughly halve that, at the risk of
-reintroducing the memory-pressure problem described below. No ALB, no
-NAT Gateway, no elastic Auto Scaling policy — those stay avoided.
+**Cost:** with `instance_count = 2` on `t3.small`, running both
+instances 24/7 for a full month is roughly 2 × 730 hrs ×
+$0.0208/hr ≈ **$30/month** (t3.small has no Free Tier). 2 instances
+is a hard floor — the five services reserve ~2324 MiB including
+Service Connect sidecars, more than one t3.small's ~1913 MiB of
+schedulable memory, so `instance_count = 1` leaves tasks stuck
+PENDING. No ALB, no NAT Gateway, no elastic Auto Scaling policy —
+those stay avoided.
 
 ### Why not t3.micro
 
@@ -233,9 +235,10 @@ to) the Free Tier:
   `ecs.log_retention_days`) to stay under the 5 GB/month ingestion
   Free Tier allowance.
 
-The ECS compute layer (`t3.small` × `instance_count`) is the one
-deliberate exception — see "Why not t3.micro" above. Set
-`instance_count = 1` to roughly halve that cost.
+The ECS compute layer (`t3.small` × 2) is the one deliberate
+exception — see "Why not t3.micro" above. It cannot be trimmed to a
+single instance: the stack's memory reservations exceed what one
+t3.small can schedule.
 
 ## Adding a new environment
 

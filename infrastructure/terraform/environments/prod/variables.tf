@@ -57,15 +57,17 @@ variable "ec2_instance_type" {
 
 variable "instance_count" {
   description = <<-EOT
-    Number of ECS container instances to run. Default 2 so the full
-    stack (MLflow, Airflow webserver + scheduler, app, serving)
-    spreads across the fleet instead of competing for one instance.
+    Number of ECS container instances to run. 2 is a hard floor, not
+    just a default: the full stack (MLflow, Airflow webserver +
+    scheduler, app, serving) reserves ~2324 MiB including Service
+    Connect sidecars, which exceeds one t3.small's ~1913 MiB of
+    schedulable memory. Setting this to 1 will leave tasks stuck
+    PENDING forever. See the memory-budget comment above
+    `services` in main.tf before changing it.
 
     Cost note: t3.small is NOT Free-Tier-eligible. Two instances
     running 24/7 for a full month is roughly 2 x 730 hrs x $0.0208/hr
-    ~= $30/month. Set this to 1 to halve that cost, at the risk of
-    reintroducing the memory-pressure problem this instance type
-    upgrade was meant to fix.
+    ~= $30/month.
   EOT
   type        = number
   default     = 2

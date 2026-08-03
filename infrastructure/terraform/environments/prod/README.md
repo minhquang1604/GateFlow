@@ -84,7 +84,7 @@ modules share state).
 
 | Variable | Default | Description |
 |---|---|---|
-| `instance_count` | `2` | Fixed ASG size; set to `1` to roughly halve the ~$30/month `t3.small` cost |
+| `instance_count` | `2` | Fixed ASG size. 2 is a hard floor — the stack reserves ~2324 MiB, more than one `t3.small` holds; `1` leaves tasks stuck PENDING |
 | `ec2_instance_type` | `"t3.small"` | Not Free-Tier — `t3.micro` proved too memory-constrained in practice, see root README's "Why not t3.micro" |
 | `mlflow_image_tag` / `app_image_tag` | `"latest"` | ECR tags ECS services deploy; CI pushes both `:latest` and `:<git-sha>` |
 | `admin_cidr` | `"0.0.0.0/0"` | Restrict to your IP to avoid exposing SSH publicly |

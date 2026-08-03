@@ -17,9 +17,9 @@ admin_cidr = "0.0.0.0/0"
 # ECS agent, SSM agent, kernel) was accounted for; see
 # ec2_instance_type's description in variables.tf.
 ec2_instance_type = "t3.small"
-# 2 instances (default) spread the full stack across the fleet.
-# Set to 1 to roughly halve the monthly cost, at the risk of
-# reintroducing memory-pressure problems on a single instance.
+# 2 is a hard floor, not just a default — the full stack reserves
+# ~2324 MiB, more than one t3.small's ~1913 MiB schedulable memory.
+# Setting this to 1 leaves tasks stuck PENDING forever.
 instance_count = 2
 # The ECS-optimized AL2023 AMI's root snapshot requires >= 30 GB;
 # a smaller value fails at apply time.

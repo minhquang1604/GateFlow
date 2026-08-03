@@ -180,20 +180,20 @@ module "ecs" {
 
   # Memory budget: a t3.small registers ~1913 MiB of schedulable
   # memory (2 GiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~3826 MiB. The 5 services below sum to 1700 MiB
+  # total capacity is ~3826 MiB. The 5 services below sum to 2124 MiB
   # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1900 MiB total —
-  # comfortable headroom, and the whole stack even fits on a single
-  # instance if instance_count is dropped to 1. Raising any of these
-  # without checking the total against the per-instance 1913 MiB will
-  # cause tasks to get stuck PENDING forever — ECS won't partially
-  # schedule a task it can't fully fit.
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2324 MiB total.
+  # That no longer fits on a single instance, so instance_count = 2 is
+  # now a hard floor. Raising any of these without checking the total
+  # against the per-instance 1913 MiB will cause tasks to get stuck
+  # PENDING forever — ECS won't partially schedule a task it can't
+  # fully fit.
   #
-  # Two values were raised after observing production failures:
-  # mlflow needs 400 (not 300) even at --workers 1 — gunicorn +
-  # mlflow + sqlalchemy + boto3's combined resident footprint
-  # OOM-killed (exit 137) repeatedly at 300 MiB. airflow-webserver
-  # needs 600 MiB / 512 CPU units — see its own comment below.
+  # Two values were raised after observing production OOM kills
+  # (exit 137): mlflow needs 400 (not 300) even at --workers 1 —
+  # gunicorn + mlflow + sqlalchemy + boto3's combined resident
+  # footprint. airflow-webserver needs 1024 MiB / 512 CPU units —
+  # see its own comment below.
   services = {
     mlflow = {
       image          = local.mlflow_image
@@ -229,12 +229,16 @@ module "ecs" {
     airflow-webserver = {
       image          = local.airflow_image
       container_port = 8080
-      # 600 MiB / 512 CPU units: Airflow's webserver imports a heavy
-      # Flask/FAB stack at boot. At 320 MiB and 128 CPU units it was
-      # too slow to answer Airflow's own gunicorn-master health probe
-      # within the 120s default, and got killed in a loop with
-      # "No response from gunicorn master within 120 seconds".
-      memory  = 600
+      # 1024 MiB / 512 CPU units. Airflow's webserver runs a heavy
+      # Flask/FAB stack and needed both raised, for two separate
+      # failures seen in production:
+      #   * 128 CPU units was too slow to answer Airflow's own
+      #     gunicorn-master probe within its 120s default, killing
+      #     the webserver in a loop ("No response from gunicorn
+      #     master within 120 seconds").
+      #   * 320 and then 600 MiB were both OOM-killed (exit 137)
+      #     once it got far enough to actually serve.
+      memory  = 1024
       cpu     = 512
       command = ["webserver"]
       environment = {
