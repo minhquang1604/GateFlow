@@ -81,6 +81,19 @@ PYEOF
 BACKEND_URI="postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 ARTIFACT_ROOT="s3://${MLFLOW_BUCKET}"
 
+# ---------------------------------------------------------------------- #
+# Apply MLflow's alembic migrations.                                      #
+#                                                                          #
+# Without this, a schema created by one MLflow version can be left with  #
+# columns typed for an older/newer ORM revision (e.g. experiments.        #
+# experiment_id as INTEGER instead of the VARCHAR the current version's  #
+# queries expect), causing "operator does not exist: integer =           #
+# character varying" on Postgres. `mlflow db upgrade` is idempotent —     #
+# safe to run on every boot, no-ops when already at head.                #
+# ---------------------------------------------------------------------- #
+echo "[mlflow] applying schema migrations..."
+mlflow db upgrade "${BACKEND_URI}"
+
 echo "[mlflow] starting tracking server..."
 echo "[mlflow]   backend-store-uri : ${BACKEND_URI}"
 echo "[mlflow]   default-artifact-root: ${ARTIFACT_ROOT}"
