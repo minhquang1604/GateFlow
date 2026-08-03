@@ -20,8 +20,9 @@
 #   * httpx, for the DAG's calls to the app's internal API and the
 #     ServingBridge.
 #
-# DAGs are bind-mounted (not baked in) so they can be edited without
-# rebuilding.
+# DAGs are baked into the image. docker-compose bind-mounted them for
+# local editing, but ECS has no bind mount — without the COPY below
+# /opt/airflow/dags is empty and Airflow registers zero DAGs.
 
 FROM apache/airflow:2.10.4-python3.11
 
@@ -53,6 +54,9 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 # Copied without the rest of the framework source tree so this image
 # never has `mlops_framework` importable.
 COPY --chown=airflow:root case_studies /opt/case_studies
+
+# DAG definitions. Baked in rather than mounted — see the header.
+COPY --chown=airflow:root infrastructure/airflow/dags /opt/airflow/dags
 
 # /opt so `import case_studies.<study>.pipelines` resolves against
 # /opt/case_studies. The base image sets no PYTHONPATH, so this is
