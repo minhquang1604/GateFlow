@@ -178,16 +178,18 @@ module "ecs" {
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
 
-  # Memory budget: a t3.small registers ~1913 MiB of schedulable
-  # memory (2 GiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~3826 MiB. The 5 services below sum to 2370 MiB
-  # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2570 MiB total.
-  # That no longer fits on a single instance, so instance_count = 2 is
-  # now a hard floor. Raising any of these without checking the total
-  # against the per-instance 1913 MiB will cause tasks to get stuck
-  # PENDING forever — ECS won't partially schedule a task it can't
-  # fully fit.
+  # Memory budget: the 5 services below sum to 2370 MiB of
+  # memoryReservation, plus ~40 MiB per task for the Service Connect
+  # proxy sidecar (5 tasks * 40 = 200 MiB) = ~2570 MiB total. That
+  # fits comfortably on a single m7i-flex.large (8 GiB), which is
+  # why instance_count defaults to 1.
+  #
+  # Whatever instance type you run, check this total against the
+  # per-instance schedulable memory before raising any reservation —
+  # ECS won't partially schedule a task it can't fully fit, so an
+  # over-subscribed fleet leaves tasks stuck PENDING forever. On the
+  # previous 2x t3.small fleet (~1913 MiB each) this stack only just
+  # fit, with one instance down to 55 MiB free.
   #
   # These numbers were rightsized against CloudWatch
   # MemoryUtilization/CPUUtilization measured over 3 hours of real

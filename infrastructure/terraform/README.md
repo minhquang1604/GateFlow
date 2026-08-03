@@ -5,11 +5,11 @@ the **MLflow + Airflow + framework API + ServingBridge** stack on Amazon
 ECS (EC2 launch type), backed by RDS, S3, ECR, IAM, SSM Parameter Store,
 and CloudWatch Logs.
 
-> **Not Free-Tier for compute.** The container instances run
-> `t3.small` (not `t3.micro`) — see "Why not t3.micro" below for what
-> happened when this stack ran on the Free-Tier-eligible instance
-> type. Every other resource (RDS `db.t3.micro`, S3, ECR, no ALB/NAT)
-> stays Free-Tier-safe; only the ECS compute layer costs money.
+> **Not Free-Tier for compute.** The container instance runs
+> `m7i-flex.large` (not `t3.micro`) — see "Instance sizing" below for
+> what happened on smaller types. Every other resource (RDS
+> `db.t3.micro`, S3, ECR, no ALB/NAT) stays Free-Tier-safe; only the
+> ECS compute layer costs money.
 
 ## Layout
 
@@ -94,40 +94,48 @@ to run once too.
 | 3 ECR repos | `mlflow`, `airflow` (webserver + scheduler), `app` (app + serving) |
 | 3 IAM roles | EC2 instance role (ECS agent registration + SSM Session Manager), ECS task execution role, ECS task role |
 | ECS cluster + EC2 capacity provider | Managed scaling disabled — schedules onto the fixed-size ASG only |
-| Auto Scaling Group (`instance_count`, default 2, `t3.small`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
+| Auto Scaling Group (`instance_count`, default 1, `m7i-flex.large`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
 | Cloud Map private DNS namespace | Backs ECS Service Connect for in-cluster service discovery |
 | 5 ECS task definitions + services | mlflow, airflow-webserver, airflow-scheduler, app, serving |
 | 4 SSM SecureString params | DB password, Airflow Fernet key, Airflow web secret, Airflow admin password |
 | 5 CloudWatch log groups | One per ECS service, 7-day retention |
 
-**Cost:** with `instance_count = 2` on `t3.small`, running both
-instances 24/7 for a full month is roughly 2 × 730 hrs ×
-$0.0208/hr ≈ **$30/month** (t3.small has no Free Tier). 2 instances
-is a hard floor — the five services reserve ~2570 MiB including
-Service Connect sidecars, more than one t3.small's ~1913 MiB of
-schedulable memory, so `instance_count = 1` leaves tasks stuck
-PENDING. No ALB, no NAT Gateway, no elastic Auto Scaling policy —
-those stay avoided.
+**Cost:** with the default `instance_count = 1` on
+`m7i-flex.large`, running 24/7 for a full month is roughly 730 hrs ×
+$0.09576/hr ≈ **$70/month** (no Free Tier for this type). The five
+services reserve ~2570 MiB including Service Connect sidecars, which
+fits on one 8 GiB instance with room to spare. No ALB, no NAT
+Gateway, no elastic Auto Scaling policy — those stay avoided.
 
-### Why not t3.micro
+`t3.medium` (4 GiB, ≈$30/month) also fits the whole stack on one
+instance with ~1300 MiB spare, if cost matters more than headroom.
 
-The original design targeted `t3.micro` (Free Tier) with the 5
+### Instance sizing
+
+Two smaller types were tried first and are worth knowing about:
+
+**`t3.micro` (1 GB, Free Tier)** — the original target, with the 5
 services' memory reservations trimmed to fit its ~916 MiB
-ECS-schedulable RAM. In practice, both container instances
-repeatedly went dark — their ECS *and* SSM agents stopped responding
+ECS-schedulable RAM. In practice both container instances repeatedly
+went dark: their ECS *and* SSM agents stopped responding
 (`agentConnected: false`, SSM `PingStatus: ConnectionLost`) while
-EC2's own health checks still reported the instances as healthy
+EC2's own health checks still reported the instances healthy
 (hypervisor-level reachability only, not host memory pressure).
-mlflow itself was also directly OOM-killed (`exitCode 137`) at a
-300 MiB reservation even with `--workers 1`. The pattern is
-consistent with the Linux OOM killer, under real memory pressure,
-occasionally killing the host's own management daemons (Docker,
-ECS agent, SSM agent) instead of just a container — t3.micro's 1 GB
-left no real margin once every layer of overhead (kernel, Docker
-daemon, ECS agent, SSM agent, 5 Service Connect proxy sidecars) was
-accounted for, even though the *reported* schedulable memory number
-looked sufficient on paper. `t3.small`'s 2 GB gives enough headroom
-that this hasn't recurred.
+mlflow was also directly OOM-killed (`exitCode 137`) at a 300 MiB
+reservation even with `--workers 1`. The pattern is consistent with
+the Linux OOM killer, under real memory pressure, occasionally
+killing the host's own management daemons (Docker, ECS agent, SSM
+agent) instead of just a container — 1 GB left no real margin once
+kernel, Docker daemon, ECS agent, SSM agent and 5 Service Connect
+proxy sidecars were all accounted for, even though the *reported*
+schedulable memory looked sufficient on paper.
+
+**`t3.small` (2 GB)** — held the stack, but only across two
+instances (~2570 MiB reserved vs ~1913 MiB schedulable each), and
+the split was lopsided: one instance ran four tasks at 55 MiB free
+while the other sat 73% idle. One of those instances also became
+network-wedged, unreachable on every port from outside while AWS's
+shallow health checks still passed.
 
 ## Prerequisites
 
@@ -237,10 +245,8 @@ to) the Free Tier:
   `ecs.log_retention_days`) to stay under the 5 GB/month ingestion
   Free Tier allowance.
 
-The ECS compute layer (`t3.small` × 2) is the one deliberate
-exception — see "Why not t3.micro" above. It cannot be trimmed to a
-single instance: the stack's memory reservations exceed what one
-t3.small can schedule.
+The ECS compute layer (`m7i-flex.large` × 1) is the one deliberate
+exception — see "Instance sizing" above.
 
 ## Adding a new environment
 

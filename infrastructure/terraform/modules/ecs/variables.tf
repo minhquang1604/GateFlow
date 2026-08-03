@@ -137,15 +137,19 @@ variable "placement_strategy" {
     Ordered placement strategy applied to every service, outermost
     first. Defaults to binpack on memory.
 
+    On a single-instance fleet (the current default) this is
+    effectively a no-op — every task lands on the one instance
+    either way. It matters as soon as instance_count > 1.
+
     Why binpack and not spread: `spread` on `instanceId` balances the
-    *count* of tasks per instance, ignoring how big they are. With
-    this stack's 200-1024 MiB spread that packed four tasks (the
-    largest among them) onto one container instance while the other
-    sat nearly empty — leaving too little headroom for rolling
-    deploys to place replacement tasks, which stalled `aws ecs wait
-    services-stable`. `binpack` on memory fills one instance before
-    moving to the next, which keeps contiguous free space for
-    replacements.
+    *count* of tasks per instance, ignoring how big they are. On the
+    earlier 2x t3.small fleet, with tasks ranging 200-1024 MiB, that
+    packed four tasks (the largest among them) onto one container
+    instance while the other sat nearly empty — leaving too little
+    headroom for rolling deploys to place replacement tasks, which
+    stalled `aws ecs wait services-stable`. `binpack` on memory fills
+    one instance before moving to the next, which keeps contiguous
+    free space for replacements.
 
     Set to `[{ type = "spread", field = "instanceId" }]` if you would
     rather trade that headroom for per-instance fault isolation.

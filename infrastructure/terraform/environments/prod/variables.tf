@@ -41,36 +41,52 @@ variable "admin_cidr" {
 variable "ec2_instance_type" {
   description = <<-EOT
     EC2 instance type for ECS container instances. NOT Free-Tier
-    (t3.small, ~$0.0208/hr) — t3.micro's 1 GB RAM proved too tight
-    for this stack's 5 services in practice: after Docker daemon, ECS
-    agent, SSM agent, and kernel overhead, the reported ~916 MiB
-    "schedulable" memory didn't leave enough real headroom, and
-    memory bursts (image pulls, GC) OOM-killed the host's own
-    management agents — not just containers — wedging whole
-    instances (ECS/SSM agents went dark while EC2's shallow health
-    check still reported them healthy). t3.small's 2 GB gives real
-    headroom instead of a razor-thin margin.
+    (m7i-flex.large, 8 GiB / 2 vCPU, ~$0.09576/hr ~= $70/month for
+    the single-instance default).
+
+    History behind the sizing:
+      * t3.micro (1 GB, Free Tier) was too tight for the 5 services.
+        After Docker daemon, ECS agent, SSM agent, and kernel
+        overhead, the reported ~916 MiB "schedulable" memory left no
+        real headroom, and memory bursts OOM-killed the host's own
+        management daemons — not just containers — wedging whole
+        instances (ECS/SSM agents went dark while EC2's shallow
+        health checks still reported them healthy).
+      * t3.small (2 GB) fit the stack only across two instances
+        (~2570 MiB reserved vs ~1913 MiB schedulable each), and left
+        one box scraping 55 MiB free while the other sat idle.
+      * m7i-flex.large holds the whole stack on one instance with
+        several GiB to spare.
+
+    Cheaper alternative if the headroom isn't needed: t3.medium
+    (4 GiB, ~$30/month) also fits the full stack on one instance,
+    with ~1300 MiB spare.
   EOT
   type        = string
-  default     = "t3.small"
+  default     = "m7i-flex.large"
 }
 
 variable "instance_count" {
   description = <<-EOT
-    Number of ECS container instances to run. 2 is a hard floor, not
-    just a default: the full stack (MLflow, Airflow webserver +
-    scheduler, app, serving) reserves ~2570 MiB including Service
-    Connect sidecars, which exceeds one t3.small's ~1913 MiB of
-    schedulable memory. Setting this to 1 will leave tasks stuck
-    PENDING forever. See the memory-budget comment above
-    `services` in main.tf before changing it.
+    Number of ECS container instances to run. 1 is enough on the
+    default m7i-flex.large: the full stack (MLflow, Airflow
+    webserver + scheduler, app, serving) reserves ~2570 MiB
+    including Service Connect sidecars, well under that instance's
+    schedulable memory. See the memory-budget comment above
+    `services` in main.tf before changing instance sizing.
 
-    Cost note: t3.small is NOT Free-Tier-eligible. Two instances
-    running 24/7 for a full month is roughly 2 x 730 hrs x $0.0208/hr
-    ~= $30/month.
+    Tradeoff of running a single instance: no spare host. Twice
+    during bring-up an instance became network-wedged (ECS/SSM
+    agents unreachable while EC2's own health checks still reported
+    "ok"), and the second instance kept the stack serving until the
+    bad one was replaced. With instance_count = 1 that outage is
+    total until the ASG launches a replacement.
+
+    Cost note: m7i-flex.large is NOT Free-Tier-eligible — roughly
+    730 hrs x $0.09576/hr ~= $70/month per instance.
   EOT
   type        = number
-  default     = 2
+  default     = 1
 }
 
 variable "ec2_ebs_size_gb" {
