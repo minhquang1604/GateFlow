@@ -172,19 +172,22 @@ module "ecs" {
 
   # Memory budget: a t3.micro registers ~916 MiB of schedulable memory
   # (1024 MiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~1832 MiB. The 5 services below sum to 1320 MiB
+  # total capacity is ~1832 MiB. The 5 services below sum to 1420 MiB
   # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1520 MiB total —
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1620 MiB total —
   # leaves enough slack for the "spread" placement strategy to find a
-  # valid 2/3-3/2 split across the fleet. Raising any of these without
+  # valid split across the fleet. Raising any of these without
   # checking the total against 1832 MiB (or reducing instance_count)
   # will cause tasks to get stuck PENDING forever — ECS won't
-  # partially schedule a task it can't fully fit.
+  # partially schedule a task it can't fully fit. mlflow needs 400
+  # (not 300) even at --workers 1 — gunicorn + mlflow + sqlalchemy +
+  # boto3's combined resident footprint was measured OOM-killing
+  # (exit 137) repeatedly at 300 MiB in production.
   services = {
     mlflow = {
       image          = local.mlflow_image
       container_port = 5000
-      memory         = 300
+      memory         = 400
       environment = {
         POSTGRES_HOST      = module.rds.address
         POSTGRES_PORT      = tostring(module.rds.port)
