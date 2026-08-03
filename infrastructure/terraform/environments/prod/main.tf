@@ -170,11 +170,21 @@ module "ecs" {
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
 
+  # Memory budget: a t3.micro registers ~916 MiB of schedulable memory
+  # (1024 MiB minus ECS agent/OS reserve). With instance_count = 2,
+  # total capacity is ~1832 MiB. The 5 services below sum to 1320 MiB
+  # of memoryReservation, plus ~40 MiB per task for the Service
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1520 MiB total —
+  # leaves enough slack for the "spread" placement strategy to find a
+  # valid 2/3-3/2 split across the fleet. Raising any of these without
+  # checking the total against 1832 MiB (or reducing instance_count)
+  # will cause tasks to get stuck PENDING forever — ECS won't
+  # partially schedule a task it can't fully fit.
   services = {
     mlflow = {
       image          = local.mlflow_image
       container_port = 5000
-      memory         = 350
+      memory         = 300
       environment = {
         POSTGRES_HOST      = module.rds.address
         POSTGRES_PORT      = tostring(module.rds.port)
@@ -200,7 +210,7 @@ module "ecs" {
     airflow-webserver = {
       image          = local.app_image
       container_port = 8080
-      memory         = 400
+      memory         = 320
       command        = ["webserver"]
       environment = {
         POSTGRES_HOST                     = module.rds.address
@@ -233,7 +243,7 @@ module "ecs" {
     airflow-scheduler = {
       image          = local.app_image
       container_port = 8793
-      memory         = 300
+      memory         = 250
       command        = ["scheduler"]
       environment = {
         POSTGRES_HOST                = module.rds.address
@@ -258,7 +268,7 @@ module "ecs" {
     app = {
       image          = local.app_image
       container_port = 8000
-      memory         = 300
+      memory         = 250
       command = [
         "/bin/bash", "-c",
         "export DATABASE_URL=\"postgresql+psycopg://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB\" && cd /opt/framework && PYTHONPATH=/opt/framework/src alembic upgrade head && uvicorn mlops_framework.api.app:create_app --factory --host 0.0.0.0 --port 8000",
@@ -292,7 +302,7 @@ module "ecs" {
     serving = {
       image          = local.app_image
       container_port = 8001
-      memory         = 250
+      memory         = 200
       command = [
         "/bin/bash", "-c",
         "export DATABASE_URL=\"postgresql+psycopg://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB\" && cd /opt/framework && PYTHONPATH=/opt/framework/src python -m mlops_framework.serving.run --host 0.0.0.0 --port 8001",
