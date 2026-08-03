@@ -180,27 +180,35 @@ module "ecs" {
 
   # Memory budget: a t3.small registers ~1913 MiB of schedulable
   # memory (2 GiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~3826 MiB. The 5 services below sum to 2386 MiB
+  # total capacity is ~3826 MiB. The 5 services below sum to 2370 MiB
   # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2586 MiB total.
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2570 MiB total.
   # That no longer fits on a single instance, so instance_count = 2 is
   # now a hard floor. Raising any of these without checking the total
   # against the per-instance 1913 MiB will cause tasks to get stuck
   # PENDING forever — ECS won't partially schedule a task it can't
   # fully fit.
   #
-  # Values raised after observing production failures: mlflow needs
-  # 400 (not 300) even at --workers 1 — gunicorn + mlflow +
-  # sqlalchemy + boto3's combined resident footprint OOM-killed it
-  # (exit 137) at 300. airflow-webserver needs 1024 MiB / 512 CPU
-  # units, and airflow-scheduler 512 MiB / 512 CPU units — both
-  # measured well above their old reservations. See their own
-  # comments below.
+  # These numbers were rightsized against CloudWatch
+  # MemoryUtilization/CPUUtilization measured over 3 hours of real
+  # running, not guessed: mlflow was at 94% avg / 109% peak of its
+  # old 400 MiB (hence its exit-137 kills) and moved up to 640;
+  # airflow-webserver was only at 36% avg / 86% peak of 1024 and
+  # came back down to 768. Re-measure before changing them again:
+  #   aws cloudwatch get-metric-statistics --namespace AWS/ECS \
+  #     --metric-name MemoryUtilization --dimensions \
+  #     Name=ClusterName,Value=<cluster> Name=ServiceName,Value=<svc> \
+  #     --start-time <t0> --end-time <t1> --period 3600 \
+  #     --statistics Average Maximum
   services = {
     mlflow = {
       image          = local.mlflow_image
       container_port = 5000
-      memory         = 400
+      # 640 MiB. CloudWatch measured this service at 94% average and
+      # 109% peak MemoryUtilization against a 400 MiB reservation —
+      # i.e. it was riding the limit and spilling over it, which is
+      # what produced the earlier exit-137 kills.
+      memory = 640
       environment = {
         POSTGRES_HOST      = module.rds.address
         POSTGRES_PORT      = tostring(module.rds.port)
@@ -231,7 +239,7 @@ module "ecs" {
     airflow-webserver = {
       image          = local.airflow_image
       container_port = 8080
-      # 1024 MiB / 512 CPU units. Airflow's webserver runs a heavy
+      # 768 MiB / 512 CPU units. Airflow's webserver runs a heavy
       # Flask/FAB stack and needed both raised, for two separate
       # failures seen in production:
       #   * 128 CPU units was too slow to answer Airflow's own
@@ -240,7 +248,10 @@ module "ecs" {
       #     master within 120 seconds").
       #   * 320 and then 600 MiB were both OOM-killed (exit 137)
       #     once it got far enough to actually serve.
-      memory  = 1024
+      # 1024 turned out to overshoot — CloudWatch then measured 36%
+      # average / 86% peak MemoryUtilization — so this trims back to
+      # 768, which still clears the observed peak with headroom.
+      memory  = 768
       cpu     = 512
       command = ["webserver"]
       environment = {

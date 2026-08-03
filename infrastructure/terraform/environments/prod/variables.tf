@@ -59,7 +59,7 @@ variable "instance_count" {
   description = <<-EOT
     Number of ECS container instances to run. 2 is a hard floor, not
     just a default: the full stack (MLflow, Airflow webserver +
-    scheduler, app, serving) reserves ~2324 MiB including Service
+    scheduler, app, serving) reserves ~2570 MiB including Service
     Connect sidecars, which exceeds one t3.small's ~1913 MiB of
     schedulable memory. Setting this to 1 will leave tasks stuck
     PENDING forever. See the memory-budget comment above

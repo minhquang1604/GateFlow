@@ -131,3 +131,33 @@ variable "services" {
     essential                 = optional(bool, true)
   }))
 }
+
+variable "placement_strategy" {
+  description = <<-EOT
+    Ordered placement strategy applied to every service, outermost
+    first. Defaults to binpack on memory.
+
+    Why binpack and not spread: `spread` on `instanceId` balances the
+    *count* of tasks per instance, ignoring how big they are. With
+    this stack's 200-1024 MiB spread that packed four tasks (the
+    largest among them) onto one container instance while the other
+    sat nearly empty — leaving too little headroom for rolling
+    deploys to place replacement tasks, which stalled `aws ecs wait
+    services-stable`. `binpack` on memory fills one instance before
+    moving to the next, which keeps contiguous free space for
+    replacements.
+
+    Set to `[{ type = "spread", field = "instanceId" }]` if you would
+    rather trade that headroom for per-instance fault isolation.
+  EOT
+  type = list(object({
+    type  = string
+    field = string
+  }))
+  default = [
+    {
+      type  = "binpack"
+      field = "memory"
+    }
+  ]
+}

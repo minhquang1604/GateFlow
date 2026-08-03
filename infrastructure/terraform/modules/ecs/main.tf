@@ -188,12 +188,18 @@ resource "aws_ecs_service" "this" {
     weight            = 1
   }
 
-  # Spread tasks across container instances so the stack's combined
-  # memory footprint is distributed across the fleet instead of
-  # piling onto one instance.
-  ordered_placement_strategy {
-    type  = "spread"
-    field = "instanceId"
+  # Placement. `spread` on instanceId balances the *number* of tasks,
+  # not their size — with tasks ranging 200-1024 MiB that let four of
+  # them (including the largest) pile onto one instance while the
+  # other sat nearly empty, leaving no room for rolling-deploy
+  # replacements. `binpack` on memory is size-aware; see
+  # var.placement_strategy.
+  dynamic "ordered_placement_strategy" {
+    for_each = var.placement_strategy
+    content {
+      type  = ordered_placement_strategy.value.type
+      field = ordered_placement_strategy.value.field
+    }
   }
 
   # Service Connect: makes plain http://<discovery_name>:<port> calls

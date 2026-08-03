@@ -28,9 +28,14 @@ task definition + service per entry in `var.services`.
   required because tasks are spread across ≥1 container instances and
   inter-service calls (e.g. `app` → `mlflow`) need a stable name
   independent of instance placement.
-- **Task placement uses `spread` on `instanceId`** so the 5 services'
-  combined memory footprint distributes across the fleet rather than
-  stacking onto one instance.
+- **Task placement uses `binpack` on `memory`** (configurable via
+  `var.placement_strategy`). `spread` on `instanceId` was tried first
+  but balances the *number* of tasks, not their size — with tasks
+  ranging 200-768 MiB it packed four of them onto one instance while
+  the other sat nearly empty, leaving too little contiguous headroom
+  for rolling deploys to place replacements and stalling
+  `aws ecs wait services-stable`. `binpack` fills one instance before
+  moving to the next, keeping that headroom intact.
 - **Rolling deploys use `min=0% / max=100%`** healthy percent — a
   memory-constrained fleet can't afford to run two copies of a service
   simultaneously during a deploy.
@@ -49,6 +54,7 @@ task definition + service per entry in `var.services`.
 | `log_retention_days` | `number` | `7` | |
 | `managed_termination_protection` | `string` | `"DISABLED"` | Requires ASG `protect_from_scale_in = true` if enabled |
 | `managed_scaling_status` | `string` | `"DISABLED"` | Keeps the ASG a static fleet |
+| `placement_strategy` | `list(object({type,field}))` | `[{binpack, memory}]` | Ordered placement strategy; see Design notes |
 | `services` | `map(object)` | required | See below |
 
 ### `services` object fields

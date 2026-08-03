@@ -19,7 +19,7 @@ infrastructure/terraform/
 │   ├── network/              # VPC + subnets + IGW + RTs + DB subnet group
 │   ├── security_groups/      # sg-app, sg-rds
 │   ├── s3/                   # Buckets with versioning + lifecycle
-│   ├── ecr/                  # ECR repositories (mlflow, app)
+│   ├── ecr/                  # ECR repositories (mlflow, airflow, app)
 │   ├── rds/                  # RDS PostgreSQL instance + parameter group
 │   ├── ssm/                  # SecureString parameters + generated secrets
 │   ├── iam/                  # EC2 instance role + ECS task exec/task roles
@@ -59,11 +59,11 @@ iam (ec2 role + ecs task roles) ──┘         │
 plain ECS agent (from the AWS-published ECS-optimized AMI); MLflow,
 Airflow webserver, Airflow scheduler, the framework app, and the
 ServingBridge are each an ECS **service** (EC2 launch type, `bridge`
-network mode, host-port-mapped — there is no ALB in this Free-Tier
+network mode, host-port-mapped — there is no ALB in this
 stack, so services publish directly on each container instance's
-public IP). Tasks spread across the fleet via an
-`ordered_placement_strategy` so the stack's combined memory footprint
-doesn't pile onto one instance. Inter-service calls (e.g. `app` →
+public IP). Tasks are placed with a memory-aware `binpack`
+`ordered_placement_strategy`, which keeps contiguous free space on the
+fleet for rolling-deploy replacements. Inter-service calls (e.g. `app` →
 `mlflow`) go through **ECS Service Connect** — plain
 `http://<service>:<port>` calls that a per-task proxy resolves and
 routes correctly regardless of which container instance the target
@@ -72,12 +72,13 @@ SRV records for bridge-mode networking, which ordinary HTTP clients
 can't resolve — Service Connect is the mechanism built for this case.)
 
 **Terraform only creates the ECR repositories — it never builds or
-pushes images.** `.github/workflows/deploy.yml` builds
-`infrastructure/mlflow/Dockerfile` and
-`infrastructure/airflow/Dockerfile` (the latter is shared by
-airflow-webserver, airflow-scheduler, app, and serving — same as
-today's `docker-compose.yml`) and pushes them to ECR on every push to
-`main`. See **Bootstrap order** below — this is the one place
+pushes images.** `.github/workflows/deploy.yml` builds three images —
+`infrastructure/mlflow/Dockerfile`, `infrastructure/airflow/Dockerfile`
+(airflow-webserver + airflow-scheduler), and
+`infrastructure/app/Dockerfile` (app + serving) — and pushes them to
+ECR on every push to `main`. Airflow and the framework need separate
+images because Airflow 2.10.4 pins SQLAlchemy 1.4.x internally and
+cannot coexist with the framework's `sqlalchemy>=2.0.0`. See **Bootstrap order** below — this is the one place
 `terraform apply` alone does not produce a fully healthy stack; CI has
 to run once too.
 
@@ -90,7 +91,7 @@ to run once too.
 | 2 security groups | `sg-app` (opened directly to the internet on the 4 app ports + SSH from `admin_cidr`), `sg-rds` |
 | 3 S3 buckets | `mlflow-artifacts`, `airflow-logs`, `app-backups` |
 | 1 RDS PostgreSQL 15 (`db.t3.micro`, 20 GB) | Shared metadata DB (mlflow/airflow databases self-create on first container boot) |
-| 2 ECR repos | `mlflow`, `app` (airflow/app/serving reuse `app`) |
+| 3 ECR repos | `mlflow`, `airflow` (webserver + scheduler), `app` (app + serving) |
 | 3 IAM roles | EC2 instance role (ECS agent registration + SSM Session Manager), ECS task execution role, ECS task role |
 | ECS cluster + EC2 capacity provider | Managed scaling disabled — schedules onto the fixed-size ASG only |
 | Auto Scaling Group (`instance_count`, default 2, `t3.small`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
@@ -102,7 +103,7 @@ to run once too.
 **Cost:** with `instance_count = 2` on `t3.small`, running both
 instances 24/7 for a full month is roughly 2 × 730 hrs ×
 $0.0208/hr ≈ **$30/month** (t3.small has no Free Tier). 2 instances
-is a hard floor — the five services reserve ~2324 MiB including
+is a hard floor — the five services reserve ~2570 MiB including
 Service Connect sidecars, more than one t3.small's ~1913 MiB of
 schedulable memory, so `instance_count = 1` leaves tasks stuck
 PENDING. No ALB, no NAT Gateway, no elastic Auto Scaling policy —
@@ -146,7 +147,8 @@ that this hasn't recurred.
 4. **GitHub Actions configured** (for the image build/push pipeline —
    see below) with repo secrets `AWS_ACCESS_KEY_ID` /
    `AWS_SECRET_ACCESS_KEY` and repo variables `AWS_REGION`,
-   `ECS_CLUSTER_NAME`, `ECR_MLFLOW_REPOSITORY`, `ECR_APP_REPOSITORY`
+   `ECS_CLUSTER_NAME`, `ECR_MLFLOW_REPOSITORY`, `ECR_AIRFLOW_REPOSITORY`,
+   `ECR_APP_REPOSITORY`
    (values come from `terraform output` after the first apply).
 
 ## Bootstrap order
