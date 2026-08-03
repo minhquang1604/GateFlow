@@ -39,24 +39,33 @@ variable "admin_cidr" {
 }
 
 variable "ec2_instance_type" {
-  description = "EC2 instance type. Free Tier covers t3.micro for the first 12 months."
+  description = <<-EOT
+    EC2 instance type for ECS container instances. NOT Free-Tier
+    (t3.small, ~$0.0208/hr) — t3.micro's 1 GB RAM proved too tight
+    for this stack's 5 services in practice: after Docker daemon, ECS
+    agent, SSM agent, and kernel overhead, the reported ~916 MiB
+    "schedulable" memory didn't leave enough real headroom, and
+    memory bursts (image pulls, GC) OOM-killed the host's own
+    management agents — not just containers — wedging whole
+    instances (ECS/SSM agents went dark while EC2's shallow health
+    check still reported them healthy). t3.small's 2 GB gives real
+    headroom instead of a razor-thin margin.
+  EOT
   type        = string
-  default     = "t3.micro"
+  default     = "t3.small"
 }
 
 variable "instance_count" {
   description = <<-EOT
-    Number of ECS container instances (t3.micro each) to run. Default
-    2 so the full stack (MLflow, Airflow webserver + scheduler, app,
-    serving) fits across the fleet's combined ~2 GB RAM rather than
-    competing for one instance's 1 GB.
+    Number of ECS container instances to run. Default 2 so the full
+    stack (MLflow, Airflow webserver + scheduler, app, serving)
+    spreads across the fleet instead of competing for one instance.
 
-    Cost note: 750 EC2 instance-hours/month are Free Tier, shared
-    across ALL running instances. Two t3.micro instances running 24/7
-    for a full month is ~1460 instance-hours — about 710 hours over
-    the Free Tier pool, or roughly $7-8/month at on-demand pricing.
-    Set this to 1 to stay strictly inside the Free Tier; not every
-    service may be schedulable on a single 1 GB instance in that case.
+    Cost note: t3.small is NOT Free-Tier-eligible. Two instances
+    running 24/7 for a full month is roughly 2 x 730 hrs x $0.0208/hr
+    ~= $30/month. Set this to 1 to halve that cost, at the risk of
+    reintroducing the memory-pressure problem this instance type
+    upgrade was meant to fix.
   EOT
   type        = number
   default     = 2

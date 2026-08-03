@@ -1,9 +1,15 @@
-# Terraform — MLOps Framework on AWS Free Tier (ECS EC2 launch type)
+# Terraform — MLOps Framework on AWS (ECS EC2 launch type)
 
 This directory contains a production-ready Terraform layout that stands up
 the **MLflow + Airflow + framework API + ServingBridge** stack on Amazon
 ECS (EC2 launch type), backed by RDS, S3, ECR, IAM, SSM Parameter Store,
 and CloudWatch Logs.
+
+> **Not Free-Tier for compute.** The container instances run
+> `t3.small` (not `t3.micro`) — see "Why not t3.micro" below for what
+> happened when this stack ran on the Free-Tier-eligible instance
+> type. Every other resource (RDS `db.t3.micro`, S3, ECR, no ALB/NAT)
+> stays Free-Tier-safe; only the ECS compute layer costs money.
 
 ## Layout
 
@@ -87,18 +93,38 @@ to run once too.
 | 2 ECR repos | `mlflow`, `app` (airflow/app/serving reuse `app`) |
 | 3 IAM roles | EC2 instance role (ECS agent registration + SSM Session Manager), ECS task execution role, ECS task role |
 | ECS cluster + EC2 capacity provider | Managed scaling disabled — schedules onto the fixed-size ASG only |
-| Auto Scaling Group (`instance_count`, default 2) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
+| Auto Scaling Group (`instance_count`, default 2, `t3.small`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
 | Cloud Map private DNS namespace | Backs ECS Service Connect for in-cluster service discovery |
 | 5 ECS task definitions + services | mlflow, airflow-webserver, airflow-scheduler, app, serving |
 | 4 SSM SecureString params | DB password, Airflow Fernet key, Airflow web secret, Airflow admin password |
 | 5 CloudWatch log groups | One per ECS service, 7-day retention |
 
-**Free-Tier caveat:** with the default `instance_count = 2`, running
-both t3.micro instances 24/7 for a full month is ~1460 instance-hours
-against the shared 750-hour/month Free Tier pool — roughly $7-8/month
-of on-demand overage. Set `instance_count = 1` to stay strictly
-inside Free Tier (some services may be unschedulable on a single 1 GB
-instance). No ALB, no NAT Gateway, no elastic Auto Scaling policy.
+**Cost:** with the default `instance_count = 2` on `t3.small`, running
+both instances 24/7 for a full month is roughly 2 × 730 hrs ×
+$0.0208/hr ≈ **$30/month** (t3.small has no Free Tier). Set
+`instance_count = 1` to roughly halve that, at the risk of
+reintroducing the memory-pressure problem described below. No ALB, no
+NAT Gateway, no elastic Auto Scaling policy — those stay avoided.
+
+### Why not t3.micro
+
+The original design targeted `t3.micro` (Free Tier) with the 5
+services' memory reservations trimmed to fit its ~916 MiB
+ECS-schedulable RAM. In practice, both container instances
+repeatedly went dark — their ECS *and* SSM agents stopped responding
+(`agentConnected: false`, SSM `PingStatus: ConnectionLost`) while
+EC2's own health checks still reported the instances as healthy
+(hypervisor-level reachability only, not host memory pressure).
+mlflow itself was also directly OOM-killed (`exitCode 137`) at a
+300 MiB reservation even with `--workers 1`. The pattern is
+consistent with the Linux OOM killer, under real memory pressure,
+occasionally killing the host's own management daemons (Docker,
+ECS agent, SSM agent) instead of just a container — t3.micro's 1 GB
+left no real margin once every layer of overhead (kernel, Docker
+daemon, ECS agent, SSM agent, 5 Service Connect proxy sidecars) was
+accounted for, even though the *reported* schedulable memory number
+looked sufficient on paper. `t3.small`'s 2 GB gives enough headroom
+that this hasn't recurred.
 
 ## Prerequisites
 
@@ -191,22 +217,25 @@ aws ssm start-session --target $(terraform output -json ec2_instance_ids | jq -r
 | ECR has images | `aws ecr list-images --repository-name $(terraform output -json ecr_repositories | jq -r .mlflow | cut -d/ -f2)` |
 | Service reachable | `curl http://<instance-ip>:<port>/...` (see After apply) |
 
-## Free-Tier safety
+## Cost control
 
-The configuration stays close to the Free Tier provided you:
+Everything except the ECS container instances stays inside (or close
+to) the Free Tier:
 
-- Use `t3.micro` (default) and `db.t3.micro` (default), single-AZ, 20 GB.
-- Set `instance_count = 1` if you want to stay strictly inside the
-  750 EC2 instance-hour/month pool (default is 2, ~$7-8/month
-  overage — see "What gets created" above).
-- Do not enable ALB / NAT Gateway / elastic Auto Scaling policies /
-  CloudWatch detailed monitoring / Container Insights (all off by
-  default in this stack).
+- RDS uses `db.t3.micro` (default), single-AZ, 20 GB — Free-Tier
+  eligible for the first 12 months.
+- No ALB / NAT Gateway / elastic Auto Scaling policies / CloudWatch
+  detailed monitoring / Container Insights (all off by default in
+  this stack).
 - Keep S3 usage under 5 GB (lifecycle expires noncurrent versions at
   30 days).
 - Keep CloudWatch Logs retention short (7 days, configurable via
   `ecs.log_retention_days`) to stay under the 5 GB/month ingestion
   Free Tier allowance.
+
+The ECS compute layer (`t3.small` × `instance_count`) is the one
+deliberate exception — see "Why not t3.micro" above. Set
+`instance_count = 1` to roughly halve that cost.
 
 ## Adding a new environment
 

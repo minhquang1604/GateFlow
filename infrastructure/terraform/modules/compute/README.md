@@ -58,7 +58,7 @@ IPs.
 module "compute" {
   source                    = "../../modules/compute"
   name_prefix               = local.name_prefix
-  instance_type             = "t3.micro"
+  instance_type             = "t3.small"
   instance_count            = var.instance_count
   ebs_size_gb               = 20
   ssh_public_key            = var.ssh_public_key

@@ -12,12 +12,15 @@ vpc_cidr = "10.0.0.0/16"
 admin_cidr = "0.0.0.0/0"
 
 # EC2 / ECS container instances
-ec2_instance_type = "t3.micro"
-# 2 instances (default) fit the full stack across ~2 GB combined RAM.
-# Set to 1 to stay strictly inside the 750 EC2 instance-hour/month
-# Free Tier pool at the cost of some services being unschedulable —
-# see the `instance_count` description in variables.tf.
-instance_count  = 2
+# t3.small (not Free-Tier, ~$0.0208/hr) — t3.micro's 1 GB RAM proved
+# too tight for 5 services once real host overhead (Docker daemon,
+# ECS agent, SSM agent, kernel) was accounted for; see
+# ec2_instance_type's description in variables.tf.
+ec2_instance_type = "t3.small"
+# 2 instances (default) spread the full stack across the fleet.
+# Set to 1 to roughly halve the monthly cost, at the risk of
+# reintroducing memory-pressure problems on a single instance.
+instance_count = 2
 # The ECS-optimized AL2023 AMI's root snapshot requires >= 30 GB;
 # a smaller value fails at apply time.
 ec2_ebs_size_gb = 30
