@@ -17,6 +17,7 @@
 # serving (8001).
 
 services:
+
   # ------------------------------------------------------------------ #
   # PostgreSQL — shared metadata store                                 #
   # ------------------------------------------------------------------ #
@@ -121,44 +122,11 @@ services:
       - mlops_network
 
   # ------------------------------------------------------------------ #
-  # Airflow — init container (db migrate + admin user)                 #
-  # ------------------------------------------------------------------ #
-  airflow-common:
-    build:
-      context: .
-      dockerfile: infrastructure/airflow/Dockerfile
-    container_name: mlops_framework_airflow_common
-    restart: "no"
-    user: airflow
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
-      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
-      AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
-      AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
-    volumes:
-      - airflow_dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
-      - airflow_plugins:/opt/airflow/plugins
-      - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
-    entrypoint: >
-      /bin/bash -c "
-      airflow db migrate;
-      airflow users create
-        --username $${AIRFLOW_USERNAME:-airflow}
-        --password $${AIRFLOW_PASSWORD:-airflow}
-        --firstname Admin --lastname User
-        --role Admin --email admin@example.com || true;
-      "
-    depends_on:
-      postgres:
-        condition: service_healthy
-    networks:
-      - mlops_network
-
-  # ------------------------------------------------------------------ #
   # Airflow — webserver                                                #
+  #                                                                     #
+  # `command: webserver` is passed to infrastructure/airflow/entrypoint.sh, #
+  # which runs the (idempotent) db migrate + admin user create before  #
+  # exec'ing the webserver — no separate init container needed.        #
   # ------------------------------------------------------------------ #
   airflow-webserver:
     build:
@@ -168,13 +136,19 @@ services:
     restart: unless-stopped
     user: airflow
     environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
       AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW_ADMIN_USERNAME: airflow
+      AIRFLOW_ADMIN_PASSWORD: airflow
     command: webserver
     ports:
       - "8080:8080"
@@ -184,8 +158,6 @@ services:
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
     depends_on:
-      airflow-common:
-        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -198,6 +170,9 @@ services:
 
   # ------------------------------------------------------------------ #
   # Airflow — scheduler                                                #
+  #                                                                     #
+  # `command: scheduler` waits (inside entrypoint.sh) for the          #
+  # webserver's migrate to complete before starting.                   #
   # ------------------------------------------------------------------ #
   airflow-scheduler:
     build:
@@ -207,8 +182,12 @@ services:
     restart: unless-stopped
     user: airflow
     environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: airflow
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://postgres:postgres@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
@@ -219,8 +198,6 @@ services:
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
     depends_on:
-      airflow-common:
-        condition: service_completed_successfully
       airflow-webserver:
         condition: service_healthy
     networks:

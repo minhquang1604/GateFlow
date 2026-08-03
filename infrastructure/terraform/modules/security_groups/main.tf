@@ -1,56 +1,22 @@
 ###########################################################################
-# Security groups — sg-alb, sg-app, sg-rds.
+# Security groups — sg-app, sg-rds.
 #
 # Layout:
-#   sg-alb  <- public ingress on alb_http_port / alb_https_port; egress to sg-app.
-#   sg-app  <- SSH from admin_cidr, app ports from sg-alb.
+#   sg-app  <- SSH from admin_cidr, app ports (mlflow/airflow/app/serving)
+#              opened directly to the internet (bridge-mode ECS tasks
+#              publish host ports; there is no ALB in this Free-Tier
+#              stack, so ingress happens straight to the container
+#              instances' public IPs).
 #   sg-rds  <- PostgreSQL from sg-app only.
 ###########################################################################
 
 # ---------------------------------------------------------------------- #
-# sg-alb — created even though the load balancer is Phase 5. Keeps the  #
-# network topology honest and avoids SG churn later.                     #
-# ---------------------------------------------------------------------- #
-resource "aws_security_group" "alb" {
-  name        = "${var.name_prefix}-sg-alb"
-  description = "ALB ingress for MLflow / Airflow / framework app / serving."
-  vpc_id      = var.vpc_id
-
-  ingress {
-    description = "HTTP from internet"
-    from_port   = var.alb_http_port
-    to_port     = var.alb_http_port
-    protocol    = "tcp"
-    cidr_blocks = [var.ingress_cidr_internet]
-  }
-
-  ingress {
-    description = "HTTPS from internet"
-    from_port   = var.alb_https_port
-    to_port     = var.alb_https_port
-    protocol    = "tcp"
-    cidr_blocks = [var.ingress_cidr_internet]
-  }
-
-  egress {
-    description = "Forward to app target group"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = [var.egress_cidr]
-  }
-
-  tags = {
-    Name = "${var.name_prefix}-sg-alb"
-  }
-}
-
-# ---------------------------------------------------------------------- #
-# sg-app — EC2 host running MLflow, Airflow, framework app, serving.    #
+# sg-app — ECS container instances running MLflow, Airflow, app,        #
+# serving (bridge network mode, hostPort-mapped).                        #
 # ---------------------------------------------------------------------- #
 resource "aws_security_group" "app" {
   name        = "${var.name_prefix}-sg-app"
-  description = "EC2 running MLflow, Airflow, framework app, and serving."
+  description = "ECS container instances running MLflow, Airflow, framework app, and serving."
   vpc_id      = var.vpc_id
 
   ingress {
@@ -62,35 +28,35 @@ resource "aws_security_group" "app" {
   }
 
   ingress {
-    description     = "MLflow UI from ALB"
-    from_port       = var.mlflow_port
-    to_port         = var.mlflow_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    description = "MLflow UI"
+    from_port   = var.mlflow_port
+    to_port     = var.mlflow_port
+    protocol    = "tcp"
+    cidr_blocks = [var.ingress_cidr_internet]
   }
 
   ingress {
-    description     = "Airflow UI from ALB"
-    from_port       = var.airflow_port
-    to_port         = var.airflow_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    description = "Airflow UI"
+    from_port   = var.airflow_port
+    to_port     = var.airflow_port
+    protocol    = "tcp"
+    cidr_blocks = [var.ingress_cidr_internet]
   }
 
   ingress {
-    description     = "Framework app from ALB"
-    from_port       = var.app_port
-    to_port         = var.app_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    description = "Framework app"
+    from_port   = var.app_port
+    to_port     = var.app_port
+    protocol    = "tcp"
+    cidr_blocks = [var.ingress_cidr_internet]
   }
 
   ingress {
-    description     = "ServingBridge from ALB"
-    from_port       = var.serving_port
-    to_port         = var.serving_port
-    protocol        = "tcp"
-    security_groups = [aws_security_group.alb.id]
+    description = "ServingBridge"
+    from_port   = var.serving_port
+    to_port     = var.serving_port
+    protocol    = "tcp"
+    cidr_blocks = [var.ingress_cidr_internet]
   }
 
   egress {

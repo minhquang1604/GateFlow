@@ -1,0 +1,106 @@
+name: Build, push, and deploy
+
+# Builds the two custom images (mlflow, and the shared "app" image
+# used by airflow-webserver/airflow-scheduler/app/serving), pushes
+# them to the ECR repositories created by Terraform
+# (infrastructure/terraform/modules/ecr), then forces each ECS
+# service onto the new image.
+#
+# Terraform never builds or pushes images (see
+# infrastructure/terraform/environments/prod/README.md) — this
+# workflow is the other half of the deploy story. On a fresh
+# `terraform apply`, ECS services are created pointed at `:latest`,
+# which doesn't exist in ECR yet; run this workflow (push to main, or
+# `gh workflow run deploy.yml`) to populate it.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infrastructure/mlflow/**"
+      - "infrastructure/airflow/**"
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  ECS_CLUSTER_NAME: ${{ vars.ECS_CLUSTER_NAME }}
+  ECR_MLFLOW_REPOSITORY: ${{ vars.ECR_MLFLOW_REPOSITORY }}
+  ECR_APP_REPOSITORY: ${{ vars.ECR_APP_REPOSITORY }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+    permissions:
+      contents: read
+      id-token: write # for OIDC, if configured instead of access keys
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+          # OIDC alternative (production-hardened, no long-lived keys):
+          # role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+
+      - name: Log in to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push mlflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: infrastructure/mlflow
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_MLFLOW_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_MLFLOW_REPOSITORY }}:latest
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/airflow/Dockerfile
+          push: true
+          tags: |
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_APP_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_APP_REPOSITORY }}:latest
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Force new deployment on each ECS service
+        run: |
+          for service in mlflow airflow-webserver airflow-scheduler app serving; do
+            echo "Deploying $service ..."
+            aws ecs update-service \
+              --cluster "${ECS_CLUSTER_NAME}" \
+              --service "$service" \
+              --force-new-deployment \
+              --output text
+          done
+
+      - name: Wait for services to stabilize
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${ECS_CLUSTER_NAME}" \
+            --services mlflow airflow-webserver airflow-scheduler app serving

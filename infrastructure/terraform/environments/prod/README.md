@@ -4,19 +4,24 @@ This directory is the **only** place where concrete resource arguments
 get passed. Every other file is a module that takes inputs and returns
 outputs.
 
-The orchestration in `main.tf` wires 8 modules together:
+The orchestration in `main.tf` wires 9 modules together:
 
 ```
 network → security_groups → rds ──┐
 s3 ──────────────────────────────┤
-ecr ──────────────────────────────┤
-ssm ──────────────────────────────┼──→ compute
-iam ← (s3, ecr, ssm) ─────────────┘
+ecr (repos only) ─────────────────┤
+ssm ──────────────────────────────┼──→ compute (ASG of N ECS container instances)
+iam (ec2 role + ecs task roles) ──┘         │
+                                             ▼
+                                            ecs (cluster, capacity provider,
+                                                 task defs, services)
 ```
 
-`compute` is the only module that depends on every other — it pulls
-the bucket name, ECR URIs, RDS endpoint, and SSM prefix from the rest
-and feeds them to the userdata script.
+`compute` creates the fleet of EC2 container instances (ECS-optimized
+AMI, fixed-size ASG). `ecs` creates the cluster/capacity
+provider/Cloud Map namespace/task definitions/services and pulls the
+RDS endpoint, S3 bucket name, ECR image URIs, and SSM parameter ARNs
+from the other modules to build each service's container definition.
 
 ## Quickstart
 
@@ -31,6 +36,11 @@ terraform validate
 terraform plan -var-file=terraform.tfvars
 terraform apply -var-file=terraform.tfvars
 ```
+
+**Then** populate the GitHub Actions repo secrets/variables (see the
+root `infrastructure/terraform/README.md`'s "Bootstrap order" section)
+and run `.github/workflows/deploy.yml` — ECS services are created
+pointed at ECR tags that don't exist until CI pushes them.
 
 ## Adding a new environment
 
@@ -58,35 +68,25 @@ modules share state).
 | `s3_mlflow_artifacts_bucket` | MLflow S3 bucket |
 | `s3_airflow_logs_bucket` | Airflow log bucket |
 | `s3_app_backups_bucket` | Backup bucket |
-| `ecr_repositories` | ECR URI map |
-| `ec2_public_ip` | Elastic IP |
-| `ec2_instance_id` | Instance ID |
-| `ssh_command` | `ssh -i ~/.ssh/<keyfile> ec2-user@<ip>` |
+| `ecr_repositories` | ECR URI map (`mlflow`, `app`) |
+| `ecs_cluster_name` | ECS cluster name (for `aws ecs` commands + CI repo variable) |
+| `ecs_service_names` | Map of service key -> ECS service name |
+| `ec2_instance_ids` | Current container instance IDs (list) |
+| `ec2_public_ips` | Current container instance public IPs (list; not stable across replacement) |
+| `ssh_commands` | One SSH command per current instance (empty list without a key pair) |
 | `ssm_parameters` | Map of parameter suffix → full name |
 | `vpc_id` | VPC ID |
 | `public_subnet_ids` | List of public subnet IDs |
 | `private_subnet_ids` | List of private subnet IDs |
+| `deploy_instructions` | What to do if ECS tasks are stuck pulling images |
 
-## State migration from the legacy flat layout
+## Key variables
 
-If you're upgrading from the previous flat layout (`*.tf` files at the
-repo root), the resource addresses change because everything moved into
-modules. The cleanest path is:
+| Variable | Default | Description |
+|---|---|---|
+| `instance_count` | `2` | Fixed ASG size; set to `1` for strict Free-Tier hours |
+| `mlflow_image_tag` / `app_image_tag` | `"latest"` | ECR tags ECS services deploy; CI pushes both `:latest` and `:<git-sha>` |
+| `admin_cidr` | `"0.0.0.0/0"` | Restrict to your IP to avoid exposing SSH publicly |
+| `db_password` | *(required, no default)* | Pass via `TF_VAR_db_password`; never commit |
 
-```bash
-# 1. From the OLD root:
-cd infrastructure/terraform
-terraform destroy -var-file=terraform.tfvars
-
-# 2. Copy your tfvars to the new location:
-cp terraform.tfvars environments/prod/terraform.tfvars
-
-# 3. From the NEW root:
-cd environments/prod
-terraform init
-terraform plan -var-file=terraform.tfvars
-terraform apply -var-file=terraform.tfvars
-```
-
-The old `terraform.tfstate` and `terraform.tfstate.backup` files become
-invalid and can be deleted (they're already in `.gitignore`).
+See `variables.tf` for the full list.

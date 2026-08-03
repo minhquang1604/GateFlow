@@ -1,12 +1,15 @@
 # MLflow tracking-server image for the MLOps Framework stack.
 #
 # The image runs `mlflow server` against:
-#   * PostgreSQL on the `postgres` service, database `mlflow`, as the
-#     backend store.
-#   * MinIO (S3-compatible) on the `minio` service, bucket
-#     `mlflow-artifacts`, as the default artifact root.
+#   * PostgreSQL as the backend store — the `postgres` service in local
+#     docker-compose, or RDS in AWS (MINIO_ENDPOINT unset -> real S3
+#     with IAM role credentials).
+#   * S3-compatible storage as the artifact root — MinIO locally, the
+#     `mlflow-artifacts` S3 bucket (created by the terraform `s3`
+#     module) in AWS.
 #
-# The entrypoint waits for both dependencies before starting.
+# The entrypoint waits for PostgreSQL, creates the backend-store
+# database if it doesn't exist yet, then starts the server.
 
 FROM python:3.11-slim
 

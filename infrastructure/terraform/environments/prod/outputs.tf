@@ -24,26 +24,36 @@ output "s3_app_backups_bucket" {
 }
 
 output "ecr_repositories" {
-  description = "ECR repository URIs created by this stack."
+  description = "ECR repository URIs created by this stack. Empty until CI/CD pushes images — see deploy_instructions."
   value = {
     mlflow = module.ecr.repository_urls["mlflow"]
     app    = module.ecr.repository_urls["app"]
   }
 }
 
-output "ec2_public_ip" {
-  description = "Elastic IP attached to the EC2 instance."
-  value       = module.compute.public_ip
+output "ecs_cluster_name" {
+  description = "ECS cluster name (pass to `aws ecs` CLI commands and to the GitHub Actions workflow's ECS_CLUSTER_NAME secret)."
+  value       = module.ecs.cluster_name
 }
 
-output "ec2_instance_id" {
-  description = "EC2 instance ID (for SSM Session Manager lookups)."
-  value       = module.compute.instance_id
+output "ecs_service_names" {
+  description = "Map of service key -> ECS service name."
+  value       = module.ecs.service_names
 }
 
-output "ssh_command" {
-  description = "Convenience SSH command (requires the SSH key at the default path)."
-  value       = module.compute.ssh_command
+output "ec2_instance_ids" {
+  description = "Current ECS container instance IDs (list; changes across instance replacement)."
+  value       = module.compute.instance_ids
+}
+
+output "ec2_public_ips" {
+  description = "Current public IPs of the ECS container instances (list; not stable across instance replacement — re-run `terraform output` after any replacement)."
+  value       = module.compute.instance_public_ips
+}
+
+output "ssh_commands" {
+  description = "Convenience SSH commands, one per current container instance (empty list when no key pair)."
+  value       = module.compute.ssh_commands
 }
 
 output "ssm_parameters" {
@@ -58,7 +68,7 @@ output "ssm_parameters" {
 }
 
 output "ssm_airflow_admin_password_value" {
-  description = "Plaintext Airflow admin password (sensitive — only the first-boot create-user script needs it; the value lives in SSM for EC2 to pull)."
+  description = "Plaintext Airflow admin password (sensitive — for the operator to log in with; ECS tasks read it directly from SSM via the `secrets` block, not from this output)."
   value       = module.ssm.generated_secret_values["airflow/admin-password"]
   sensitive   = true
 }
@@ -76,4 +86,19 @@ output "public_subnet_ids" {
 output "private_subnet_ids" {
   description = "Private subnet IDs created by this stack."
   value       = module.network.private_subnet_ids
+}
+
+output "deploy_instructions" {
+  description = "What to do after `terraform apply` if ECS tasks are stuck in CannotPullContainerError."
+  value       = <<-EOT
+    ECS services are created pointed at ECR tags '${var.mlflow_image_tag}' /
+    '${var.app_image_tag}', but Terraform never builds or pushes images —
+    that is .github/workflows/deploy.yml's job. If this is the first
+    apply, either:
+      1. Push to main (workflow runs automatically on infra/app changes), or
+      2. Trigger it manually: gh workflow run deploy.yml
+    Then re-check task status:
+      aws ecs describe-services --cluster ${module.ecs.cluster_name} \
+        --services ${join(" ", values(module.ecs.service_names))}
+  EOT
 }

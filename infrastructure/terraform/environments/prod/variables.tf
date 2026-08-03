@@ -44,6 +44,24 @@ variable "ec2_instance_type" {
   default     = "t3.micro"
 }
 
+variable "instance_count" {
+  description = <<-EOT
+    Number of ECS container instances (t3.micro each) to run. Default
+    2 so the full stack (MLflow, Airflow webserver + scheduler, app,
+    serving) fits across the fleet's combined ~2 GB RAM rather than
+    competing for one instance's 1 GB.
+
+    Cost note: 750 EC2 instance-hours/month are Free Tier, shared
+    across ALL running instances. Two t3.micro instances running 24/7
+    for a full month is ~1460 instance-hours — about 710 hours over
+    the Free Tier pool, or roughly $7-8/month at on-demand pricing.
+    Set this to 1 to stay strictly inside the Free Tier; not every
+    service may be schedulable on a single 1 GB instance in that case.
+  EOT
+  type        = number
+  default     = 2
+}
+
 variable "ec2_ebs_size_gb" {
   description = "Root EBS volume size in GB. Free Tier includes 30 GB/month of gp2/gp3 storage."
   type        = number
@@ -78,7 +96,7 @@ variable "db_password" {
 }
 
 variable "db_name" {
-  description = "Initial database created by RDS. The other two databases (mlflow, airflow) are created manually after first boot (see README)."
+  description = "Initial database created by RDS for the framework app/serving tasks. The mlflow and airflow databases are created automatically on first container start by their own entrypoints (idempotent CREATE DATABASE IF NOT EXISTS)."
   type        = string
   default     = "mlops_framework"
 }
@@ -95,15 +113,27 @@ variable "db_allocated_storage_gb" {
   default     = 20
 }
 
-variable "auto_deploy" {
+variable "mlflow_image_tag" {
   description = <<-EOT
-    If true, the EC2 user data script will pull the public Apache Airflow
-    image from Docker Hub, run `docker compose up -d`, and execute the
-    one-time Airflow DB migrate + admin user create. The operator only
-    needs to SSH in to verify — no manual deploy steps required.
-    Set false to keep the stack stopped until an operator runs docker
-    compose manually (useful for debugging boot problems).
+    Tag of the mlflow image (built from infrastructure/mlflow/Dockerfile)
+    to deploy from ECR. Terraform never builds or pushes this image —
+    .github/workflows/deploy.yml does, tagging both `:latest` and
+    `:<git-sha>`. `terraform apply` creates the ECS service pointed at
+    this tag; if the tag doesn't exist in ECR yet, the task shows
+    CannotPullContainerError until CI runs (see the root README for
+    the expected bootstrap order).
   EOT
-  type        = bool
-  default     = true
+  type        = string
+  default     = "latest"
+}
+
+variable "app_image_tag" {
+  description = <<-EOT
+    Tag of the shared framework image (built from
+    infrastructure/airflow/Dockerfile; used by airflow-webserver,
+    airflow-scheduler, app, and serving) to deploy from ECR. Same
+    build/push contract as `mlflow_image_tag`.
+  EOT
+  type        = string
+  default     = "latest"
 }

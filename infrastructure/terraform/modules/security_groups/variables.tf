@@ -30,18 +30,6 @@ variable "egress_cidr" {
   default     = "0.0.0.0/0"
 }
 
-variable "alb_http_port" {
-  description = "HTTP port exposed by the ALB sg."
-  type        = number
-  default     = 80
-}
-
-variable "alb_https_port" {
-  description = "HTTPS port exposed by the ALB sg."
-  type        = number
-  default     = 443
-}
-
 variable "ssh_port" {
   description = "SSH port exposed by the app sg."
   type        = number

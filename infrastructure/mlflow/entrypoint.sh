@@ -52,6 +52,32 @@ fi
 
 export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
 
+# ---------------------------------------------------------------------- #
+# Ensure the backend-store database exists.                              #
+#                                                                          #
+# RDS only pre-creates the framework's own initial database — MLflow's  #
+# backend store database has to be created on first boot. Idempotent:   #
+# safe to run on every container start (ECS restarts this container on  #
+# every deploy / task replacement).                                      #
+# ---------------------------------------------------------------------- #
+python3 - <<PYEOF
+import psycopg
+
+conn = psycopg.connect(
+    host="${POSTGRES_HOST}",
+    port=${POSTGRES_PORT},
+    user="${POSTGRES_USER}",
+    password="${POSTGRES_PASSWORD}",
+    dbname="postgres",
+    autocommit=True,
+)
+with conn.cursor() as cur:
+    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", ("${POSTGRES_DB}",))
+    if cur.fetchone() is None:
+        cur.execute('CREATE DATABASE "${POSTGRES_DB}"')
+conn.close()
+PYEOF
+
 BACKEND_URI="postgresql+psycopg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}"
 ARTIFACT_ROOT="s3://${MLFLOW_BUCKET}"
 

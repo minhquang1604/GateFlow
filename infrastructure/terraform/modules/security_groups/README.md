@@ -1,10 +1,13 @@
 # security_groups module
 
-Creates the three security groups used by the stack:
+Creates the two security groups used by the stack:
 
-- `sg-alb` — future ALB ingress
-- `sg-app` — EC2 instance; SSH from `admin_cidr`, app ports from sg-alb
-- `sg-rds` — RDS; only the app SG may connect
+- `sg-app` — ECS container instances (bridge network mode); SSH from
+  `admin_cidr`, app ports (mlflow/airflow/app/serving) opened directly
+  to the internet. There is no ALB in this Free-Tier stack, so ingress
+  goes straight to each container instance's public IP on the
+  host-mapped port.
+- `sg-rds` — RDS; only the app SG may connect.
 
 ## Inputs
 
@@ -13,10 +16,8 @@ Creates the three security groups used by the stack:
 | `name_prefix` | `string` | required | e.g. `mlops-framework-prod` |
 | `vpc_id` | `string` | required | VPC ID |
 | `admin_cidr` | `string` | `"0.0.0.0/0"` | SSH source CIDR |
-| `ingress_cidr_internet` | `string` | `"0.0.0.0/0"` | Public ingress CIDR |
+| `ingress_cidr_internet` | `string` | `"0.0.0.0/0"` | Public ingress CIDR for app ports |
 | `egress_cidr` | `string` | `"0.0.0.0/0"` | Egress CIDR |
-| `alb_http_port` | `number` | `80` | |
-| `alb_https_port` | `number` | `443` | |
 | `ssh_port` | `number` | `22` | |
 | `mlflow_port` | `number` | `5000` | |
 | `airflow_port` | `number` | `8080` | |
@@ -28,7 +29,6 @@ Creates the three security groups used by the stack:
 
 | Name | Description |
 |---|---|
-| `alb_security_group_id` | |
 | `app_security_group_id` | |
 | `rds_security_group_id` | |
 

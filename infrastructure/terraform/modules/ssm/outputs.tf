@@ -1,6 +1,6 @@
 locals {
-  # Helper: build the parameter_names map for output. Always includes
-  # db/password if it was created.
+  # Helper: build the parameter_names / parameter_arns maps. Always
+  # includes db/password if it was created.
   parameter_names = merge(
     var.db_password != null ? {
       (var.db_password_name_suffix) = aws_ssm_parameter.db_password[0].name
@@ -9,11 +9,25 @@ locals {
       for k, p in aws_ssm_parameter.generated : k => p.name
     }
   )
+
+  parameter_arns = merge(
+    var.db_password != null ? {
+      (var.db_password_name_suffix) = aws_ssm_parameter.db_password[0].arn
+    } : {},
+    {
+      for k, p in aws_ssm_parameter.generated : k => p.arn
+    }
+  )
 }
 
 output "parameter_names" {
   description = "Map of secret suffix -> full SSM parameter name."
   value       = local.parameter_names
+}
+
+output "parameter_arns" {
+  description = "Map of secret suffix -> full SSM parameter ARN (pass to ECS task definition `secrets` blocks)."
+  value       = local.parameter_arns
 }
 
 output "generated_secret_values" {

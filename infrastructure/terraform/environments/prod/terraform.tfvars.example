@@ -11,9 +11,14 @@ vpc_cidr = "10.0.0.0/16"
 # Restrict SSH to your own IP, e.g. "203.0.113.7/32".
 admin_cidr = "0.0.0.0/0"
 
-# EC2
+# EC2 / ECS container instances
 ec2_instance_type = "t3.micro"
-ec2_ebs_size_gb   = 20
+# 2 instances (default) fit the full stack across ~2 GB combined RAM.
+# Set to 1 to stay strictly inside the 750 EC2 instance-hour/month
+# Free Tier pool at the cost of some services being unschedulable —
+# see the `instance_count` description in variables.tf.
+instance_count  = 2
+ec2_ebs_size_gb = 20
 
 # Paste the public half of `ssh-keygen -t ed25519 -f ~/.ssh/mlops-framework`.
 ssh_public_key = "ssh-ed25519 AAAA... user@host"
@@ -26,9 +31,11 @@ db_name                 = "mlops_framework"
 db_instance_class       = "db.t3.micro"
 db_allocated_storage_gb = 20
 
-# Auto-deploy stack on first boot. When true (default), the EC2 user
-# data script pulls the public Apache Airflow + MLflow images from
-# Docker Hub / GHCR, runs `docker compose up -d`, migrates the
-# Airflow DB, and creates the admin user. Set false to start the
-# instance without containers (debug boot problems first).
-auto_deploy = true
+# ECS image tags. Terraform only creates the ECR repositories and
+# points ECS services at these tags — it never builds or pushes
+# images. .github/workflows/deploy.yml builds
+# infrastructure/mlflow/Dockerfile and infrastructure/airflow/Dockerfile
+# and pushes `:latest` + `:<git-sha>` on every push to main. Leave
+# "latest" unless you want to pin a specific tag.
+mlflow_image_tag = "latest"
+app_image_tag    = "latest"

@@ -49,3 +49,10 @@ WORKDIR /opt/framework
 
 # Make sure both airflow modules and the framework are importable.
 ENV PYTHONPATH=/opt/airflow/dags:/opt/framework/src:${PYTHONPATH:-}
+
+USER root
+COPY infrastructure/airflow/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+USER airflow
+
+ENTRYPOINT ["/entrypoint.sh"]

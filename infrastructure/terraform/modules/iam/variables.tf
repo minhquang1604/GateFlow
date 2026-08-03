@@ -1,21 +1,17 @@
 variable "name_prefix" {
-  description = "Prefix used to name the IAM role, profile, and inline policies."
+  description = "Prefix used to name IAM roles, profiles, and inline policies."
   type        = string
 }
 
-variable "ecr_repository_arns" {
-  description = "List of ECR repository ARNs the role can pull from."
-  type        = list(string)
-}
-
 variable "s3_bucket_arns" {
-  description = "List of S3 bucket ARNs the role can read/write."
+  description = "List of S3 bucket ARNs the ECS task role can read/write (e.g. MLflow artifacts)."
   type        = list(string)
 }
 
 variable "ssm_parameter_arn_prefix" {
   description = <<-EOT
-    ARN prefix for SSM parameters the role can read. Format:
+    ARN prefix for SSM parameters the ECS task execution role can read
+    (to resolve container `secrets` blocks). Format:
     `arn:aws:ssm:<region>:<account>:parameter/<prefix>/*`.
   EOT
   type        = string
@@ -32,7 +28,7 @@ variable "account_id" {
 }
 
 variable "s3_actions" {
-  description = "S3 actions allowed on the bucket ARNs."
+  description = "S3 actions allowed on the bucket ARNs (ECS task role)."
   type        = list(string)
   default = [
     "s3:GetObject",
@@ -44,21 +40,8 @@ variable "s3_actions" {
   ]
 }
 
-variable "ecr_actions" {
-  description = "ECR actions allowed on the repository ARNs."
-  type        = list(string)
-  default = [
-    "ecr:GetAuthorizationToken",
-    "ecr:BatchCheckLayerAvailability",
-    "ecr:GetDownloadUrlForLayer",
-    "ecr:BatchGetImage",
-    "ecr:DescribeRepositories",
-    "ecr:ListImages",
-  ]
-}
-
 variable "ssm_actions" {
-  description = "SSM actions allowed on the parameter ARN prefix."
+  description = "SSM actions allowed on the parameter ARN prefix (ECS task execution role)."
   type        = list(string)
   default = [
     "ssm:GetParameter",
@@ -82,6 +65,18 @@ variable "kms_key_ssm_alias" {
   default     = "alias/aws/ssm"
 }
 
+variable "ecs_instance_policy_arn" {
+  description = "AWS-managed policy ARN letting the ECS agent register the EC2 instance with the cluster."
+  type        = string
+  default     = "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+}
+
+variable "ecs_task_execution_policy_arn" {
+  description = "AWS-managed policy ARN for the ECS task execution role (ECR pull, CloudWatch Logs write)."
+  type        = string
+  default     = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
 variable "cw_agent_policy_arn" {
   description = "AWS-managed policy ARN for CloudWatch agent (publish metrics, write logs)."
   type        = string
@@ -95,31 +90,13 @@ variable "ssm_session_policy_arn" {
 }
 
 variable "enable_cw_agent" {
-  description = "Whether to attach the CloudWatch agent managed policy."
+  description = "Whether to attach the CloudWatch agent managed policy to the EC2 instance role."
   type        = bool
   default     = true
 }
 
 variable "enable_ssm_session" {
-  description = "Whether to attach the SSM Session Manager managed policy."
+  description = "Whether to attach the SSM Session Manager managed policy to the EC2 instance role."
   type        = bool
   default     = true
-}
-
-variable "ecr_resource_arns" {
-  description = "Deprecated: alias for `ecr_repository_arns`."
-  type        = list(string)
-  default     = null
-}
-
-variable "s3_resource_arns" {
-  description = "Deprecated: alias for `s3_bucket_arns`."
-  type        = list(string)
-  default     = null
-}
-
-# Backward-compat local: prefer the new var names, fall back to old names.
-locals {
-  ecr_repository_arns_effective = coalesce(var.ecr_repository_arns, var.ecr_resource_arns)
-  s3_bucket_arns_effective      = coalesce(var.s3_bucket_arns, var.s3_resource_arns)
 }

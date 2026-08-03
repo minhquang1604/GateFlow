@@ -28,6 +28,7 @@ Each generated secret entry accepts:
 | Name | Description |
 |---|---|
 | `parameter_names` | Map of suffix -> full SSM parameter name |
+| `parameter_arns` | Map of suffix -> full SSM parameter ARN (pass to ECS task definition `secrets` blocks) |
 | `generated_secret_values` | Map of suffix -> plaintext (sensitive) |
 
 ## Example
