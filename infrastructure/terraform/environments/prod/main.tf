@@ -178,19 +178,22 @@ module "ecs" {
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
 
-  # Memory budget: a t3.micro registers ~916 MiB of schedulable memory
-  # (1024 MiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~1832 MiB. The 5 services below sum to 1420 MiB
+  # Memory budget: a t3.small registers ~1913 MiB of schedulable
+  # memory (2 GiB minus ECS agent/OS reserve). With instance_count = 2,
+  # total capacity is ~3826 MiB. The 5 services below sum to 1700 MiB
   # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1620 MiB total —
-  # leaves enough slack for the "spread" placement strategy to find a
-  # valid split across the fleet. Raising any of these without
-  # checking the total against 1832 MiB (or reducing instance_count)
-  # will cause tasks to get stuck PENDING forever — ECS won't
-  # partially schedule a task it can't fully fit. mlflow needs 400
-  # (not 300) even at --workers 1 — gunicorn + mlflow + sqlalchemy +
-  # boto3's combined resident footprint was measured OOM-killing
-  # (exit 137) repeatedly at 300 MiB in production.
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~1900 MiB total —
+  # comfortable headroom, and the whole stack even fits on a single
+  # instance if instance_count is dropped to 1. Raising any of these
+  # without checking the total against the per-instance 1913 MiB will
+  # cause tasks to get stuck PENDING forever — ECS won't partially
+  # schedule a task it can't fully fit.
+  #
+  # Two values were raised after observing production failures:
+  # mlflow needs 400 (not 300) even at --workers 1 — gunicorn +
+  # mlflow + sqlalchemy + boto3's combined resident footprint
+  # OOM-killed (exit 137) repeatedly at 300 MiB. airflow-webserver
+  # needs 600 MiB / 512 CPU units — see its own comment below.
   services = {
     mlflow = {
       image          = local.mlflow_image
@@ -226,8 +229,14 @@ module "ecs" {
     airflow-webserver = {
       image          = local.airflow_image
       container_port = 8080
-      memory         = 320
-      command        = ["webserver"]
+      # 600 MiB / 512 CPU units: Airflow's webserver imports a heavy
+      # Flask/FAB stack at boot. At 320 MiB and 128 CPU units it was
+      # too slow to answer Airflow's own gunicorn-master health probe
+      # within the 120s default, and got killed in a loop with
+      # "No response from gunicorn master within 120 seconds".
+      memory  = 600
+      cpu     = 512
+      command = ["webserver"]
       environment = {
         POSTGRES_HOST                     = module.rds.address
         POSTGRES_PORT                     = tostring(module.rds.port)
@@ -238,10 +247,14 @@ module "ecs" {
         AIRFLOW__API__AUTH_BACKEND        = "airflow.api.auth.backend.basic_auth"
         AIRFLOW__WEBSERVER__EXPOSE_CONFIG = "true"
         AIRFLOW_ADMIN_USERNAME            = "admin"
-        # Default is 4 gunicorn workers, which OOM-kills on this
-        # task's 400 MiB memory reservation. 1 is enough for a
+        # Default is 4 gunicorn workers, which OOM-kills at this
+        # task's memory reservation. 1 is enough for a
         # single-user/demo Airflow UI.
         AIRFLOW__WEBSERVER__WORKERS = "1"
+        # Give the single worker room to finish importing before
+        # Airflow's monitor declares the master unresponsive.
+        AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT = "300"
+        AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT = "300"
       }
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
@@ -253,7 +266,10 @@ module "ecs" {
         "CMD-SHELL",
         "curl -fsS -u admin:$AIRFLOW_ADMIN_PASSWORD http://localhost:8080/health | grep -q healthy",
       ]
-      health_check_start_period = 90
+      # Matches the extended gunicorn master timeout above — the
+      # webserver needs the full import window before it can answer
+      # /health at all.
+      health_check_start_period = 300
     }
 
     airflow-scheduler = {
