@@ -14,13 +14,14 @@ locals {
   account_id               = data.aws_caller_identity.current.account_id
   service_discovery_domain = "${local.name_prefix}.local"
 
-  # Every ECS task in this stack shares one image built from
-  # infrastructure/airflow/Dockerfile (mirrors docker-compose, where
-  # airflow-webserver/scheduler/app/serving all build from that same
-  # Dockerfile with different `command` overrides). mlflow gets its
-  # own image/repo because it has a distinct Dockerfile.
-  app_image    = "${module.ecr.repository_urls["app"]}:${var.app_image_tag}"
-  mlflow_image = "${module.ecr.repository_urls["mlflow"]}:${var.mlflow_image_tag}"
+  # Three images, not one shared image: airflow-webserver/scheduler
+  # build from infrastructure/airflow/Dockerfile (no framework
+  # install — SQLAlchemy 1.4/2.0 conflict, see that Dockerfile's
+  # header); app/serving build from infrastructure/app/Dockerfile
+  # (framework installed); mlflow has its own distinct Dockerfile.
+  app_image     = "${module.ecr.repository_urls["app"]}:${var.app_image_tag}"
+  airflow_image = "${module.ecr.repository_urls["airflow"]}:${var.airflow_image_tag}"
+  mlflow_image  = "${module.ecr.repository_urls["mlflow"]}:${var.mlflow_image_tag}"
 }
 
 # ---------------------------------------------------------------------- #
@@ -57,16 +58,23 @@ module "s3" {
 # ecr                                                                     #
 #                                                                          #
 # Repos only — Terraform never builds or pushes images. CI/CD             #
-# (.github/workflows/deploy.yml) builds infrastructure/mlflow and         #
-# infrastructure/airflow and pushes to these repos; ECS services below    #
-# reference the resulting URIs by tag.                                    #
+# (.github/workflows/deploy.yml) builds infrastructure/mlflow,           #
+# infrastructure/airflow, and infrastructure/app, and pushes to these     #
+# repos; ECS services below reference the resulting URIs by tag.         #
+#                                                                         #
+# Two separate images for the framework side (airflow vs app) — not one  #
+# shared image — because Airflow 2.10.4 pins SQLAlchemy 1.4.x internally #
+# and cannot tolerate the framework's sqlalchemy>=2.0.0 requirement in   #
+# the same Python environment. See infrastructure/airflow/Dockerfile's   #
+# header comment for the full explanation.                              #
 # ---------------------------------------------------------------------- #
 module "ecr" {
   source       = "../../modules/ecr"
   project_name = var.project_name
   repositories = {
-    mlflow = { purpose = "MLflow tracking server image" }
-    app    = { purpose = "Framework image: airflow webserver/scheduler + app + serving" }
+    mlflow  = { purpose = "MLflow tracking server image" }
+    airflow = { purpose = "Airflow webserver/scheduler image (no framework install)" }
+    app     = { purpose = "Framework image: app + serving" }
   }
 }
 
@@ -216,7 +224,7 @@ module "ecs" {
     # AIRFLOW__DATABASE__SQL_ALCHEMY_CONN itself from the POSTGRES_*
     # vars below, same as mlflow's entrypoint does for its own DB.
     airflow-webserver = {
-      image          = local.app_image
+      image          = local.airflow_image
       container_port = 8080
       memory         = 320
       command        = ["webserver"]
@@ -249,7 +257,7 @@ module "ecs" {
     }
 
     airflow-scheduler = {
-      image          = local.app_image
+      image          = local.airflow_image
       container_port = 8793
       memory         = 250
       command        = ["scheduler"]
@@ -260,6 +268,11 @@ module "ecs" {
         POSTGRES_DB                  = "airflow"
         AIRFLOW__CORE__EXECUTOR      = "LocalExecutor"
         AIRFLOW__CORE__LOAD_EXAMPLES = "false"
+        # LocalExecutor runs DAG tasks as subprocesses of the
+        # scheduler (not the webserver), so this is where
+        # mlops_training_pipeline.py's HTTP calls need these.
+        APP_BASE_URL       = "http://app:8000"
+        SERVING_BRIDGE_URL = "http://serving:8001"
       }
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
@@ -273,6 +286,8 @@ module "ecs" {
     # own docker-compose.yml uses, just assembled in the command
     # instead of docker-compose's `environment:` block since ECS
     # `secrets` only injects individual values, not composed URLs.
+    # Built from infrastructure/app/Dockerfile — a separate image
+    # from Airflow's, see local.airflow_image's comment above.
     app = {
       image          = local.app_image
       container_port = 8000

@@ -56,10 +56,12 @@ class TestFullAppBoot:
         # Static assets
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
-        # OpenAPI exposes 15 distinct /api paths
+        # OpenAPI exposes 17 distinct /api paths (15 public + 2
+        # internal — the Airflow DAG's HTTP calls, see
+        # mlops_framework.api.routers.internal).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 15, f"Expected 15, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 17, f"Expected 17, got {len(api_paths)}: {api_paths}"
 
     def test_app_without_ui(self, in_memory_app):
         # Build a second app with UI disabled

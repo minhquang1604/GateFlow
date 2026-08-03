@@ -26,8 +26,9 @@ output "s3_app_backups_bucket" {
 output "ecr_repositories" {
   description = "ECR repository URIs created by this stack. Empty until CI/CD pushes images — see deploy_instructions."
   value = {
-    mlflow = module.ecr.repository_urls["mlflow"]
-    app    = module.ecr.repository_urls["app"]
+    mlflow  = module.ecr.repository_urls["mlflow"]
+    airflow = module.ecr.repository_urls["airflow"]
+    app     = module.ecr.repository_urls["app"]
   }
 }
 
@@ -92,7 +93,8 @@ output "deploy_instructions" {
   description = "What to do after `terraform apply` if ECS tasks are stuck in CannotPullContainerError."
   value       = <<-EOT
     ECS services are created pointed at ECR tags '${var.mlflow_image_tag}' /
-    '${var.app_image_tag}', but Terraform never builds or pushes images —
+    '${var.airflow_image_tag}' / '${var.app_image_tag}', but Terraform
+    never builds or pushes images —
     that is .github/workflows/deploy.yml's job. If this is the first
     apply, either:
       1. Push to main (workflow runs automatically on infra/app changes), or

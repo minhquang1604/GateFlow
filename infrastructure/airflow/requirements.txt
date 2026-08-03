@@ -1,9 +1,9 @@
 # Runtime dependencies installed inside the Airflow image.
 #
 # Notes:
-#   * The framework itself is installed in editable mode via Docker
-#     build context (`pip install -e .`) at the project root, so it
-#     is NOT listed here.
+#   * The framework itself is deliberately NOT installed in this
+#     image — see infrastructure/airflow/Dockerfile's header comment
+#     for why (SQLAlchemy 1.4 vs 2.0 conflict with Airflow itself).
 #   * Versions are pinned for reproducibility; bump deliberately.
 
 # Database access (matches the framework's runtime).

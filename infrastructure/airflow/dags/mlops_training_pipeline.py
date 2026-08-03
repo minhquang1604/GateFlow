@@ -1,22 +1,37 @@
 """Real Airflow DAG for the MLOps Framework.
 
 This DAG is the production counterpart of the framework's
-``LocalDockerOrchestrator``. The framework itself never imports
-``airflow``; this file is the only place the two systems meet.
+``LocalDockerOrchestrator``. It talks to the framework over HTTP
+(``APP_BASE_URL``), never by importing ``mlops_framework`` directly.
+
+Why HTTP and not a direct import: Airflow 2.10.4 pins
+``SQLAlchemy==1.4.x`` internally, and its own ORM models are written
+in a style SQLAlchemy 2.0 rejects (``MappedAnnotationError``). The
+framework's own models require ``sqlalchemy>=2.0.0``
+(``Mapped``/``mapped_column``). The two cannot coexist in one Python
+environment, so the Airflow image
+(``infrastructure/airflow/Dockerfile``) does not install the
+framework package at all — this DAG is the only place the two
+systems meet, and it meets over the app's HTTP API
+(``mlops_framework.api.routers.internal``), not in-process.
 
 Flow
 ----
-1. ``resolve_context`` — opens a framework session, fetches the
-   :class:`TrainingRun` + :class:`DatasetVersion` referenced by
-   ``dag_run.conf``, and returns the data XCom tasks need.
+1. ``resolve_context`` — calls ``GET /api/internal/training-runs/{id}/context``
+   to fetch the TrainingRun + DatasetVersion this run needs, and
+   returns the data XCom tasks need.
 2. ``train`` — invokes the pipeline registered as
-   ``conf['pipeline_id']`` (a ``module:callable`` identifier). Logs
-   params + metrics to MLflow when a tracker run id is supplied.
-3. ``register_and_promote`` — creates a :class:`ModelVersion` in the
-   CANDIDATE state, applies the promotion policy, and (on approval)
-   publishes an HTTP event to the ServingBridge. The framework's own
-   ``TrainingService`` already wrote the TrainingRun row; this task
-   only adds the model side.
+   ``conf['pipeline_id']`` (a ``module:callable`` identifier). Case
+   study pipeline modules (e.g. ``case_studies.fraud_detection.
+   pipelines``) have no framework dependency, so they import fine in
+   this environment. Logs params + metrics to MLflow directly when a
+   tracker run id is supplied.
+3. ``register_and_promote`` — calls
+   ``POST /api/internal/models/{model_name}/promote`` to create a
+   CANDIDATE :class:`ModelVersion`, apply the promotion policy, and
+   (on approval) publish an HTTP event to the ServingBridge. The
+   framework's own ``TrainingService`` already wrote the TrainingRun
+   row; this task only adds the model side.
 
 The DAG runs on Airflow 2.x. It is intentionally minimal — there is
 no SLA, no retries, and no scheduling. The framework controls all
@@ -25,7 +40,7 @@ governance; Airflow is just the executor.
 
 from __future__ import annotations
 
-import json
+import os
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,6 +54,12 @@ DEFAULT_ARGS = {
     "retry_delay": timedelta(minutes=1),
     "execution_timeout": timedelta(minutes=30),
 }
+
+# ECS Service Connect discovery name (bare hostname, no namespace
+# suffix) — see infrastructure/terraform/environments/prod/main.tf.
+# Falls back to the docker-compose service name for local dev.
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://app:8000")
+SERVING_BRIDGE_URL = os.environ.get("SERVING_BRIDGE_URL", "http://serving:8001")
 
 
 # ---------------------------------------------------------------------- #
@@ -64,44 +85,22 @@ def _import_pipeline(pipeline_id: str):
 
 
 def resolve_context(**context: Any) -> dict[str, Any]:
-    """Pull the framework-side TrainingRun + DatasetVersion.
+    """Fetch the framework-side TrainingRun + DatasetVersion over HTTP.
 
-    Reads ``training_run_id`` from ``dag_run.conf`` and surfaces a
-    plain dict through XCom. Anything that talks to the framework's
-    database goes through this task so the others stay pure-Python.
+    Reads ``training_run_id`` from ``dag_run.conf`` and surfaces the
+    app's response through XCom.
     """
-    from sqlalchemy.orm import Session
+    import httpx
 
-    from mlops_framework.config.settings import get_settings
-    from mlops_framework.database.session import DatabaseManager
-    from mlops_framework.database.models.dataset_version import DatasetVersion
-    from mlops_framework.database.models.training_run import TrainingRun
+    conf = (context.get("dag_run") or {}).conf or {}
+    run_id = int(conf["training_run_id"])
 
-    settings = get_settings()
-    db = DatabaseManager(database_url=settings.database_url)
-    session: Session = db.session_factory()
-    try:
-        conf = (context.get("dag_run") or {}).conf or {}
-        run_id = int(conf["training_run_id"])
-        run = session.get(TrainingRun, run_id)
-        if run is None:
-            raise RuntimeError(f"TrainingRun {run_id} not found")
-        dataset_version = session.get(DatasetVersion, run.dataset_version_id)
-        if dataset_version is None:
-            raise RuntimeError(
-                f"DatasetVersion {run.dataset_version_id} not found"
-            )
-        payload = {
-            "training_run_id": run.id,
-            "dataset_version_id": dataset_version.id,
-            "storage_uri": dataset_version.storage_uri,
-            "row_count": dataset_version.row_count,
-            "pipeline_id": run.pipeline_id,
-            "metadata": json.loads(run.metadata_json or "{}"),
-        }
-        return payload
-    finally:
-        session.close()
+    response = httpx.get(
+        f"{APP_BASE_URL}/api/internal/training-runs/{run_id}/context",
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def train(**context: Any) -> dict[str, Any]:
@@ -146,112 +145,56 @@ def train(**context: Any) -> dict[str, Any]:
 def register_and_promote(**context: Any) -> dict[str, Any]:
     """Promote the freshly trained model and reload the serving bridge.
 
-    The promotion policy lives in framework code — Airflow just applies
-    the framework's verdict. On approval we publish an
-    :class:`HttpEventPublisher` payload so the bridge reloads.
+    The promotion policy lives in framework code (called over HTTP,
+    see ``mlops_framework.api.routers.internal.promote_model``) —
+    Airflow just applies the framework's verdict and, on approval,
+    publishes an event so the bridge reloads.
     """
     import httpx
 
-    from mlops_framework.config.settings import get_settings
-    from mlops_framework.database.session import DatabaseManager
-    from mlops_framework.database.models.model import Model as ModelRow
-    from mlops_framework.database.models.model_version import (
-        ModelState,
-        ModelVersion,
-    )
-    from mlops_framework.database.models.training_run import TrainingRun
-    from mlops_framework.exceptions import ModelNotFoundError
-    from mlops_framework.governance.promotion import (
-        ModelPromotionPolicy,
-        PromotionConfig,
-        PromotionContext,
-    )
-    from mlops_framework.model.manager import ModelManager
+    ti = context["ti"]
+    train_payload = ti.xcom_pull(task_ids="train")
+    ctx_payload = ti.xcom_pull(task_ids="resolve_context")
+    if not train_payload or not ctx_payload:
+        raise RuntimeError("missing XCom from upstream tasks")
 
-    settings = get_settings()
-    db = DatabaseManager(database_url=settings.database_url)
-    session = db.session_factory()
-    try:
-        ti = context["ti"]
-        train_payload = ti.xcom_pull(task_ids="train")
-        ctx_payload = ti.xcom_pull(task_ids="resolve_context")
-        if not train_payload or not ctx_payload:
-            raise RuntimeError("missing XCom from upstream tasks")
+    conf = (context.get("dag_run") or {}).conf or {}
+    pipeline_meta = ctx_payload.get("metadata") or {}
+    model_name = pipeline_meta.get("model_name", "fraud-xgboost")
+    tracker_run_id = pipeline_meta.get("tracker_run_id")
 
-        run = session.get(TrainingRun, ctx_payload["training_run_id"])
-        if run is None:
-            raise RuntimeError(
-                f"TrainingRun {ctx_payload['training_run_id']} not found"
+    response = httpx.post(
+        f"{APP_BASE_URL}/api/internal/models/{model_name}/promote",
+        json={
+            "dataset_version_id": ctx_payload["dataset_version_id"],
+            "training_run_id": ctx_payload["training_run_id"],
+            "mlflow_run_id": tracker_run_id,
+            "metrics": train_payload["metrics"],
+            "artifact_uri": train_payload["artifact_path"],
+            "min_f1": pipeline_meta.get("min_f1", 0.0),
+        },
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    result = response.json()
+
+    if result["promoted"] and SERVING_BRIDGE_URL:
+        try:
+            httpx.post(
+                f"{SERVING_BRIDGE_URL}/internal/model/reload",
+                json={
+                    "model_name": model_name,
+                    "model_version": result["model_version"],
+                    "artifact_uri": train_payload["artifact_path"],
+                    "metrics": train_payload["metrics"],
+                    "model_version_id": result["model_version_id"],
+                },
+                timeout=10.0,
             )
-        pipeline_meta = json.loads(run.metadata_json or "{}")
-        model_name = pipeline_meta.get("model_name", "fraud-xgboost")
-        tracker_run_id = pipeline_meta.get("tracker_run_id")
+        except Exception as exc:  # pragma: no cover - env dependent
+            print(f"[airflow] reload POST failed: {exc}")
 
-        # The model row should already exist (created by the demo /
-        # app code). Fail loudly otherwise — the DAG can't create it
-        # without knowing the framework's full set of fields.
-        mm = ModelManager(session)
-        model_row = mm.get_model_by_name(model_name)
-        if model_row is None:
-            raise ModelNotFoundError(f"Model {model_name!r} not registered")
-
-        candidate = mm.create_model_version(
-            model_id=model_row.id,
-            dataset_version_id=ctx_payload["dataset_version_id"],
-            training_run_id=ctx_payload["training_run_id"],
-            mlflow_run_id=tracker_run_id,
-            state=ModelState.CANDIDATE,
-            metrics=train_payload["metrics"],
-            artifact_uri=train_payload["artifact_path"],
-        )
-
-        production = mm._production_for_model(model_row.id)  # noqa: SLF001
-        decision = ModelPromotionPolicy().evaluate(
-            context=PromotionContext(candidate=candidate, production=production),
-            config=PromotionConfig(
-                min_metrics={"f1": pipeline_meta.get("min_f1", 0.0)},
-                must_beat_production=False,
-                allow_cold_start=True,
-            ),
-        )
-        if not decision.approved:
-            mm.transition_state(candidate.id, ModelState.REJECTED)
-            return {
-                "promoted": False,
-                "model_version_id": candidate.id,
-                "reasons": decision.reasons,
-            }
-
-        mm.transition_state(candidate.id, ModelState.APPROVED)
-        mm.transition_state(candidate.id, ModelState.PRODUCTION)
-        if production is not None and production.id != candidate.id:
-            mm.transition_state(production.id, ModelState.ARCHIVED)
-
-        # Emit a promotion event so the serving bridge reloads.
-        if settings.serving_bridge_url:
-            try:
-                httpx.post(
-                    f"{settings.serving_bridge_url}/internal/model/reload",
-                    json={
-                        "model_name": model_row.name,
-                        "model_version": candidate.version_number,
-                        "artifact_uri": candidate.artifact_uri,
-                        "metrics": train_payload["metrics"],
-                        "model_id": candidate.model_id,
-                        "model_version_id": candidate.id,
-                    },
-                    timeout=10.0,
-                )
-            except Exception as exc:  # pragma: no cover - env dependent
-                print(f"[airflow] reload POST failed: {exc}")
-
-        return {
-            "promoted": True,
-            "model_version_id": candidate.id,
-            "model_version": candidate.version_number,
-        }
-    finally:
-        session.close()
+    return result
 
 
 # ---------------------------------------------------------------------- #

@@ -1,16 +1,27 @@
 # Airflow image for the MLOps Framework.
 #
-# The DAGs mounted into this image live in
-# `infrastructure/airflow/dags/` and execute inside Airflow workers.
-# The image installs:
+# This image does NOT install the `mlops_framework` package. Airflow
+# 2.10.4 pins `SQLAlchemy==1.4.x` internally, and its own ORM models
+# use a style SQLAlchemy 2.0 rejects (`MappedAnnotationError`) — the
+# framework's own models require `sqlalchemy>=2.0.0`
+# (`Mapped`/`mapped_column`). The two cannot coexist in one Python
+# environment.
 #
-#   * The framework itself, in editable mode from `/opt/framework`.
-#   * Heavy ML runtime deps that Airflow tasks need (mlflow, xgboost,
-#     scikit-learn, pandas).
+# `infrastructure/airflow/dags/mlops_training_pipeline.py` therefore
+# talks to the framework over HTTP (`APP_BASE_URL`) instead of
+# importing it — see that file's module docstring. The only things
+# this image needs are:
 #
-# The framework source tree is copied into the image at build time so
-# that production deployments do not need a bind-mount for it. DAGs are
-# bind-mounted so they can be edited without rebuilding.
+#   * Airflow itself (from the base image).
+#   * The case-study pipeline modules (`case_studies/*`), which have
+#     zero `mlops_framework` imports, and their runtime deps (mlflow
+#     client, xgboost, scikit-learn, pandas — installed for logging
+#     to MLflow directly and running `train_xgboost`).
+#   * httpx, for the DAG's calls to the app's internal API and the
+#     ServingBridge.
+#
+# DAGs are bind-mounted (not baked in) so they can be edited without
+# rebuilding.
 
 FROM apache/airflow:2.10.4-python3.11
 
@@ -20,9 +31,6 @@ ENV AIRFLOW_HOME=/opt/airflow \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Build-time: install build tooling required by some wheels (xgboost
-# is a pre-built wheel but pinning tools avoids surprises when adding
-# new deps).
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         gcc \
@@ -30,30 +38,23 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the framework sources and install in editable mode. We can't
-# do this as the airflow user because /opt/framework needs to be
-# owned by it later; install as root then chown.
-COPY --chown=airflow:root . /opt/framework
-
 USER airflow
 
 WORKDIR /opt/airflow
 
-# Install the framework's own dependency contract (pyproject.toml)
-# first, in editable mode — this is what actually pulls in
-# sqlalchemy>=2.0.0 and overrides Airflow's bundled SQLAlchemy 1.4.x
-# (which lacks `mapped_column` and breaks mlops_framework.database
-# imports). Then install the runtime deps required by DAGs. Pin
-# versions for reproducible deployments; revisit if Airflow breaks
-# these versions.
-RUN pip install --no-cache-dir -e /opt/framework \
-    && pip install --no-cache-dir \
-        -r /opt/framework/infrastructure/airflow/requirements.txt
+# Runtime deps required by case_studies/*/pipelines.py and the DAG's
+# HTTP calls. Pin versions for reproducible deployments; revisit if
+# Airflow breaks these versions.
+COPY --chown=airflow:root infrastructure/airflow/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-WORKDIR /opt/framework
+# Case study pipeline modules (e.g. case_studies.fraud_detection.
+# pipelines) — the DAG's `train` task imports these by module path.
+# Copied without the rest of the framework source tree so this image
+# never has `mlops_framework` importable.
+COPY --chown=airflow:root case_studies /opt/case_studies
 
-# Make sure both airflow modules and the framework are importable.
-ENV PYTHONPATH=/opt/airflow/dags:/opt/framework/src:${PYTHONPATH:-}
+ENV PYTHONPATH=/opt/airflow/dags:/opt:${PYTHONPATH:-}
 
 USER root
 COPY infrastructure/airflow/entrypoint.sh /entrypoint.sh

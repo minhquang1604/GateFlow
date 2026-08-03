@@ -1,10 +1,15 @@
 name: Build, push, and deploy
 
-# Builds the two custom images (mlflow, and the shared "app" image
-# used by airflow-webserver/airflow-scheduler/app/serving), pushes
-# them to the ECR repositories created by Terraform
-# (infrastructure/terraform/modules/ecr), then forces each ECS
-# service onto the new image.
+# Builds the three custom images (mlflow, airflow, and app — used by
+# app/serving), pushes them to the ECR repositories created by
+# Terraform (infrastructure/terraform/modules/ecr), then forces each
+# ECS service onto the new image.
+#
+# airflow and app are deliberately separate images, not one shared
+# image: Airflow 2.10.4 pins SQLAlchemy 1.4.x internally and cannot
+# tolerate the framework's sqlalchemy>=2.0.0 requirement in the same
+# Python environment. See infrastructure/airflow/Dockerfile's header
+# comment for the full explanation.
 #
 # Terraform never builds or pushes images (see
 # infrastructure/terraform/environments/prod/README.md) — this
@@ -19,6 +24,8 @@ on:
     paths:
       - "infrastructure/mlflow/**"
       - "infrastructure/airflow/**"
+      - "infrastructure/app/**"
+      - "case_studies/**"
       - "src/**"
       - "pyproject.toml"
       - ".github/workflows/deploy.yml"
@@ -28,6 +35,7 @@ env:
   AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
   ECS_CLUSTER_NAME: ${{ vars.ECS_CLUSTER_NAME }}
   ECR_MLFLOW_REPOSITORY: ${{ vars.ECR_MLFLOW_REPOSITORY }}
+  ECR_AIRFLOW_REPOSITORY: ${{ vars.ECR_AIRFLOW_REPOSITORY }}
   ECR_APP_REPOSITORY: ${{ vars.ECR_APP_REPOSITORY }}
 
 jobs:
@@ -58,8 +66,8 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ECR_MLFLOW_REPOSITORY / ECR_APP_REPOSITORY are full repo URIs
-      # (registry host + repo name, e.g.
+      # ECR_*_REPOSITORY vars are full repo URIs (registry host + repo
+      # name, e.g.
       # 123456789012.dkr.ecr.us-east-1.amazonaws.com/mlops-framework/app
       # — the same value `terraform output ecr_repositories` prints).
       # Do not re-prefix with steps.ecr-login.outputs.registry here;
@@ -73,11 +81,23 @@ jobs:
             ${{ env.ECR_MLFLOW_REPOSITORY }}:${{ steps.tag.outputs.tag }}
             ${{ env.ECR_MLFLOW_REPOSITORY }}:latest
 
-      - name: Build and push app image
+      # No framework install — see infrastructure/airflow/Dockerfile's
+      # header comment (SQLAlchemy 1.4 vs 2.0 conflict with Airflow).
+      - name: Build and push airflow image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: infrastructure/airflow/Dockerfile
+          push: true
+          tags: |
+            ${{ env.ECR_AIRFLOW_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ env.ECR_AIRFLOW_REPOSITORY }}:latest
+
+      - name: Build and push app image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: infrastructure/app/Dockerfile
           push: true
           tags: |
             ${{ env.ECR_APP_REPOSITORY }}:${{ steps.tag.outputs.tag }}

@@ -145,9 +145,23 @@ variable "mlflow_image_tag" {
 
 variable "app_image_tag" {
   description = <<-EOT
-    Tag of the shared framework image (built from
-    infrastructure/airflow/Dockerfile; used by airflow-webserver,
-    airflow-scheduler, app, and serving) to deploy from ECR. Same
+    Tag of the framework image (built from
+    infrastructure/app/Dockerfile; used by app and serving) to
+    deploy from ECR. Same build/push contract as `mlflow_image_tag`.
+  EOT
+  type        = string
+  default     = "latest"
+}
+
+variable "airflow_image_tag" {
+  description = <<-EOT
+    Tag of the Airflow image (built from
+    infrastructure/airflow/Dockerfile; used by airflow-webserver and
+    airflow-scheduler) to deploy from ECR. This is a separate image
+    from `app_image_tag` — Airflow 2.10.4 pins SQLAlchemy 1.4.x
+    internally and cannot tolerate the framework's sqlalchemy>=2.0.0
+    requirement in the same environment (see
+    infrastructure/airflow/Dockerfile's header comment). Same
     build/push contract as `mlflow_image_tag`.
   EOT
   type        = string

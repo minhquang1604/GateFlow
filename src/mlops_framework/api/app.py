@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from mlops_framework.api.routers import (
     dashboard,
     datasets,
+    internal,
     lineage,
     models,
     readiness,
@@ -58,6 +59,7 @@ def create_app(
     app.include_router(models.router, prefix="/api", tags=["models"])
     app.include_router(lineage.router, prefix="/api", tags=["lineage"])
     app.include_router(readiness.router, prefix="/api", tags=["readiness"])
+    app.include_router(internal.router, prefix="/api", tags=["internal"])
 
     if mount_ui:
         from mlops_framework.ui.mount import mount_ui as _mount_ui

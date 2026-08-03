@@ -39,8 +39,10 @@ db_allocated_storage_gb = 20
 # ECS image tags. Terraform only creates the ECR repositories and
 # points ECS services at these tags — it never builds or pushes
 # images. .github/workflows/deploy.yml builds
-# infrastructure/mlflow/Dockerfile and infrastructure/airflow/Dockerfile
-# and pushes `:latest` + `:<git-sha>` on every push to main. Leave
-# "latest" unless you want to pin a specific tag.
-mlflow_image_tag = "latest"
-app_image_tag    = "latest"
+# infrastructure/mlflow/Dockerfile, infrastructure/airflow/Dockerfile,
+# and infrastructure/app/Dockerfile, and pushes `:latest` +
+# `:<git-sha>` on every push to main. Leave "latest" unless you want
+# to pin a specific tag.
+mlflow_image_tag  = "latest"
+airflow_image_tag = "latest"
+app_image_tag     = "latest"
