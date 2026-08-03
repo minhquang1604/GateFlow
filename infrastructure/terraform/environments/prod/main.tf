@@ -199,9 +199,14 @@ module "ecs" {
       secrets = {
         POSTGRES_PASSWORD = module.ssm.parameter_arns["db/password"]
       }
+      # /api/2.0/mlflow/experiments/search requires POST with a JSON
+      # body — a bare curl GET returns 405 and `curl -f` treats that
+      # as failure, so the health check never passed. MLflow's
+      # dedicated /health endpoint is GET, returns 200 with no body
+      # required, and exists specifically for this purpose.
       health_check_command = [
         "CMD-SHELL",
-        "curl -fsS http://localhost:5000/api/2.0/mlflow/experiments/search -o /dev/null",
+        "curl -fsS http://localhost:5000/health -o /dev/null",
       ]
       health_check_start_period = 60
     }
