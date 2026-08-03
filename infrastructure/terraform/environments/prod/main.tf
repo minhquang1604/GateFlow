@@ -73,7 +73,7 @@ module "ecr" {
   project_name = var.project_name
   repositories = {
     mlflow  = { purpose = "MLflow tracking server image" }
-    airflow = { purpose = "Airflow webserver/scheduler image (no framework install)" }
+    airflow = { purpose = "Airflow webserver/scheduler image - no framework install" }
     app     = { purpose = "Framework image: app + serving" }
   }
 }

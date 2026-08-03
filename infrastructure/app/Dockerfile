@@ -30,6 +30,8 @@ WORKDIR /opt/framework
 
 RUN pip install --no-cache-dir -e .
 
-ENV PYTHONPATH=/opt/framework/src:${PYTHONPATH:-}
+# The base image sets no PYTHONPATH, so this is the full value
+# rather than an append.
+ENV PYTHONPATH=/opt/framework/src
 
 EXPOSE 8000 8001

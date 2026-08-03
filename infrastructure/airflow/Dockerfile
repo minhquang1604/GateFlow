@@ -54,7 +54,10 @@ RUN pip install --no-cache-dir -r /tmp/requirements.txt
 # never has `mlops_framework` importable.
 COPY --chown=airflow:root case_studies /opt/case_studies
 
-ENV PYTHONPATH=/opt/airflow/dags:/opt:${PYTHONPATH:-}
+# /opt so `import case_studies.<study>.pipelines` resolves against
+# /opt/case_studies. The base image sets no PYTHONPATH, so this is
+# the full value rather than an append.
+ENV PYTHONPATH=/opt/airflow/dags:/opt
 
 USER root
 COPY infrastructure/airflow/entrypoint.sh /entrypoint.sh
