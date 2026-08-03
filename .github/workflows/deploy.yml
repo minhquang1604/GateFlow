@@ -58,14 +58,20 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # ECR_MLFLOW_REPOSITORY / ECR_APP_REPOSITORY are full repo URIs
+      # (registry host + repo name, e.g.
+      # 123456789012.dkr.ecr.us-east-1.amazonaws.com/mlops-framework/app
+      # — the same value `terraform output ecr_repositories` prints).
+      # Do not re-prefix with steps.ecr-login.outputs.registry here;
+      # that would double up the registry host in the tag.
       - name: Build and push mlflow image
         uses: docker/build-push-action@v6
         with:
           context: infrastructure/mlflow
           push: true
           tags: |
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_MLFLOW_REPOSITORY }}:${{ steps.tag.outputs.tag }}
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_MLFLOW_REPOSITORY }}:latest
+            ${{ env.ECR_MLFLOW_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ env.ECR_MLFLOW_REPOSITORY }}:latest
 
       - name: Build and push app image
         uses: docker/build-push-action@v6
@@ -74,8 +80,8 @@ jobs:
           file: infrastructure/airflow/Dockerfile
           push: true
           tags: |
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_APP_REPOSITORY }}:${{ steps.tag.outputs.tag }}
-            ${{ steps.ecr-login.outputs.registry }}/${{ env.ECR_APP_REPOSITORY }}:latest
+            ${{ env.ECR_APP_REPOSITORY }}:${{ steps.tag.outputs.tag }}
+            ${{ env.ECR_APP_REPOSITORY }}:latest
 
   deploy:
     needs: build-and-push
