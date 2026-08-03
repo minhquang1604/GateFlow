@@ -59,7 +59,11 @@
       "Read(//tmp/**)",
       "Bash(terraform plan *)",
       "Bash(terraform fmt *)",
-      "Bash(terraform init *)"
+      "Bash(terraform init *)",
+      "Bash(aws ec2 *)",
+      "Bash(aws ecs *)",
+      "Bash(aws ssm *)",
+      "Bash(gh run *)"
     ]
   }
 }
