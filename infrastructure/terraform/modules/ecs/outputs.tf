@@ -14,7 +14,7 @@ output "capacity_provider_name" {
 }
 
 output "service_discovery_namespace_id" {
-  description = "ID of the Cloud Map private DNS namespace."
+  description = "ID of the Cloud Map private DNS namespace backing ECS Service Connect."
   value       = aws_service_discovery_private_dns_namespace.this.id
 }
 
@@ -38,10 +38,7 @@ output "log_group_names" {
   value       = { for k, l in aws_cloudwatch_log_group.this : k => l.name }
 }
 
-output "service_discovery_dns_names" {
-  description = "Map of service key -> in-VPC DNS name (e.g. mlflow.mlops-framework-prod.local)."
-  value = {
-    for k, _ in var.services :
-    k => "${k}.${aws_service_discovery_private_dns_namespace.this.name}"
-  }
+output "service_connect_dns_names" {
+  description = "Map of service key -> Service Connect discovery name (e.g. mlflow). Other tasks call it directly as http://<name>:<container_port> — Service Connect resolves and routes it regardless of which container instance the target task is on."
+  value       = { for k, _ in var.services : k => k }
 }

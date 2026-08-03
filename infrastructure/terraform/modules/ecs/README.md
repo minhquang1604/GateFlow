@@ -2,8 +2,8 @@
 
 Creates the ECS control plane for the stack: a cluster, an EC2
 capacity provider backed by the `compute` module's Auto Scaling Group,
-a Cloud Map private DNS namespace for in-cluster service discovery,
-and one task definition + service per entry in `var.services`.
+a Cloud Map private DNS namespace used by ECS Service Connect, and one
+task definition + service per entry in `var.services`.
 
 ## Design notes
 
@@ -16,15 +16,18 @@ and one task definition + service per entry in `var.services`.
   tasks onto whatever capacity the (fixed-size) ASG already has
   running; it does not grow or shrink the ASG. The container-instance
   fleet size is controlled entirely by `compute.instance_count`.
-- **Service discovery via Cloud Map**, not docker-compose-style DNS.
-  Because every copy of a bridge-mode service listens on the *same*
-  host port, a `MULTIVALUE` A-record per service (`<key>.<namespace>`)
-  is sufficient — callers resolve the service name and connect to
-  whichever instance the DNS record points at, on the well-known port.
-  This is required because tasks are spread across ≥1 container
-  instances and inter-service calls (e.g. `app` → `mlflow`) need a
-  stable name to call regardless of which instance currently hosts the
-  callee.
+- **Service discovery via ECS Service Connect, not classic Cloud Map
+  `service_registries`.** AWS Cloud Map's `service_registries` only
+  supports SRV records (not plain A records) for bridge/host network
+  mode, which ordinary `http://host:port` clients (curl, httpx,
+  uvicorn) can't consume without SRV-aware resolution. Service Connect
+  solves this by injecting a small per-task proxy: other services call
+  a bare discovery name (e.g. `http://mlflow:5000`, no namespace
+  suffix) and the proxy transparently routes to wherever that service
+  currently runs, regardless of which container instance. This is
+  required because tasks are spread across ≥1 container instances and
+  inter-service calls (e.g. `app` → `mlflow`) need a stable name
+  independent of instance placement.
 - **Task placement uses `spread` on `instanceId`** so the 5 services'
   combined memory footprint distributes across the fleet rather than
   stacking onto one instance.
@@ -39,7 +42,7 @@ and one task definition + service per entry in `var.services`.
 | `name_prefix` | `string` | required | Cluster/capacity-provider/log-group name prefix |
 | `aws_region` | `string` | required | For the awslogs log driver |
 | `vpc_id` | `string` | required | Cloud Map namespace VPC |
-| `service_discovery_namespace` | `string` | required | e.g. `mlops-framework-prod.local` |
+| `service_discovery_namespace` | `string` | required | e.g. `mlops-framework-prod.local`; Service Connect's backing Cloud Map namespace |
 | `autoscaling_group_arn` | `string` | required | From `module.compute.autoscaling_group_arn` |
 | `ecs_task_execution_role_arn` | `string` | required | From `module.iam.ecs_task_execution_role_arn` |
 | `ecs_task_role_arn` | `string` | required | From `module.iam.ecs_task_role_arn` |
@@ -76,7 +79,7 @@ and one task definition + service per entry in `var.services`.
 | `service_names` | Map of service key -> ECS service name |
 | `task_definition_arns` | Map of service key -> current task def ARN |
 | `log_group_names` | Map of service key -> log group name |
-| `service_discovery_dns_names` | Map of service key -> in-VPC DNS name |
+| `service_connect_dns_names` | Map of service key -> Service Connect discovery name; other tasks call `http://<name>:<container_port>` directly |
 
 ## Example
 

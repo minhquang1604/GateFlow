@@ -66,7 +66,7 @@ module "ecr" {
   project_name = var.project_name
   repositories = {
     mlflow = { purpose = "MLflow tracking server image" }
-    app    = { purpose = "Framework image: airflow webserver/scheduler, app, serving" }
+    app    = { purpose = "Framework image: airflow webserver/scheduler + app + serving" }
   }
 }
 
@@ -260,15 +260,19 @@ module "ecs" {
         "export DATABASE_URL=\"postgresql+psycopg://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB\" && cd /opt/framework && PYTHONPATH=/opt/framework/src alembic upgrade head && uvicorn mlops_framework.api.app:create_app --factory --host 0.0.0.0 --port 8000",
       ]
       environment = {
-        POSTGRES_HOST          = module.rds.address
-        POSTGRES_PORT          = tostring(module.rds.port)
-        POSTGRES_USER          = var.db_username
-        POSTGRES_DB            = var.db_name
-        MLFLOW_TRACKING_URI    = "http://mlflow.${local.service_discovery_domain}:5000"
+        POSTGRES_HOST = module.rds.address
+        POSTGRES_PORT = tostring(module.rds.port)
+        POSTGRES_USER = var.db_username
+        POSTGRES_DB   = var.db_name
+        # ECS Service Connect resolves these bare discovery names to
+        # whichever container instance currently runs the target
+        # service — no ".namespace" suffix needed (unlike classic
+        # Cloud Map DNS).
+        MLFLOW_TRACKING_URI    = "http://mlflow:5000"
         MLFLOW_EXPERIMENT_NAME = "mlops-framework"
-        AIRFLOW_BASE_URL       = "http://airflow-webserver.${local.service_discovery_domain}:8080"
+        AIRFLOW_BASE_URL       = "http://airflow-webserver:8080"
         AIRFLOW_USERNAME       = "admin"
-        SERVING_BRIDGE_URL     = "http://serving.${local.service_discovery_domain}:8001"
+        SERVING_BRIDGE_URL     = "http://serving:8001"
       }
       secrets = {
         POSTGRES_PASSWORD = module.ssm.parameter_arns["db/password"]

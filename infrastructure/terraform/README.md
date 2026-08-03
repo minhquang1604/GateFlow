@@ -58,9 +58,12 @@ stack, so services publish directly on each container instance's
 public IP). Tasks spread across the fleet via an
 `ordered_placement_strategy` so the stack's combined memory footprint
 doesn't pile onto one instance. Inter-service calls (e.g. `app` →
-`mlflow`) resolve through an AWS Cloud Map private DNS namespace
-(`<service>.<project>-<env>.local`) rather than compose-style
-container DNS, since a task can land on any instance in the fleet.
+`mlflow`) go through **ECS Service Connect** — plain
+`http://<service>:<port>` calls that a per-task proxy resolves and
+routes correctly regardless of which container instance the target
+task lands on. (Classic Cloud Map `service_registries` only supports
+SRV records for bridge-mode networking, which ordinary HTTP clients
+can't resolve — Service Connect is the mechanism built for this case.)
 
 **Terraform only creates the ECR repositories — it never builds or
 pushes images.** `.github/workflows/deploy.yml` builds
@@ -85,7 +88,7 @@ to run once too.
 | 3 IAM roles | EC2 instance role (ECS agent registration + SSM Session Manager), ECS task execution role, ECS task role |
 | ECS cluster + EC2 capacity provider | Managed scaling disabled — schedules onto the fixed-size ASG only |
 | Auto Scaling Group (`instance_count`, default 2) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
-| Cloud Map private DNS namespace | In-VPC service discovery |
+| Cloud Map private DNS namespace | Backs ECS Service Connect for in-cluster service discovery |
 | 5 ECS task definitions + services | mlflow, airflow-webserver, airflow-scheduler, app, serving |
 | 4 SSM SecureString params | DB password, Airflow Fernet key, Airflow web secret, Airflow admin password |
 | 5 CloudWatch log groups | One per ECS service, 7-day retention |

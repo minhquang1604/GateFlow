@@ -1,15 +1,22 @@
 ###########################################################################
-# ECS module — cluster, EC2 capacity provider, Cloud Map service
-# discovery, task definitions, and services.
+# ECS module — cluster, EC2 capacity provider, ECS Service Connect,
+# task definitions, and services.
 #
 # Launch type: EC2 (not Fargate). Network mode: bridge — each task
 # binds a static host port on whichever container instance it lands
 # on (there is no ALB in this Free-Tier stack, so containers publish
-# directly on the instance's public IP). Because bridge mode gives
-# every copy of a service the same well-known port on every instance,
-# a Cloud Map "MULTIVALUE" A-record per service is enough for
-# in-cluster service discovery (mlflow.<namespace>:5000, etc.) without
-# needing the SRV-record dance that dynamic host ports would require.
+# directly on the instance's public IP).
+#
+# Service discovery: ECS Service Connect, not classic Cloud Map
+# service_registries. AWS Cloud Map's `service_registries` only
+# supports type-A DNS records for bridge/host network mode with SRV
+# records, which plain `http://host:port` clients (curl, httpx,
+# uvicorn) can't consume without SRV-aware resolution. Service Connect
+# solves this by injecting a small per-task proxy that makes plain
+# `http://<discovery_name>:<port>` calls resolve and route correctly
+# regardless of which container instance a task lands on — no
+# application code changes, and it still uses the same Cloud Map
+# namespace under the hood.
 #
 # The capacity provider has managed scaling DISABLED — it schedules
 # tasks onto whatever instances the (fixed-size) ASG already has
@@ -66,7 +73,9 @@ resource "aws_ecs_cluster_capacity_providers" "this" {
 }
 
 # ---------------------------------------------------------------------- #
-# Cloud Map — private DNS namespace for in-VPC service discovery.       #
+# Service Connect namespace — Cloud Map namespace used as the backing   #
+# registry, but discovery/routing for bridge-mode tasks goes through    #
+# the Service Connect proxy (see module header), not raw DNS records.   #
 # ---------------------------------------------------------------------- #
 resource "aws_service_discovery_private_dns_namespace" "this" {
   name = var.service_discovery_namespace
@@ -74,27 +83,6 @@ resource "aws_service_discovery_private_dns_namespace" "this" {
 
   tags = {
     Name = var.service_discovery_namespace
-  }
-}
-
-resource "aws_service_discovery_service" "this" {
-  for_each = var.services
-
-  name = each.key
-
-  dns_config {
-    namespace_id = aws_service_discovery_private_dns_namespace.this.id
-
-    dns_records {
-      type = "A"
-      ttl  = 10
-    }
-
-    routing_policy = "MULTIVALUE"
-  }
-
-  health_check_custom_config {
-    failure_threshold = 1
   }
 }
 
@@ -139,6 +127,7 @@ resource "aws_ecs_task_definition" "this" {
 
       portMappings = [
         {
+          name          = each.key
           containerPort = each.value.container_port
           hostPort      = coalesce(each.value.host_port, each.value.container_port)
           protocol      = "tcp"
@@ -207,8 +196,33 @@ resource "aws_ecs_service" "this" {
     field = "instanceId"
   }
 
-  service_registries {
-    registry_arn = aws_service_discovery_service.this[each.key].arn
+  # Service Connect: makes plain http://<discovery_name>:<port> calls
+  # from other tasks resolve and route to this service, regardless of
+  # which container instance a copy currently runs on. Required for
+  # bridge network mode because classic Cloud Map service_registries
+  # only supports SRV records there (see module header).
+  service_connect_configuration {
+    enabled   = true
+    namespace = aws_service_discovery_private_dns_namespace.this.arn
+
+    service {
+      port_name      = each.key
+      discovery_name = each.key
+
+      client_alias {
+        port     = each.value.container_port
+        dns_name = each.key
+      }
+    }
+
+    log_configuration {
+      log_driver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.this[each.key].name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "${each.key}-service-connect"
+      }
+    }
   }
 
   depends_on = [aws_ecs_cluster_capacity_providers.this]

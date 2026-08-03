@@ -63,9 +63,16 @@ variable "instance_count" {
 }
 
 variable "ec2_ebs_size_gb" {
-  description = "Root EBS volume size in GB. Free Tier includes 30 GB/month of gp2/gp3 storage."
+  description = <<-EOT
+    Root EBS volume size in GB, per instance. Free Tier includes 30
+    GB/month of gp2/gp3 storage *total across all volumes* — with
+    instance_count = 2 at 30 GB each, this stack uses 60 GB/month
+    (30 GB over Free Tier). The ECS-optimized AL2023 AMI's root
+    snapshot requires >= 30 GB; a smaller value fails at apply time
+    with a "Volume of size ... is smaller than snapshot" error.
+  EOT
   type        = number
-  default     = 20
+  default     = 30
 }
 
 variable "ssh_public_key" {
