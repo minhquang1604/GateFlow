@@ -180,20 +180,22 @@ module "ecs" {
 
   # Memory budget: a t3.small registers ~1913 MiB of schedulable
   # memory (2 GiB minus ECS agent/OS reserve). With instance_count = 2,
-  # total capacity is ~3826 MiB. The 5 services below sum to 2124 MiB
+  # total capacity is ~3826 MiB. The 5 services below sum to 2386 MiB
   # of memoryReservation, plus ~40 MiB per task for the Service
-  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2324 MiB total.
+  # Connect proxy sidecar (5 tasks * 40 = 200 MiB) = ~2586 MiB total.
   # That no longer fits on a single instance, so instance_count = 2 is
   # now a hard floor. Raising any of these without checking the total
   # against the per-instance 1913 MiB will cause tasks to get stuck
   # PENDING forever — ECS won't partially schedule a task it can't
   # fully fit.
   #
-  # Two values were raised after observing production OOM kills
-  # (exit 137): mlflow needs 400 (not 300) even at --workers 1 —
-  # gunicorn + mlflow + sqlalchemy + boto3's combined resident
-  # footprint. airflow-webserver needs 1024 MiB / 512 CPU units —
-  # see its own comment below.
+  # Values raised after observing production failures: mlflow needs
+  # 400 (not 300) even at --workers 1 — gunicorn + mlflow +
+  # sqlalchemy + boto3's combined resident footprint OOM-killed it
+  # (exit 137) at 300. airflow-webserver needs 1024 MiB / 512 CPU
+  # units, and airflow-scheduler 512 MiB / 512 CPU units — both
+  # measured well above their old reservations. See their own
+  # comments below.
   services = {
     mlflow = {
       image          = local.mlflow_image
@@ -259,6 +261,15 @@ module "ecs" {
         # Airflow's monitor declares the master unresponsive.
         AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT = "300"
         AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT = "300"
+        # The webserver runs its own DAG-parsing loop to render the
+        # UI. Same reasoning as the scheduler's tuning below — one
+        # rarely-changing DAG doesn't need constant re-parsing, and
+        # the default drove 142-185% CPU spikes here too.
+        AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL = "300"
+        AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL     = "300"
+        # Gunicorn workers were being recycled every 30s by default,
+        # re-importing the whole Flask/FAB stack each time.
+        AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL = "1800"
       }
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
@@ -279,8 +290,14 @@ module "ecs" {
     airflow-scheduler = {
       image          = local.airflow_image
       container_port = 8793
-      memory         = 250
-      command        = ["scheduler"]
+      # 512 MiB / 512 CPU units. At the default 128 CPU units the
+      # scheduler measured 150-200% average CPU with ~700% peaks
+      # (i.e. 2-7x its reservation), starving whichever instance it
+      # landed on. The tuning below cuts the actual work; this
+      # raises the reservation so ECS accounts for it honestly.
+      memory  = 512
+      cpu     = 512
+      command = ["scheduler"]
       environment = {
         POSTGRES_HOST                = module.rds.address
         POSTGRES_PORT                = tostring(module.rds.port)
@@ -288,6 +305,22 @@ module "ecs" {
         POSTGRES_DB                  = "airflow"
         AIRFLOW__CORE__EXECUTOR      = "LocalExecutor"
         AIRFLOW__CORE__LOAD_EXAMPLES = "false"
+        # Airflow's defaults re-scan and re-parse the DAG folder
+        # almost continuously, which is what drove the CPU burn.
+        # This stack has exactly one DAG that changes only on image
+        # rebuild, so parse it far less aggressively.
+        AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL     = "300"
+        AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL         = "300"
+        AIRFLOW__SCHEDULER__PARSING_PROCESSES             = "1"
+        AIRFLOW__SCHEDULER__SCHEDULER_IDLE_SLEEP_TIME     = "5"
+        AIRFLOW__SCHEDULER__SCHEDULER_HEARTBEAT_SEC       = "15"
+        AIRFLOW__SCHEDULER__JOB_HEARTBEAT_SEC             = "15"
+        AIRFLOW__CORE__PARALLELISM                        = "4"
+        AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG           = "4"
+        AIRFLOW__CORE__MAX_ACTIVE_RUNS_PER_DAG            = "1"
+        AIRFLOW__SCHEDULER__USE_ROW_LEVEL_LOCKING         = "False"
+        AIRFLOW__METRICS__STATSD_ON                       = "False"
+        AIRFLOW__SCHEDULER__SCHEDULE_AFTER_TASK_EXECUTION = "False"
         # LocalExecutor runs DAG tasks as subprocesses of the
         # scheduler (not the webserver), so this is where
         # mlops_training_pipeline.py's HTTP calls need these.
