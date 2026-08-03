@@ -85,8 +85,13 @@ echo "[mlflow] starting tracking server..."
 echo "[mlflow]   backend-store-uri : ${BACKEND_URI}"
 echo "[mlflow]   default-artifact-root: ${ARTIFACT_ROOT}"
 
+# --workers defaults to 4 gunicorn processes, which is oversized for
+# the ~350MB memory reservation this stack's ECS task definition
+# gives mlflow (t3.micro-friendly) and gets OOM-killed. 1 worker
+# is enough for a single-user/demo tracking server.
 exec mlflow server \
   --backend-store-uri "${BACKEND_URI}" \
   --default-artifact-root "${ARTIFACT_ROOT}" \
   --host "${MLFLOW_HOST}" \
-  --port "${MLFLOW_PORT}"
+  --port "${MLFLOW_PORT}" \
+  --workers "${MLFLOW_WORKERS:-1}"

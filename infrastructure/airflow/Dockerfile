@@ -39,10 +39,15 @@ USER airflow
 
 WORKDIR /opt/airflow
 
-# Install the framework and the runtime deps required by DAGs. Pin
+# Install the framework's own dependency contract (pyproject.toml)
+# first, in editable mode — this is what actually pulls in
+# sqlalchemy>=2.0.0 and overrides Airflow's bundled SQLAlchemy 1.4.x
+# (which lacks `mapped_column` and breaks mlops_framework.database
+# imports). Then install the runtime deps required by DAGs. Pin
 # versions for reproducible deployments; revisit if Airflow breaks
 # these versions.
-RUN pip install --no-cache-dir \
+RUN pip install --no-cache-dir -e /opt/framework \
+    && pip install --no-cache-dir \
         -r /opt/framework/infrastructure/airflow/requirements.txt
 
 WORKDIR /opt/framework

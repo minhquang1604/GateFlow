@@ -212,6 +212,10 @@ module "ecs" {
         AIRFLOW__API__AUTH_BACKEND        = "airflow.api.auth.backend.basic_auth"
         AIRFLOW__WEBSERVER__EXPOSE_CONFIG = "true"
         AIRFLOW_ADMIN_USERNAME            = "admin"
+        # Default is 4 gunicorn workers, which OOM-kills on this
+        # task's 400 MiB memory reservation. 1 is enough for a
+        # single-user/demo Airflow UI.
+        AIRFLOW__WEBSERVER__WORKERS = "1"
       }
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
