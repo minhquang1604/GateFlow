@@ -85,14 +85,42 @@ BACKEND_URI="postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTG
 ARTIFACT_ROOT="s3://${MLFLOW_BUCKET}"
 
 # ---------------------------------------------------------------------- #
-# Apply MLflow's alembic migrations.                                      #
+# Apply MLflow's alembic migrations — but only to an existing schema.     #
 #                                                                          #
-# Brings the backend store to the running MLflow version's schema         #
-# revision. Idempotent — safe to run on every boot, no-ops when already   #
-# at head.                                                                #
+# `mlflow db upgrade` MIGRATES a schema; it does not CREATE one. On an    #
+# empty database it starts at the first revision (451aebb31d03, "add     #
+# metric step"), which runs `ALTER TABLE metrics ADD COLUMN step` against #
+# a table that doesn't exist yet and dies with:                           #
+#     (psycopg2.errors.UndefinedTable) relation "metrics" does not exist  #
+#                                                                          #
+# `mlflow server` creates the schema itself on first boot, so on a fresh  #
+# database we skip straight to it. The upgrade only matters for a         #
+# database created by an older MLflow version. Idempotent either way —    #
+# no-ops when already at head.                                            #
 # ---------------------------------------------------------------------- #
-echo "[mlflow] applying schema migrations..."
-mlflow db upgrade "${BACKEND_URI}"
+if python3 - <<PYEOF
+import sys
+import psycopg2
+
+conn = psycopg2.connect(
+    host="${POSTGRES_HOST}",
+    port=${POSTGRES_PORT},
+    user="${POSTGRES_USER}",
+    password="${POSTGRES_PASSWORD}",
+    dbname="${POSTGRES_DB}",
+)
+with conn.cursor() as cur:
+    cur.execute("SELECT to_regclass('public.experiments')")
+    exists = cur.fetchone()[0] is not None
+conn.close()
+sys.exit(0 if exists else 1)
+PYEOF
+then
+    echo "[mlflow] existing schema detected — applying migrations..."
+    mlflow db upgrade "${BACKEND_URI}"
+else
+    echo "[mlflow] empty database — mlflow server will create the schema"
+fi
 
 echo "[mlflow] starting tracking server..."
 echo "[mlflow]   backend-store-uri : ${BACKEND_URI}"
