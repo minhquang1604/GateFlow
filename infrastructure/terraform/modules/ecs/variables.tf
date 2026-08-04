@@ -178,23 +178,31 @@ variable "force_delete_services" {
 variable "placement_strategy" {
   description = <<-EOT
     Ordered placement strategy applied to every service, outermost
-    first. Defaults to spread across instances, then binpack on
-    memory as the tie-breaker.
+    first. Spread across container instances, and nothing else.
 
-    Why this order on a multi-instance fleet: CPU is this stack's
-    binding constraint, and `binpack` alone actively works against
-    that — it fills one instance before touching the next, so the
-    CPU-hungry services (airflow-webserver and airflow-scheduler)
-    end up contending for the same host's vCPUs while the other host
-    idles. Leading with `spread` on `instanceId` distributes tasks
-    across hosts so those two land apart; the trailing `binpack` on
-    memory then breaks ties toward the fuller instance, which keeps
-    contiguous free space for rolling-deploy replacements.
+    Do NOT add `binpack` here. A placement strategy is evaluated
+    over the tasks of a *single* service, not across the cluster —
+    and every service in this stack runs desired_count = 1. That
+    leaves `spread` on instanceId with exactly one task to place and
+    therefore nothing to balance, so it always ties, and whatever
+    strategy sits behind it makes the real decision. With
+    `binpack` on memory in that slot the decision is, by definition,
+    "pick the instance with the least free memory" — so each service
+    in turn chose the host the previous one had just filled.
 
-    History: a pure `spread` was tried first and packed four tasks
-    onto one instance because it balances task *count*, ignoring
-    size. A pure `binpack` was then tried and had the CPU-contention
-    problem above. The combination addresses both.
+    Observed result on a 2 x t3.small fleet: four of the five
+    services landed on one instance (1856 of 1913 MiB reserved, 57
+    MiB free) while the other ran a single task with 1273 MiB idle.
+    The packed instance then stopped responding on every published
+    port and dropped to agentConnected = false.
+
+    Note also that ECS's accounting understates real usage here:
+    Service Connect injects an Envoy proxy container into every
+    task, and its footprint is not part of the task's declared
+    memory (a task showing memory = 768 reserves 768 for the
+    application container alone). Four tasks means four unaccounted
+    proxies, so a host ECS believes has 57 MiB free has rather less
+    than that.
   EOT
   type = list(object({
     type  = string
@@ -204,10 +212,6 @@ variable "placement_strategy" {
     {
       type  = "spread"
       field = "instanceId"
-    },
-    {
-      type  = "binpack"
-      field = "memory"
     }
   ]
 }

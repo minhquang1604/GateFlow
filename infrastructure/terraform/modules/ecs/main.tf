@@ -214,12 +214,12 @@ resource "aws_ecs_service" "this" {
     weight            = 1
   }
 
-  # Placement. `spread` on instanceId balances the *number* of tasks,
-  # not their size — with tasks ranging 200-1024 MiB that let four of
-  # them (including the largest) pile onto one instance while the
-  # other sat nearly empty, leaving no room for rolling-deploy
-  # replacements. `binpack` on memory is size-aware; see
-  # var.placement_strategy.
+  # Placement — spread only. A strategy is evaluated over one
+  # service's tasks, and every service here runs desired_count = 1,
+  # so `spread` always ties and any strategy behind it decides. A
+  # trailing `binpack` therefore packed four of the five services
+  # onto a single instance until it wedged. See
+  # var.placement_strategy for the full account.
   dynamic "ordered_placement_strategy" {
     for_each = var.placement_strategy
     content {
