@@ -19,7 +19,38 @@ exec > >(tee -a "$LOG") 2>&1
 
 echo "[bootstrap] starting at $(date -u +%FT%TZ)"
 
-echo "ECS_CLUSTER=${ecs_cluster_name}" >> /etc/ecs/ecs.config
-echo "ECS_ENABLE_CONTAINER_METADATA=true" >> /etc/ecs/ecs.config
+cat >> /etc/ecs/ecs.config <<CONFIG
+ECS_CLUSTER=${ecs_cluster_name}
+ECS_ENABLE_CONTAINER_METADATA=true
+CONFIG
+
+# Restart the agent so it re-reads /etc/ecs/ecs.config.
+#
+# This is NOT optional. The ECS-optimized AMI starts ecs.service at
+# boot, frequently BEFORE cloud-init runs this script. An agent that
+# started first has already read an ecs.config without ECS_CLUSTER,
+# so it registers against the "default" cluster or fails outright —
+# and it never re-reads the file on its own. The symptom is a
+# container instance that shows agentConnected: false forever while
+# the EC2 instance itself looks perfectly healthy, which in turn
+# wedges `terraform destroy` (ECS can't confirm task teardown, so
+# services hang in DRAINING until Terraform times out).
+systemctl restart ecs
+systemctl enable ecs
+
+# Wait for the agent to actually come up before declaring success, so
+# a failure here surfaces in the boot log rather than silently later.
+for i in $(seq 1 30); do
+    if curl -fsS --max-time 2 http://localhost:51678/v1/metadata >/dev/null 2>&1; then
+        echo "[bootstrap] ECS agent responding after $${i} attempt(s)"
+        break
+    fi
+    if [ "$${i}" -eq 30 ]; then
+        echo "[bootstrap] WARNING: ECS agent not responding after 30 attempts"
+        systemctl status ecs --no-pager || true
+        tail -50 /var/log/ecs/ecs-agent.log 2>/dev/null || true
+    fi
+    sleep 2
+done
 
 echo "[bootstrap] registered for cluster ${ecs_cluster_name}"

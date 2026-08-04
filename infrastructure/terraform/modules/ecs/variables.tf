@@ -57,6 +57,29 @@ variable "managed_termination_protection" {
   default     = "DISABLED"
 }
 
+variable "managed_draining" {
+  description = <<-EOT
+    Whether the ECS capacity provider drains tasks off a container
+    instance before the ASG terminates it. AWS defaults this to
+    ENABLED, which installs an ASG lifecycle hook with a 3600s
+    heartbeat.
+
+    DISABLED here deliberately. The hook pins a terminating instance
+    in Terminating:Wait until ECS confirms the drain, and when an
+    instance's ECS agent is unreachable that confirmation never
+    comes — the slot is then held for the full hour, well past
+    Terraform's 10-minute ASG-drain wait, so `terraform destroy`
+    fails. This stack runs one task per service with no in-flight
+    request draining worth protecting, so the hook adds teardown
+    fragility without a benefit.
+
+    Set to "ENABLED" if you later add multi-replica services where
+    graceful connection draining actually matters.
+  EOT
+  type        = string
+  default     = "DISABLED"
+}
+
 variable "managed_scaling_status" {
   description = <<-EOT
     Whether the ECS capacity provider actively scales the underlying
@@ -130,6 +153,26 @@ variable "services" {
     desired_count             = optional(number, 1)
     essential                 = optional(bool, true)
   }))
+}
+
+variable "force_delete_services" {
+  description = <<-EOT
+    Whether `terraform destroy` deletes ECS services without waiting
+    for their tasks to drain gracefully.
+
+    true here because the graceful path depends on the container
+    instance's ECS agent confirming teardown. When an agent is
+    unreachable — which this stack hit repeatedly, on t3.micro,
+    t3.small and m7i-flex.large alike — that confirmation never
+    arrives and every service hangs in DRAINING until Terraform
+    times out after 20 minutes, leaving a half-destroyed stack that
+    needs manual `aws ecs delete-service --force` calls.
+
+    Set to false if you later run multi-replica services where
+    letting in-flight requests finish during teardown matters.
+  EOT
+  type        = bool
+  default     = true
 }
 
 variable "placement_strategy" {

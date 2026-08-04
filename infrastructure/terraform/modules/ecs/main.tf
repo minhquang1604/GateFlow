@@ -51,6 +51,20 @@ resource "aws_ecs_capacity_provider" "this" {
     auto_scaling_group_arn         = var.autoscaling_group_arn
     managed_termination_protection = var.managed_termination_protection
 
+    # AWS defaults this to ENABLED, which installs an ASG lifecycle
+    # hook ("ecs-managed-draining-termination-hook") with a 3600s
+    # heartbeat. The hook holds a terminating instance in
+    # Terminating:Wait until ECS confirms it drained — and if the
+    # instance's ECS agent is unreachable that confirmation never
+    # arrives, so the slot is held for the full hour. Terraform's ASG
+    # drain wait is only 10 minutes, so `terraform destroy` fails with
+    # "timeout while waiting for state to become '0'".
+    #
+    # This stack has one task per service and no in-flight request
+    # draining to protect, so the hook buys nothing and costs a
+    # reliable teardown.
+    managed_draining = var.managed_draining
+
     managed_scaling {
       status          = var.managed_scaling_status
       target_capacity = 100
@@ -182,6 +196,18 @@ resource "aws_ecs_service" "this" {
   # copy at a time (max 100%).
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
+
+  # Delete the service without waiting for tasks to drain gracefully.
+  #
+  # Without this, `terraform destroy` sets desiredCount to 0 and then
+  # waits for ECS to move the service DRAINING -> INACTIVE. That
+  # transition needs the container instance's ECS agent to confirm
+  # teardown; if the agent is unreachable the confirmation never
+  # arrives and Terraform fails after 20 minutes with "timeout while
+  # waiting for state to become 'INACTIVE'" — on every service at
+  # once. force_delete makes the API drop the service immediately,
+  # which is the right trade for a single-replica demo stack.
+  force_delete = var.force_delete_services
 
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.this.name
