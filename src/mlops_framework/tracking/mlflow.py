@@ -11,6 +11,20 @@ Constructor precedence: explicit kwargs > environment-driven
 :class:`Settings`. This keeps tests trivial (pass the URI explicitly)
 and makes the production adapters zero-config when the framework is
 deployed against the bundled Compose stack.
+
+Known limitation — one active run per process
+---------------------------------------------
+
+``mlflow.start_run`` tracks the active run in *process-global* state,
+while this adapter tracks it per instance. Two ``MLflowTracker``
+objects in one process therefore do not get independent runs: the
+second ``start_run`` nests inside the first (or is refused), and
+subsequent ``log_*`` calls from either tracker land on whichever run
+MLflow considers active. Concurrent training runs in a single process
+need separate processes, or a rewrite onto ``MlflowClient``, which
+takes an explicit ``run_id`` per call instead of the global fluent
+API. ``tests/integration/test_mlflow_live.py::TestGlobalRunState``
+pins the current behaviour against a real server.
 """
 
 from __future__ import annotations

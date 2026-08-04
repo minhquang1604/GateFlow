@@ -13,16 +13,35 @@ The adapter speaks to an Airflow 2.x deployment over its REST API using
                      |
                   DAG runs
 
-For unit tests, ``http_client`` can be replaced with any object that
-implements :class:`httpx.Client`'s interface (or with the
-:class:`tests.unit.test_airflow_orchestrator._FakeAirflowClient` stub).
+Execution ids
+-------------
+
+Every DAG-run endpoint in Airflow 2.x is nested under its DAG:
+``/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}``. There is no endpoint
+that resolves a bare ``dag_run_id`` across DAGs, so the ``execution_id``
+this adapter hands back — and that callers persist and pass to
+:meth:`get_execution_status` / :meth:`cancel_execution` — is the
+composite ``"{dag_id}/{dag_run_id}"``. Airflow restricts ``dag_id`` to
+``[A-Za-z0-9_.-]``, so the first ``/`` is an unambiguous separator.
+
+Live coverage
+-------------
+
+``tests/unit/test_airflow_orchestrator.py`` covers this adapter against
+a fake client, and ``tests/integration/test_airflow_live.py`` runs the
+same flows against a real Airflow (opt-in via ``AIRFLOW_BASE_URL``).
+The fake alone is not enough: the URL bug this module carried until
+recently — DAG-run reads and cancels sent to ``/api/v1/dagRuns/{id}``,
+which Airflow does not serve — was invisible because the fake answered
+200 to any URL it did not recognise.
 """
 
 from __future__ import annotations
 
-import json
-from datetime import datetime
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
@@ -38,28 +57,35 @@ from mlops_framework.orchestration.base import (
 )
 
 
-_TERMINAL_AIRFLOW_STATES = {"success", "failed"}
-_RUNNING_AIRFLOW_STATES = {"running", "queued"}
-
-
 def _now() -> datetime:
-    from datetime import datetime, timezone
     return datetime.now(timezone.utc)
 
 
 def _parse_airflow_state(state: str) -> ExecutionState:
     state = (state or "").lower()
-    if state in {"success"}:
+    if state == "success":
         return ExecutionState.SUCCESS
-    if state in {"failed"}:
+    if state == "failed":
         return ExecutionState.FAILED
     if state in {"running", "queued"}:
         return ExecutionState.RUNNING
     if state in {"up_for_retry", "upstream_failed", "scheduled"}:
         return ExecutionState.PENDING
-    if state in {"skipped"}:
+    if state == "skipped":
         return ExecutionState.CANCELLED
     return ExecutionState.UNKNOWN
+
+
+def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        # Airflow returns ISO 8601 with trailing 'Z' for UTC.
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 class AirflowOrchestrator(Orchestrator):
@@ -107,12 +133,63 @@ class AirflowOrchestrator(Orchestrator):
                 timeout=30.0,
             )
 
+    # ------------------------------------------------------------------ #
+    # Lifecycle
+    # ------------------------------------------------------------------ #
+
+    def close(self) -> None:
+        """Close the HTTP client if this adapter created it."""
+        if self._owns_client and self._client is not None:
+            self._client.close()
+
+    def __enter__(self) -> "AirflowOrchestrator":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self.close()
+
     def __del__(self) -> None:  # pragma: no cover - best effort
-        if self._owns_client:
-            try:
-                self._client.close()
-            except Exception:
-                pass
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ #
+    # Execution id handling
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def make_execution_id(dag_id: str, dag_run_id: str) -> str:
+        """Compose the adapter's execution id from its two Airflow parts."""
+        return f"{dag_id}/{dag_run_id}"
+
+    @staticmethod
+    def _split_execution_id(execution_id: str) -> tuple[str, str]:
+        """Split ``"{dag_id}/{dag_run_id}"`` back into its two parts.
+
+        Raises:
+            ExecutionNotFoundError: if the id is not in composite form.
+                Every DAG-run endpoint is nested under its DAG and
+                Airflow offers no lookup by bare run id, so a bare id
+                is not addressable — failing here is clearer than
+                sending a request that can only 404.
+        """
+        dag_id, sep, dag_run_id = execution_id.partition("/")
+        if not sep or not dag_id or not dag_run_id:
+            raise ExecutionNotFoundError(
+                f"Execution id {execution_id!r} is not addressable: Airflow "
+                "DAG runs live at /api/v1/dags/{dag_id}/dagRuns/{dag_run_id}, "
+                "so the id must be '<dag_id>/<dag_run_id>' (see "
+                "AirflowOrchestrator.make_execution_id)."
+            )
+        return dag_id, dag_run_id
+
+    def _dag_run_url(self, execution_id: str, suffix: str = "") -> str:
+        dag_id, dag_run_id = self._split_execution_id(execution_id)
+        return (
+            f"/api/v1/dags/{quote(dag_id, safe='')}"
+            f"/dagRuns/{quote(dag_run_id, safe='')}{suffix}"
+        )
 
     # ------------------------------------------------------------------ #
     # Orchestrator API
@@ -123,32 +200,39 @@ class AirflowOrchestrator(Orchestrator):
         pipeline_id: str,
         config: Optional[dict[str, Any]] = None,
     ) -> str:
-        """Trigger a DAG run. Returns the Airflow ``dag_run_id``."""
+        """Trigger a DAG run.
+
+        Returns:
+            The composite execution id ``"{dag_id}/{dag_run_id}"``.
+        """
         logical_date = _now().isoformat()
+        # A uuid suffix, not the timestamp alone: Airflow rejects a
+        # duplicate dag_run_id with 409, and two runs triggered inside
+        # the same clock resolution would collide.
         body: dict[str, Any] = {
-            "dag_run_id": f"mlops-{logical_date}",
+            "dag_run_id": f"mlops-{uuid.uuid4().hex[:12]}",
             "logical_date": logical_date,
             "conf": config or {},
             "note": "Triggered by mlops_framework",
         }
-        url = f"/api/v1/dags/{pipeline_id}/dagRuns"
+        url = f"/api/v1/dags/{quote(pipeline_id, safe='')}/dagRuns"
         response = self._client.post(url, json=body)
         if response.status_code == 404:
+            raise OrchestratorConfigError(f"Airflow DAG {pipeline_id!r} not found")
+        if response.status_code == 409:
             raise OrchestratorConfigError(
-                f"Airflow DAG {pipeline_id!r} not found"
+                f"Airflow rejected the run as a duplicate for DAG "
+                f"{pipeline_id!r}: {response.text}"
             )
         if response.status_code not in (200, 201):
             raise OrchestratorConfigError(
                 f"Airflow trigger failed: {response.status_code} {response.text}"
             )
         payload = response.json()
-        return payload["dag_run_id"]
+        return self.make_execution_id(payload["dag_id"], payload["dag_run_id"])
 
     def get_execution_status(self, execution_id: str) -> ExecutionStatus:
-        # We don't know which DAG the run belongs to, so we accept the
-        # "pipeline_id" embedded in the metadata if present. Without it
-        # we try a list endpoint and match by id.
-        url = f"/api/v1/dagRuns/{execution_id}"
+        url = self._dag_run_url(execution_id)
         response = self._client.get(url)
         if response.status_code == 404:
             raise ExecutionNotFoundError(
@@ -158,8 +242,7 @@ class AirflowOrchestrator(Orchestrator):
             raise OrchestratorConfigError(
                 f"Airflow status query failed: {response.status_code} {response.text}"
             )
-        payload = response.json()
-        return self._to_status(payload)
+        return self._to_status(response.json())
 
     def get_task_instance_states(self, execution_id: str) -> dict[str, str]:
         """Return a ``{task_id: state}`` map for a DAG run.
@@ -168,8 +251,8 @@ class AirflowOrchestrator(Orchestrator):
         reporting than the DAG-level state. Returns ``{}`` on a 404 or
         any non-200 — this query is best-effort and never raises.
         """
-        url = f"/api/v1/dagRuns/{execution_id}/taskInstances"
         try:
+            url = self._dag_run_url(execution_id, "/taskInstances")
             response = self._client.get(url)
         except Exception:
             return {}
@@ -185,45 +268,54 @@ class AirflowOrchestrator(Orchestrator):
         return out
 
     def cancel_execution(self, execution_id: str) -> ExecutionStatus:
-        # Airflow does not support cancelling an arbitrary DAG run via
-        # REST in 2.x — it supports deleting task instances, and the
-        # common pattern is to mark the DAG run as failed. We delete
-        # the dag run; the operator's downstream code treats the
-        # absence as cancellation. For production, an
-        # AirflowDeploymentManager would handle this; this adapter
-        # exposes the cleanest REST-only path.
-        url = f"/api/v1/dagRuns/{execution_id}"
-        response = self._client.delete(url)
+        """Cancel a DAG run by marking it failed.
+
+        Airflow has no "cancelled" DAG-run state and no cancel endpoint;
+        ``PATCH`` with ``{"state": "failed"}`` is the supported way to
+        stop a run, and it stops queued task instances. The previous
+        implementation issued ``DELETE``, which erases the run from
+        Airflow's metadata database entirely — the run disappears from
+        the UI and from any later audit, which is the opposite of what
+        a governance-oriented framework wants. The framework's own
+        TrainingRun still records CANCELLED; only Airflow's view says
+        failed.
+        """
+        url = self._dag_run_url(execution_id)
+        response = self._client.patch(url, json={"state": "failed"})
         if response.status_code == 404:
             raise ExecutionNotFoundError(
                 f"Airflow DAG run {execution_id!r} not found"
             )
-        if response.status_code not in (200, 204):
+        if response.status_code != 200:
             raise OrchestratorConfigError(
                 f"Airflow cancel failed: {response.status_code} {response.text}"
             )
+        status = self._to_status(response.json())
         return ExecutionStatus(
-            execution_id=execution_id,
+            execution_id=status.execution_id,
             state=ExecutionState.CANCELLED,
-            finished_at=_now(),
-            message="DAG run deleted via REST",
+            pipeline_id=status.pipeline_id,
+            started_at=status.started_at,
+            finished_at=status.finished_at or _now(),
+            message="DAG run marked failed via REST (Airflow has no cancelled state)",
+            metadata=status.metadata,
         )
 
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _to_status(payload: dict[str, Any]) -> ExecutionStatus:
+    @classmethod
+    def _to_status(cls, payload: dict[str, Any]) -> ExecutionStatus:
         state = _parse_airflow_state(payload.get("state", ""))
-        started = payload.get("start_date")
-        finished = payload.get("end_date")
         return ExecutionStatus(
-            execution_id=payload["dag_run_id"],
+            execution_id=cls.make_execution_id(
+                payload.get("dag_id", ""), payload["dag_run_id"]
+            ),
             state=state,
             pipeline_id=payload.get("dag_id"),
-            started_at=_parse_iso(started),
-            finished_at=_parse_iso(finished),
+            started_at=_parse_iso(payload.get("start_date")),
+            finished_at=_parse_iso(payload.get("end_date")),
             message=payload.get("note"),
             metadata={
                 "logical_date": payload.get("logical_date"),
@@ -231,15 +323,3 @@ class AirflowOrchestrator(Orchestrator):
                 "conf": payload.get("conf"),
             },
         )
-
-
-def _parse_iso(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        # Airflow returns ISO 8601 with trailing 'Z' for UTC.
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-        return datetime.fromisoformat(value)
-    except ValueError:
-        return None
