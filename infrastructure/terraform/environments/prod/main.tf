@@ -179,39 +179,27 @@ module "ecs" {
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
 
-  # Resource budget on a single m7i-flex.large (8 GiB, 2 vCPU =
-  # 2048 CPU units):
+  # Resource budget on 2x t3.small (2 GiB / 2 vCPU each = ~1913 MiB
+  # and 2048 CPU units schedulable per instance):
   #
   #   memory  2446 MiB + ~40 MiB/task Service Connect sidecar
-  #           (5 * 40 = 200) = ~2646 MiB of 7783   (~34%)
-  #   cpu     1984 units of 2048                    (~97%)
+  #           (5 * 40 = 200) = ~2696 MiB of 3826   (~70%)
+  #   cpu     1984 units of 4096                    (~48%)
   #
-  # CPU is the binding constraint here, not memory — the instance
-  # has memory to spare but only 2 vCPU. Three services previously
-  # sat on the 128-unit default and contended badly under load;
-  # they now carry real reservations. If you need to raise any CPU
-  # value further, either take units from another service or move
-  # to a 4 vCPU instance (m7i-flex.xlarge) — the total cannot
-  # exceed 2048.
+  # Neither total may exceed one instance's share of the fleet for
+  # any single task — ECS won't split a task across hosts, and won't
+  # partially schedule one it can't fully fit, so an over-subscribed
+  # reservation leaves tasks stuck PENDING forever.
   #
-  # Whatever instance type you run, check this total against the
-  # per-instance schedulable memory before raising any reservation —
-  # ECS won't partially schedule a task it can't fully fit, so an
-  # over-subscribed fleet leaves tasks stuck PENDING forever. On the
-  # previous 2x t3.small fleet (~1913 MiB each) this stack only just
-  # fit, with one instance down to 55 MiB free.
+  # Sizing rationale: CPU is this stack's binding constraint. On a
+  # single 2 vCPU instance these same reservations consumed 97% of
+  # available CPU while 65% of RAM sat idle. Two t3.small give 4
+  # vCPU total for less than half the cost. See ec2_instance_type in
+  # variables.tf for the burstable-throttling caveat that comes with
+  # t3, and modules/ecs/variables.tf placement_strategy for why the
+  # two Airflow services are spread across hosts rather than packed
+  # onto one.
   #
-  # These numbers were rightsized against CloudWatch
-  # MemoryUtilization/CPUUtilization measured over 3 hours of real
-  # running, not guessed: mlflow was at 94% avg / 109% peak of its
-  # old 400 MiB (hence its exit-137 kills) and moved up to 640;
-  # airflow-webserver was only at 36% avg / 86% peak of 1024 and
-  # came back down to 768. Re-measure before changing them again:
-  #   aws cloudwatch get-metric-statistics --namespace AWS/ECS \
-  #     --metric-name MemoryUtilization --dimensions \
-  #     Name=ClusterName,Value=<cluster> Name=ServiceName,Value=<svc> \
-  #     --start-time <t0> --end-time <t1> --period 3600 \
-  #     --statistics Average Maximum
   services = {
     mlflow = {
       image          = local.mlflow_image

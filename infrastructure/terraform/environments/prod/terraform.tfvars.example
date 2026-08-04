@@ -12,16 +12,14 @@ vpc_cidr = "10.0.0.0/16"
 admin_cidr = "0.0.0.0/0"
 
 # EC2 / ECS container instances
-# m7i-flex.large (not Free-Tier, ~$0.09576/hr ~= $70/mo). Smaller
-# types were tried first and didn't hold the stack — see
-# ec2_instance_type's description in variables.tf for the history.
-# t3.medium (~$30/mo) also fits everything if cost matters more
-# than headroom.
-ec2_instance_type = "m7i-flex.large"
-# The full stack (~2570 MiB reserved) fits on one m7i-flex.large.
-# Raise to 2 if you want a spare host to survive an instance
-# becoming wedged — that happened twice during bring-up.
-instance_count = 1
+# 2x t3.small (~$39/mo total in ap-southeast-1) — 4 vCPU across the
+# pair. CPU is this stack's binding constraint, not memory. NOTE t3
+# is burstable; see ec2_instance_type's description in variables.tf
+# for the throttling risk and non-burstable alternatives.
+ec2_instance_type = "t3.small"
+# 2 is required — the stack reserves ~2696 MiB / 1984 CPU units,
+# more than one t3.small can schedule.
+instance_count = 2
 # The ECS-optimized AL2023 AMI's root snapshot requires >= 30 GB;
 # a smaller value fails at apply time.
 ec2_ebs_size_gb = 30

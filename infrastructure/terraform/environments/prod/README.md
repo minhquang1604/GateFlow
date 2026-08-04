@@ -84,8 +84,9 @@ modules share state).
 
 | Variable | Default | Description |
 |---|---|---|
-| `instance_count` | `1` | Fixed ASG size. The stack reserves ~2570 MiB, which fits one `m7i-flex.large`; raise to 2 for a spare host |
-| `ec2_instance_type` | `"m7i-flex.large"` | Not Free-Tier (~$70/mo). Smaller types were tried first — see root README's "Instance sizing" |
+| `instance_count` | `2` | Fixed ASG size. The stack reserves ~2696 MiB / 1984 CPU units, more than one `t3.small` holds |
+| `ec2_instance_type` | `"t3.small"` | Not Free-Tier (~$39/mo for 2). Burstable — watch `CPUCreditBalance`; see root README's "Instance sizing" |
+| `aws_region` | `"ap-southeast-1"` | RDS engine versions differ by region — `db_engine_version` must exist there |
 | `mlflow_image_tag` / `airflow_image_tag` / `app_image_tag` | `"latest"` | ECR tags ECS services deploy; CI pushes both `:latest` and `:<git-sha>` |
 | `admin_cidr` | `"0.0.0.0/0"` | Restrict to your IP to avoid exposing SSH publicly |
 | `db_password` | *(required, no default)* | Pass via `TF_VAR_db_password`; never commit |

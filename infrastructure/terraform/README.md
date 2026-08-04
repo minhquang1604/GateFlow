@@ -5,11 +5,11 @@ the **MLflow + Airflow + framework API + ServingBridge** stack on Amazon
 ECS (EC2 launch type), backed by RDS, S3, ECR, IAM, SSM Parameter Store,
 and CloudWatch Logs.
 
-> **Not Free-Tier for compute.** The container instance runs
-> `m7i-flex.large` (not `t3.micro`) — see "Instance sizing" below for
-> what happened on smaller types. Every other resource (RDS
-> `db.t3.micro`, S3, ECR, no ALB/NAT) stays Free-Tier-safe; only the
-> ECS compute layer costs money.
+> **Not Free-Tier for compute.** The stack runs 2x `t3.small`
+> container instances (~$39/month in ap-southeast-1) — see "Instance
+> sizing" below. Every other resource (RDS `db.t3.micro`, S3, ECR, no
+> ALB/NAT) stays Free-Tier-safe; only the ECS compute layer costs
+> money.
 
 ## Layout
 
@@ -61,9 +61,11 @@ Airflow webserver, Airflow scheduler, the framework app, and the
 ServingBridge are each an ECS **service** (EC2 launch type, `bridge`
 network mode, host-port-mapped — there is no ALB in this
 stack, so services publish directly on each container instance's
-public IP). Tasks are placed with a memory-aware `binpack`
-`ordered_placement_strategy`, which keeps contiguous free space on the
-fleet for rolling-deploy replacements. Inter-service calls (e.g. `app` →
+public IP). Tasks are placed with a `spread`-then-`binpack`
+`ordered_placement_strategy`: spread across instances first so the
+two CPU-hungry Airflow services land on different hosts, with a
+memory binpack tie-breaker that keeps contiguous free space for
+rolling-deploy replacements. Inter-service calls (e.g. `app` →
 `mlflow`) go through **ECS Service Connect** — plain
 `http://<service>:<port>` calls that a per-task proxy resolves and
 routes correctly regardless of which container instance the target
@@ -94,21 +96,18 @@ to run once too.
 | 3 ECR repos | `mlflow`, `airflow` (webserver + scheduler), `app` (app + serving) |
 | 3 IAM roles | EC2 instance role (ECS agent registration + SSM Session Manager), ECS task execution role, ECS task role |
 | ECS cluster + EC2 capacity provider | Managed scaling disabled — schedules onto the fixed-size ASG only |
-| Auto Scaling Group (`instance_count`, default 1, `m7i-flex.large`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
+| Auto Scaling Group (`instance_count`, default 2, `t3.small`) | ECS container instances, `min=max=desired` (static fleet, not elastic) |
 | Cloud Map private DNS namespace | Backs ECS Service Connect for in-cluster service discovery |
 | 5 ECS task definitions + services | mlflow, airflow-webserver, airflow-scheduler, app, serving |
 | 4 SSM SecureString params | DB password, Airflow Fernet key, Airflow web secret, Airflow admin password |
 | 5 CloudWatch log groups | One per ECS service, 7-day retention |
 
-**Cost:** with the default `instance_count = 1` on
-`m7i-flex.large`, running 24/7 for a full month is roughly 730 hrs ×
-$0.09576/hr ≈ **$70/month** (no Free Tier for this type). The five
-services reserve ~2570 MiB including Service Connect sidecars, which
-fits on one 8 GiB instance with room to spare. No ALB, no NAT
-Gateway, no elastic Auto Scaling policy — those stay avoided.
-
-`t3.medium` (4 GiB, ≈$30/month) also fits the whole stack on one
-instance with ~1300 MiB spare, if cost matters more than headroom.
+**Cost:** with the default `instance_count = 2` on `t3.small`,
+running both 24/7 for a month is roughly 2 × 730 hrs × $0.0264/hr ≈
+**$39/month** in ap-southeast-1. The five services reserve ~2696 MiB
+and 1984 CPU units against the fleet's ~3826 MiB / 4096 units. No
+ALB, no NAT Gateway, no elastic Auto Scaling policy — those stay
+avoided.
 
 ### Instance sizing
 
@@ -130,12 +129,20 @@ kernel, Docker daemon, ECS agent, SSM agent and 5 Service Connect
 proxy sidecars were all accounted for, even though the *reported*
 schedulable memory looked sufficient on paper.
 
-**`t3.small` (2 GB)** — held the stack, but only across two
-instances (~2570 MiB reserved vs ~1913 MiB schedulable each), and
-the split was lopsided: one instance ran four tasks at 55 MiB free
-while the other sat 73% idle. One of those instances also became
-network-wedged, unreachable on every port from outside while AWS's
-shallow health checks still passed.
+**`m7i-flex.large` (2 vCPU / 8 GiB)** — held the whole stack on one
+instance, but exposed the real constraint: the five services
+reserved 1984 of 2048 CPU units (97%) while 65% of the RAM sat
+unused. General-purpose families lock a 1:4 vCPU:RAM ratio, so
+buying CPU means paying for RAM this workload never touches.
+
+**Current: 2x `t3.small` (2 vCPU / 2 GiB each)** — 4 vCPU total for
+less than half the cost, with memory still comfortable at ~70%.
+Caveat: t3 is *burstable*. Each instance accrues CPU credits at a
+fixed rate and throttles to a 20% baseline per vCPU when they run
+out. Watch the CloudWatch `CPUCreditBalance` metric; if it trends to
+zero under sustained load, move to a non-burstable type
+(`c7i-flex.xlarge`, 4 vCPU) or `t3.medium` (credits accrue 2x
+faster).
 
 ## Prerequisites
 
@@ -245,7 +252,7 @@ to) the Free Tier:
   `ecs.log_retention_days`) to stay under the 5 GB/month ingestion
   Free Tier allowance.
 
-The ECS compute layer (`m7i-flex.large` × 1) is the one deliberate
+The ECS compute layer (`t3.small` × 2) is the one deliberate
 exception — see "Instance sizing" above.
 
 ## Adding a new environment

@@ -135,30 +135,33 @@ variable "services" {
 variable "placement_strategy" {
   description = <<-EOT
     Ordered placement strategy applied to every service, outermost
-    first. Defaults to binpack on memory.
+    first. Defaults to spread across instances, then binpack on
+    memory as the tie-breaker.
 
-    On a single-instance fleet (the current default) this is
-    effectively a no-op — every task lands on the one instance
-    either way. It matters as soon as instance_count > 1.
+    Why this order on a multi-instance fleet: CPU is this stack's
+    binding constraint, and `binpack` alone actively works against
+    that — it fills one instance before touching the next, so the
+    CPU-hungry services (airflow-webserver and airflow-scheduler)
+    end up contending for the same host's vCPUs while the other host
+    idles. Leading with `spread` on `instanceId` distributes tasks
+    across hosts so those two land apart; the trailing `binpack` on
+    memory then breaks ties toward the fuller instance, which keeps
+    contiguous free space for rolling-deploy replacements.
 
-    Why binpack and not spread: `spread` on `instanceId` balances the
-    *count* of tasks per instance, ignoring how big they are. On the
-    earlier 2x t3.small fleet, with tasks ranging 200-1024 MiB, that
-    packed four tasks (the largest among them) onto one container
-    instance while the other sat nearly empty — leaving too little
-    headroom for rolling deploys to place replacement tasks, which
-    stalled `aws ecs wait services-stable`. `binpack` on memory fills
-    one instance before moving to the next, which keeps contiguous
-    free space for replacements.
-
-    Set to `[{ type = "spread", field = "instanceId" }]` if you would
-    rather trade that headroom for per-instance fault isolation.
+    History: a pure `spread` was tried first and packed four tasks
+    onto one instance because it balances task *count*, ignoring
+    size. A pure `binpack` was then tried and had the CPU-contention
+    problem above. The combination addresses both.
   EOT
   type = list(object({
     type  = string
     field = string
   }))
   default = [
+    {
+      type  = "spread"
+      field = "instanceId"
+    },
     {
       type  = "binpack"
       field = "memory"

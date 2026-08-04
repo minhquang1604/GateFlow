@@ -46,52 +46,56 @@ variable "admin_cidr" {
 variable "ec2_instance_type" {
   description = <<-EOT
     EC2 instance type for ECS container instances. NOT Free-Tier
-    (m7i-flex.large, 8 GiB / 2 vCPU, ~$0.09576/hr ~= $70/month for
-    the single-instance default).
+    (t3.small in ap-southeast-1 is ~$0.0264/hr ~= $19/month each;
+    the default 2-instance fleet is ~$39/month).
 
-    History behind the sizing:
-      * t3.micro (1 GB, Free Tier) was too tight for the 5 services.
-        After Docker daemon, ECS agent, SSM agent, and kernel
-        overhead, the reported ~916 MiB "schedulable" memory left no
-        real headroom, and memory bursts OOM-killed the host's own
-        management daemons — not just containers — wedging whole
-        instances (ECS/SSM agents went dark while EC2's shallow
-        health checks still reported them healthy).
-      * t3.small (2 GB) fit the stack only across two instances
-        (~2570 MiB reserved vs ~1913 MiB schedulable each), and left
-        one box scraping 55 MiB free while the other sat idle.
-      * m7i-flex.large holds the whole stack on one instance with
-        several GiB to spare.
+    Why two t3.small rather than one larger instance: CPU is this
+    stack's binding constraint, not memory. On a single
+    m7i-flex.large (2 vCPU / 8 GiB) the services reserved 1984 of
+    2048 CPU units — 97% committed — while 65% of the RAM sat idle,
+    because general-purpose families lock a 1:4 vCPU:RAM ratio. Two
+    t3.small give 4 vCPU total (4096 units) for less than half the
+    cost, and ~3826 MiB of schedulable memory still comfortably
+    covers the ~2696 MiB reserved.
 
-    Cheaper alternative if the headroom isn't needed: t3.medium
-    (4 GiB, ~$30/month) also fits the full stack on one instance,
-    with ~1300 MiB spare.
+    KNOWN RISK — t3 is burstable. Each instance accrues CPU credits
+    at a fixed rate and is throttled to a 20% baseline per vCPU once
+    they run out. The airflow-scheduler previously measured 185%
+    sustained CPU before its DAG-parsing was tuned down; if
+    sustained load returns, these instances will throttle and end up
+    slower than a non-burstable type. Watch the CloudWatch
+    CPUCreditBalance metric — if it trends to zero, move to a
+    non-burstable type (c7i-flex.xlarge, 4 vCPU non-burstable) or
+    t3.medium (same 4 vCPU across two instances, but credits accrue
+    twice as fast).
+
+    Earlier in this stack's history t3.small instances also
+    repeatedly became network-wedged with dead ECS/SSM agents; that
+    was under severe memory pressure which no longer applies at
+    these reservations, but it is worth knowing if hosts go dark.
   EOT
   type        = string
-  default     = "m7i-flex.large"
+  default     = "t3.small"
 }
 
 variable "instance_count" {
   description = <<-EOT
-    Number of ECS container instances to run. 1 is enough on the
-    default m7i-flex.large: the full stack (MLflow, Airflow
-    webserver + scheduler, app, serving) reserves ~2646 MiB and
-    1984 of 2048 CPU units. Memory is comfortable; CPU is nearly
-    fully committed — see the resource-budget comment above
-    `services` in main.tf before changing instance sizing.
+    Number of ECS container instances to run. 2 is required on the
+    default t3.small: the full stack reserves ~2696 MiB and 1984 CPU
+    units, which exceeds a single t3.small's ~1913 MiB / 2048 units.
+    Setting this to 1 will leave tasks stuck PENDING forever. See
+    the resource-budget comment above `services` in main.tf.
 
-    Tradeoff of running a single instance: no spare host. Twice
-    during bring-up an instance became network-wedged (ECS/SSM
-    agents unreachable while EC2's own health checks still reported
-    "ok"), and the second instance kept the stack serving until the
-    bad one was replaced. With instance_count = 1 that outage is
-    total until the ASG launches a replacement.
+    Two instances also mean a spare host. Twice during bring-up an
+    instance became network-wedged (ECS/SSM agents unreachable while
+    EC2's own health checks still reported "ok"), and the second
+    instance kept the stack serving until the bad one was replaced.
 
-    Cost note: m7i-flex.large is NOT Free-Tier-eligible — roughly
-    730 hrs x $0.09576/hr ~= $70/month per instance.
+    Cost note: t3.small is NOT Free-Tier-eligible — roughly
+    2 x 730 hrs x $0.0264/hr ~= $39/month total in ap-southeast-1.
   EOT
   type        = number
-  default     = 1
+  default     = 2
 }
 
 variable "ec2_ebs_size_gb" {
