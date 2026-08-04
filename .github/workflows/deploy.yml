@@ -125,8 +125,52 @@ jobs:
               --output text
           done
 
+      # Not `aws ecs wait services-stable`: its waiter is hardcoded to
+      # 40 attempts x 15s = 10 minutes, with no CLI flag to raise it,
+      # and it prints only "Max attempts exceeded" — no indication of
+      # which service was still moving or why. This stack redeploys
+      # right at that boundary (deployment_maximum_percent = 100 stops
+      # the old task before starting the new one, and
+      # airflow-webserver alone has a 300s health-check start period),
+      # so the waiter failed the run repeatedly while the deploy was
+      # in fact progressing normally.
       - name: Wait for services to stabilize
+        env:
+          TIMEOUT_SECONDS: "1200"
         run: |
-          aws ecs wait services-stable \
-            --cluster "${ECS_CLUSTER_NAME}" \
-            --services mlflow airflow-webserver airflow-scheduler app serving
+          set -uo pipefail
+          services="mlflow airflow-webserver airflow-scheduler app serving"
+          deadline=$(( $(date +%s) + TIMEOUT_SECONDS ))
+
+          while :; do
+            unstable=""
+            for s in ${services}; do
+              read -r desired running pending deployments <<<"$(
+                aws ecs describe-services \
+                  --cluster "${ECS_CLUSTER_NAME}" --services "$s" \
+                  --query 'services[0].[desiredCount,runningCount,pendingCount,length(deployments)]' \
+                  --output text
+              )"
+              if [ "$running" != "$desired" ] || [ "$pending" != "0" ] || [ "$deployments" != "1" ]; then
+                unstable="${unstable} ${s}(running=${running}/${desired},pending=${pending},deployments=${deployments})"
+              fi
+            done
+
+            if [ -z "$unstable" ]; then
+              echo "All services stable."
+              exit 0
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Still unstable after ${TIMEOUT_SECONDS}s:${unstable}"
+              for s in ${services}; do
+                echo "--- $s (last 5 events) ---"
+                aws ecs describe-services --cluster "${ECS_CLUSTER_NAME}" --services "$s" \
+                  --query 'services[0].events[:5].message' --output text | tr '\t' '\n'
+              done
+              exit 1
+            fi
+
+            echo "waiting:${unstable}"
+            sleep 20
+          done
