@@ -24,33 +24,33 @@ ECS_CLUSTER=${ecs_cluster_name}
 ECS_ENABLE_CONTAINER_METADATA=true
 CONFIG
 
-# Restart the agent so it re-reads /etc/ecs/ecs.config.
+# Do NOT run a blocking `systemctl restart ecs` here.
 #
-# This is NOT optional. The ECS-optimized AMI starts ecs.service at
-# boot, frequently BEFORE cloud-init runs this script. An agent that
-# started first has already read an ecs.config without ECS_CLUSTER,
-# so it registers against the "default" cluster or fails outright —
-# and it never re-reads the file on its own. The symptom is a
-# container instance that shows agentConnected: false forever while
-# the EC2 instance itself looks perfectly healthy, which in turn
-# wedges `terraform destroy` (ECS can't confirm task teardown, so
-# services hang in DRAINING until Terraform times out).
-systemctl restart ecs
+# The AMI's ecs.service is declared `After=cloud-final.service`, which
+# is precisely how it guarantees the agent starts only once this
+# script has written ECS_CLUSTER. Asking systemd to start it *from
+# inside* cloud-final deadlocks: the restart job can't run until
+# cloud-final finishes, and cloud-final can't finish because it's
+# blocked on the restart job. The instance then sits forever with
+#
+#   cloud-final.service  start running
+#   ecs.service          start waiting
+#
+# and the agent never comes up at all, so the cluster reports zero
+# registered container instances and every service fails to place a
+# task with "No Container Instances were found in your capacity
+# provider".
+#
+# `--no-block` queues the job and returns immediately, which is safe
+# in both directions: if the AMI ever drops the After= ordering and
+# the agent has already read a cluster-less config, this restarts it;
+# if the ordering holds, the queued job is a no-op alongside the one
+# systemd already scheduled.
 systemctl enable ecs
+systemctl restart --no-block ecs
 
-# Wait for the agent to actually come up before declaring success, so
-# a failure here surfaces in the boot log rather than silently later.
-for i in $(seq 1 30); do
-    if curl -fsS --max-time 2 http://localhost:51678/v1/metadata >/dev/null 2>&1; then
-        echo "[bootstrap] ECS agent responding after $${i} attempt(s)"
-        break
-    fi
-    if [ "$${i}" -eq 30 ]; then
-        echo "[bootstrap] WARNING: ECS agent not responding after 30 attempts"
-        systemctl status ecs --no-pager || true
-        tail -50 /var/log/ecs/ecs-agent.log 2>/dev/null || true
-    fi
-    sleep 2
-done
-
-echo "[bootstrap] registered for cluster ${ecs_cluster_name}"
+# Nothing polls the agent's introspection endpoint here on purpose —
+# it cannot answer until this script exits (see above). Check
+# registration from outside instead:
+#   aws ecs list-container-instances --cluster ${ecs_cluster_name}
+echo "[bootstrap] ECS agent start queued for cluster ${ecs_cluster_name}"
