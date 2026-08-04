@@ -1,15 +1,21 @@
 # Docker build context exclusions.
 #
-# Docker does NOT read .gitignore. Without this file, the `COPY . /opt/framework`
-# in infrastructure/app/Dockerfile bakes every gitignored secret in the repo
-# into an image that gets pushed to ECR by .github/workflows/deploy.yml:
-# .env, the local SQLite database, and — worst — the Terraform state under
-# infrastructure/terraform/environments/prod/, which stores the RDS master
-# password, the Airflow Fernet key, the webserver secret key and the Airflow
-# admin password in plaintext.
+# Docker does NOT read .gitignore, and infrastructure/app/Dockerfile does
+# `COPY . /opt/framework`. Anything gitignored but present in the working
+# tree therefore lands in the image — .env, mlops_demo.db, and worst, the
+# Terraform state under infrastructure/terraform/environments/prod/, which
+# holds the RDS master password, the Airflow Fernet key, the webserver
+# secret key and the admin password in plaintext.
 #
-# It is also a build-time fix: the context was 7.7 GB (7.4 GB of it the
-# per-module .terraform/ provider caches), re-uploaded to the daemon on
+# This does NOT describe the images in ECR. .github/workflows/deploy.yml
+# builds from a clean actions/checkout, so only tracked files are ever on
+# the runner and none of the above has ever been published (verified: the
+# COPY layer of the published image is 0.5 MB). The exposure is a *local*
+# `docker build .` or `docker compose build` — the path someone takes when
+# CI is down or they want to test an image before pushing.
+#
+# It is also a build-time fix: the local context was 7.7 GB (7.4 GB of it
+# the per-module .terraform/ provider caches), re-uploaded to the daemon on
 # every build.
 #
 # Both root-context builds share this file — infrastructure/app/Dockerfile
