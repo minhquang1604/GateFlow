@@ -95,16 +95,62 @@ class TrainingService:
 
         execution_id = self._orchestrator.trigger_pipeline(
             pipeline_id=run.pipeline_id or "",
-            config={
-                "training_run_id": run.id,
-                "dataset_version_id": run.dataset_version_id,
-            },
+            config=self.build_pipeline_config(run_id, tracker_run_id=tracker_run_id),
         )
         self._manager.update_metadata(
             run_id, {"orchestrator_execution_id": execution_id}
         )
         self._manager.start_run(run_id, mlflow_run_id=tracker_run_id)
         return execution_id
+
+    def build_pipeline_config(
+        self,
+        run_id: int,
+        tracker_run_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Assemble the config handed to the pipeline entry point.
+
+        A pipeline needs more than its own run id to do real work: it has
+        to know *which data* to read and *where to log*. Passing only
+        ``training_run_id`` and ``dataset_version_id`` — as this method's
+        caller used to — leaves a real trainer with nothing to open, so
+        ``LocalDockerOrchestrator`` could never run one.
+
+        The keys below are deliberately the same ones
+        ``infrastructure/airflow/dags/mlops_training_pipeline.py`` builds
+        from ``GET /api/internal/training-runs/{id}/context``. That is the
+        contract that lets an application register a pipeline once and run
+        it locally or on Airflow without changing a line of it.
+
+        ``parameters`` stored on the run's metadata are merged in last, so
+        a caller can override ``n_estimators`` and friends per run.
+        """
+        run = self._manager.get_run(run_id)
+        meta = self._manager.get_run_metadata(run_id)
+
+        config: dict[str, Any] = {
+            "training_run_id": run.id,
+            "dataset_version_id": run.dataset_version_id,
+        }
+
+        version = self._dataset_manager().get_version(run.dataset_version_id)
+        # Both spellings: `csv_uri` is what the case-study pipelines read,
+        # `storage_uri` is the framework's own name for it.
+        config["storage_uri"] = version.storage_uri
+        config["csv_uri"] = version.storage_uri
+
+        if tracker_run_id is not None:
+            config["tracker_run_id"] = tracker_run_id
+        tracking_uri = getattr(self._tracker, "tracking_uri", None)
+        if tracking_uri:
+            config["tracking_uri"] = tracking_uri
+
+        config.update(meta.get("parameters") or {})
+        return config
+
+    def _dataset_manager(self) -> Any:
+        """The DatasetManager bound to the same session as the run manager."""
+        return self._manager._get_dataset_manager()
 
     def sync_from_orchestrator(self, run_id: int) -> str:
         """Reconcile the run's status with the orchestrator.
@@ -170,12 +216,23 @@ class TrainingService:
             return "UNKNOWN"
         deadline = time.time() + timeout
         last_state = "UNKNOWN"
+        status = None
         while time.time() < deadline:
             status = self._orchestrator.get_execution_status(execution_id)
             last_state = status.state.value
             if status.is_terminal:
                 break
             time.sleep(poll_interval)
+
+        # Persist whatever the pipeline reported back. Without this the
+        # metrics a trainer just computed die with the subprocess: the
+        # orchestrator surfaces them on ExecutionStatus.metadata, but
+        # nothing was reading it, so there was no way to register a
+        # ModelVersion from a completed run.
+        if status is not None and status.metadata:
+            self._manager.update_metadata(
+                run_id, {"orchestrator_result": status.metadata}
+            )
         # Sync DB state with orchestrator.
         if last_state == ExecutionState.SUCCESS.value:
             self.complete_run(run_id)

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dataset · MLOps</title>
+  <title>Compare runs · MLOps</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -11,17 +11,19 @@
     <h1>MLOps</h1>
     <nav class="main-nav">
       <a href="/dashboard">Dashboard</a>
-      <a href="/datasets" class="active">Datasets</a>
-      <a href="/runs">Runs</a>
+      <a href="/datasets">Datasets</a>
+      <a href="/runs" class="active">Runs</a>
       <a href="/models">Models</a>
       <a href="/lineage">Lineage</a>
     </nav>
   </header>
   <main>
-    <div id="ds-head"></div>
-    <div id="ds-body"></div>
+    <div class="breadcrumb"><a href="/runs">Runs</a> / compare</div>
+    <h2>Compare runs</h2>
+    <p class="subtitle">Rows whose values differ are listed first and marked ●; the best number in each row is highlighted.</p>
+    <div id="compare-body"></div>
   </main>
   <script src="/static/app.js"></script>
-  <script>initDatasetDetail(location.pathname.split('/').pop());</script>
+  <script>initRunsCompare();</script>
 </body>
 </html>

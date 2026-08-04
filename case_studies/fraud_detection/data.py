@@ -1,16 +1,26 @@
-"""Synthetic fraud-detection data generator.
+"""Fraud-detection data: the real Kaggle CSV, plus a synthetic stand-in.
 
-The Kaggle credit-card-fraud dataset is famously imbalanced. We don't ship
-the real data; we generate a small CSV that matches its column shape so the
-case study is fully self-contained and reproducible.
+Two sources, one column contract:
 
-Output columns:
+* ``creditcard.csv`` — the real `Kaggle Credit Card Fraud Detection
+  <https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud>`_ dataset:
+  284,807 transactions over 48 hours, 492 of them fraudulent (0.17%).
+  144 MB, so it is downloaded rather than committed — see this package's
+  README. Its header is ``Time,V1..V28,Amount,Class``.
+* :func:`generate` / :func:`write_csv` — a small synthetic CSV with the
+  same shape, so the case study's tests stay hermetic and fast.
+
+The two differ only in capitalisation and column order, so everything
+downstream works against the canonical lower-case names below and
+:func:`normalize_columns` maps either source onto them. Doing it here
+rather than in the pipeline means the readiness engine's schema hash is
+stable across both sources.
+
+Canonical columns:
     time        — seconds since the first transaction
     amount      — transaction amount (USD)
-    v1..v28     — anonymised PCA features (the real dataset has 28)
+    v1..v28     — anonymised PCA features
     class       — 0 (legit) or 1 (fraud)
-
-The class ratio is fixed at 0.2% fraud, matching the public dataset.
 """
 
 from __future__ import annotations
@@ -19,6 +29,14 @@ import csv
 import random
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+#: The canonical column order the framework registers and the pipeline reads.
+CANONICAL_COLUMNS: list[str] = (
+    ["time", "amount"] + [f"v{i}" for i in range(1, 29)] + ["class"]
+)
+
+#: Filename of the real dataset, relative to this package's ``data/``.
+REAL_DATASET_FILENAME = "creditcard.csv"
 
 
 def generate(
@@ -97,13 +115,67 @@ def target_column() -> str:
     return "class"
 
 
-def to_dataframe(path: str | Path) -> Any:
-    """Load the fraud CSV into a ``pandas.DataFrame``.
+def normalize_columns(df: Any) -> Any:
+    """Rename either source's columns onto :data:`CANONICAL_COLUMNS`.
 
-    The training pipeline imports this lazily so the case study remains
-    importable without ``pandas`` installed for unit tests.
+    The real Kaggle file ships ``Time,V1..V28,Amount,Class``; the
+    synthetic generator writes ``time,amount,v1..v28,class``. Lower-casing
+    reconciles them, and reindexing puts the columns in canonical order so
+    the schema hash does not depend on which source produced the file.
+
+    Raises:
+        ValueError: if a canonical column is missing after renaming —
+            better to fail loudly here than to train on a silently
+            mis-aligned feature matrix.
+    """
+    df = df.rename(columns={c: str(c).strip().lower() for c in df.columns})
+    missing = [c for c in CANONICAL_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"CSV is missing expected fraud columns {missing}; "
+            f"got {sorted(df.columns)}"
+        )
+    return df[CANONICAL_COLUMNS]
+
+
+def to_dataframe(path: str | Path) -> Any:
+    """Load a fraud CSV into a canonical ``pandas.DataFrame``.
+
+    Accepts either data source and returns :data:`CANONICAL_COLUMNS` in
+    order. The training pipeline imports this lazily so the case study
+    remains importable without ``pandas`` installed for unit tests.
     """
     import pandas as pd  # type: ignore[import-not-found]
 
-    df = pd.read_csv(path)
-    return df
+    return normalize_columns(pd.read_csv(path))
+
+
+def describe_csv(path: str | Path) -> dict:
+    """Profile a fraud CSV for registration as a DatasetVersion.
+
+    Returns the row count and the metadata blob the framework's readiness
+    engine reads — the observed dtypes, not the declared ones, so a file
+    whose columns arrive as strings is caught at registration rather than
+    at ``model.fit``.
+
+    Returns:
+        ``{"row_count": int, "metadata": {"columns": [...], ...}}``
+    """
+    df = to_dataframe(path)
+    columns = [
+        {"name": str(name), "dtype": str(dtype)}
+        for name, dtype in zip(df.columns, df.dtypes)
+    ]
+    n_fraud = int(df["class"].sum())
+    n_rows = int(len(df))
+    return {
+        "row_count": n_rows,
+        "metadata": {
+            "columns": columns,
+            "source": Path(path).name,
+            "target": target_column(),
+            "n_fraud": n_fraud,
+            "fraud_ratio": round(n_fraud / n_rows, 6) if n_rows else 0.0,
+            "missing_values": int(df.isna().sum().sum()),
+        },
+    }

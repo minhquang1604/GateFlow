@@ -243,3 +243,65 @@ class TestNoDirectManagerImports:
         imports = self._imports(p)
         framework_imports = {m for m in imports if m and m.startswith("mlops_framework")}
         assert not framework_imports, f"pipelines.py imports framework: {framework_imports}"
+
+
+# ---------------------------------------------------------------------- #
+# Real-dataset column contract
+# ---------------------------------------------------------------------- #
+
+
+class TestColumnNormalisation:
+    """Both data sources must reduce to one canonical column contract.
+
+    The real Kaggle file is ``Time,V1..V28,Amount,Class``; the synthetic
+    generator writes ``time,amount,v1..v28,class``. If these diverge the
+    schema hash changes with the source, and the readiness engine starts
+    rejecting a dataset for the wrong reason.
+    """
+
+    def _kaggle_frame(self):
+        pd = pytest.importorskip("pandas")
+        cols = ["Time"] + [f"V{i}" for i in range(1, 29)] + ["Amount", "Class"]
+        return pd.DataFrame([[0.0] * 30 + [0]], columns=cols)
+
+    def test_kaggle_header_maps_to_canonical(self):
+        df = data.normalize_columns(self._kaggle_frame())
+        assert list(df.columns) == data.CANONICAL_COLUMNS
+
+    def test_synthetic_header_is_already_canonical(self, tmp_path):
+        pd = pytest.importorskip("pandas")
+        p = data.write_csv(tmp_path / "f.csv", n_rows=10)
+        df = data.normalize_columns(pd.read_csv(p))
+        assert list(df.columns) == data.CANONICAL_COLUMNS
+
+    def test_both_sources_hash_to_the_same_schema(self, tmp_path):
+        from mlops_framework.dataset.versioning import calculate_schema_hash
+
+        kaggle = data.normalize_columns(self._kaggle_frame())
+        synthetic = data.to_dataframe(data.write_csv(tmp_path / "f.csv", n_rows=10))
+        spec = lambda df: [  # noqa: E731
+            {"name": str(n), "dtype": "float64"} for n in df.columns
+        ]
+        assert calculate_schema_hash(spec(kaggle)) == calculate_schema_hash(spec(synthetic))
+
+    def test_missing_column_raises_rather_than_misaligning(self):
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame([[1.0, 2.0]], columns=["Time", "Amount"])
+        with pytest.raises(ValueError, match="missing expected fraud columns"):
+            data.normalize_columns(df)
+
+
+class TestDescribeCsv:
+    def test_profiles_a_csv_for_registration(self, tmp_path):
+        pytest.importorskip("pandas")
+        p = data.write_csv(tmp_path / "f.csv", n_rows=500, fraud_ratio=0.02, seed=7)
+        profile = data.describe_csv(p)
+
+        assert profile["row_count"] == 500
+        meta = profile["metadata"]
+        assert len(meta["columns"]) == 31
+        assert [c["name"] for c in meta["columns"]] == data.CANONICAL_COLUMNS
+        assert meta["target"] == "class"
+        assert meta["missing_values"] == 0
+        assert 0 < meta["fraud_ratio"] < 1
+        assert meta["n_fraud"] == round(meta["fraud_ratio"] * 500)

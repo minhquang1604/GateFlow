@@ -102,6 +102,13 @@ class MLflowTracker(ExperimentTracker):
         mlflow.set_experiment(effective_experiment)
         self._active_run = None
 
+        # Public so TrainingService.build_pipeline_config can forward it to
+        # the pipeline: a trainer running in a subprocess (or an Airflow
+        # worker) has no way to inherit this process's mlflow global state
+        # and must be told where the tracking server is.
+        self.tracking_uri = effective_uri
+        self.experiment_name = effective_experiment
+
     # ------------------------------------------------------------------ #
     # ExperimentTracker API
     # ------------------------------------------------------------------ #

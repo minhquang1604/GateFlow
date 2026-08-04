@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Model - MLOps</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Model · MLOps</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,29 +18,10 @@
     </nav>
   </header>
   <main>
-    <h2 id="m-name">Loading…</h2>
-    <div class="card">
-      <dl class="meta">
-        <dt>Task</dt><dd id="m-task"></dd>
-        <dt>Description</dt><dd id="m-desc" class="muted"></dd>
-        <dt>Version count</dt><dd id="m-count"></dd>
-      </dl>
-    </div>
-    <h3>Versions</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Version</th><th>State</th><th>Metrics</th>
-          <th>Dataset</th><th>Run</th><th>Lineage</th>
-        </tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+    <div id="model-head"></div>
+    <div id="model-body"></div>
   </main>
   <script src="/static/app.js"></script>
-  <script>
-    const parts = location.pathname.split("/").filter(Boolean);
-    initModelDetail(parts[parts.length - 1]);
-  </script>
+  <script>initModelDetail(location.pathname.split('/').pop());</script>
 </body>
 </html>

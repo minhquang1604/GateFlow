@@ -57,3 +57,8 @@ Thumbs.db
 
 # Alembic
 alembic/versions/*.pyc
+
+# Large case-study datasets. Downloaded, not committed — creditcard.csv is
+# 144 MB, past GitHub's 100 MB per-file limit. See
+# case_studies/fraud_detection/README.md for how to fetch it.
+case_studies/*/data/creditcard.csv

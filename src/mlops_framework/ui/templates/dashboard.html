@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Dashboard - MLOps</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard · MLOps</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -18,13 +19,10 @@
   </header>
   <main>
     <h2>Dashboard</h2>
+    <p class="subtitle">Datasets, training runs and models tracked by this framework.</p>
     <div id="kpi-grid" class="kpi-grid"></div>
-    <h3>Quick links</h3>
-    <p>
-      <a class="btn" href="/datasets">Browse datasets</a>
-      <a class="btn" href="/runs">View training runs</a>
-      <a class="btn" href="/models">View models</a>
-    </p>
+    <h3>Activity</h3>
+    <div id="recent-runs"></div>
   </main>
   <script src="/static/app.js"></script>
   <script>initDashboard();</script>

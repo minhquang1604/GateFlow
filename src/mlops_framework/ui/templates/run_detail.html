@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Run - MLOps</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Run · MLOps</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,26 +18,10 @@
     </nav>
   </header>
   <main>
-    <h2>Run #<span id="run-id">…</span></h2>
-    <div class="card">
-      <dl class="meta">
-        <dt>Status</dt><dd id="run-status"></dd>
-        <dt>Pipeline</dt><dd id="run-pipeline" class="mono"></dd>
-        <dt>Dataset version</dt><dd id="run-dataset-version"></dd>
-        <dt>Started</dt><dd id="run-started"></dd>
-        <dt>Completed</dt><dd id="run-completed"></dd>
-        <dt>Error</dt><dd id="run-error" class="muted"></dd>
-      </dl>
-    </div>
-    <h3>Parameters</h3>
-    <pre class="lineage-tree" id="run-params"></pre>
-    <h3>Metrics</h3>
-    <pre class="lineage-tree" id="run-metrics"></pre>
+    <div id="run-head"></div>
+    <div id="run-body"></div>
   </main>
   <script src="/static/app.js"></script>
-  <script>
-    const parts = location.pathname.split("/").filter(Boolean);
-    initRunDetail(parts[parts.length - 1]);
-  </script>
+  <script>initRunDetail(location.pathname.split('/').pop());</script>
 </body>
 </html>

@@ -66,6 +66,12 @@ def mount_ui(
     def runs() -> str:
         return _load(pages, "runs.html", "Training Runs")
 
+    # Registered before /runs/{run_id} so "compare" is not swallowed by the
+    # int path converter (which would 422 on a non-numeric segment).
+    @app.get("/runs/compare", response_class=HTMLResponse)
+    def runs_compare() -> str:
+        return _load(pages, "runs_compare.html", "Compare Runs")
+
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_detail(run_id: int) -> str:
         return _load(pages, "run_detail.html", f"Run #{run_id}")

@@ -112,6 +112,7 @@ def train_xgboost(config: dict) -> dict:
         import pandas as pd  # type: ignore[import-not-found]
         import xgboost as xgb  # type: ignore[import-not-found]
         from sklearn.metrics import (  # type: ignore[import-not-found]
+            average_precision_score,
             f1_score,
             precision_score,
             recall_score,
@@ -142,15 +143,26 @@ def train_xgboost(config: dict) -> dict:
             "pipeline": "fraud-xgboost",
         }
 
-    df = pd.read_csv(csv_uri)
-    feature_cols = ["time", "amount"] + [f"v{i}" for i in range(1, 29)]
-    target_col = "class"
-    if target_col not in df.columns:
+    # The real Kaggle file is Time,V1..V28,Amount,Class; the synthetic one
+    # is time,amount,v1..v28,class. normalize_columns reconciles both and
+    # raises if a column is genuinely absent, so the feature matrix can
+    # never end up silently mis-aligned.
+    from case_studies.fraud_detection.data import (
+        feature_columns,
+        normalize_columns,
+        target_column,
+    )
+
+    try:
+        df = normalize_columns(pd.read_csv(csv_uri))
+    except ValueError as exc:
         return {
             "status": "FAILED",
-            "error": f"target column {target_col!r} missing from {csv_uri}",
+            "error": f"{exc} (source: {csv_uri})",
             "pipeline": "fraud-xgboost",
         }
+    feature_cols = feature_columns()
+    target_col = target_column()
 
     X = df[feature_cols].to_numpy(dtype=np.float32)
     y = df[target_col].to_numpy(dtype=np.int32)
@@ -189,8 +201,24 @@ def train_xgboost(config: dict) -> dict:
         "precision": float(precision_score(y_test, y_pred, zero_division=0)),
         "recall": float(recall_score(y_test, y_pred, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_test, y_proba)) if n_pos > 0 else 0.0,
+        # Average precision (area under the precision-recall curve) is the
+        # metric that matters on this dataset: at a 0.17% positive rate a
+        # model that never predicts fraud still scores ~0.95 ROC-AUC, while
+        # its average precision stays near the base rate. The promotion
+        # policy should gate on this, not on roc_auc.
+        "average_precision": (
+            float(average_precision_score(y_test, y_proba)) if n_pos > 0 else 0.0
+        ),
         "scale_pos_weight": scale_pos_weight,
     }
+    params.update(
+        {
+            "n_rows": int(len(df)),
+            "n_features": len(feature_cols),
+            "n_fraud_train": n_pos,
+            "n_fraud_test": int((y_test == 1).sum()),
+        }
+    )
 
     tmpdir = tempfile.mkdtemp(prefix="fraud-xgb-artifact-")
     artifact_path = os.path.join(tmpdir, "model.json")

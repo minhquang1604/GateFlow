@@ -87,3 +87,8 @@ docs/
 .idea/
 *.swp
 .DS_Store
+
+# Large case-study datasets. infrastructure/airflow/Dockerfile COPYs
+# case_studies/ wholesale; creditcard.csv alone would add 144 MB to the
+# image. Training reads it from S3 in the deployed stack.
+case_studies/*/data/creditcard.csv

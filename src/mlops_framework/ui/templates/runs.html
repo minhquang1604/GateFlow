@@ -2,7 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Runs - MLOps</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Runs · MLOps</title>
   <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
@@ -17,11 +18,12 @@
     </nav>
   </header>
   <main>
-    <h2>Training Runs</h2>
+    <h2>Training runs</h2>
+    <p class="subtitle">Select two or more runs to compare their parameters and metrics.</p>
     <div class="toolbar">
-      <label class="muted">Status:</label>
+      <input type="search" id="search" placeholder="Filter by id, pipeline, orchestrator…" size="34">
       <select id="status-filter">
-        <option value="">All</option>
+        <option value="">All statuses</option>
         <option value="PENDING">Pending</option>
         <option value="RUNNING">Running</option>
         <option value="SUCCESS">Success</option>
@@ -29,11 +31,12 @@
         <option value="CANCELLED">Cancelled</option>
       </select>
       <button id="refresh">Refresh</button>
+      <span class="spacer"></span>
+      <button id="compare-btn" class="primary" disabled>Compare runs</button>
     </div>
-    <table>
-      <thead><tr><th>ID</th><th>Status</th><th>Pipeline</th><th>Started</th><th></th></tr></thead>
-      <tbody></tbody>
-    </table>
+    <div class="table-wrap">
+      <table><thead><tr></tr></thead><tbody></tbody></table>
+    </div>
   </main>
   <script src="/static/app.js"></script>
   <script>initRuns();</script>

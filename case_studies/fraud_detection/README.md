@@ -39,6 +39,60 @@ Run 1 finished with status=SUCCESS; pipeline_id=case_studies.fraud_detection.pip
 Lineage node types: ['Dataset', 'DatasetVersion', 'TrainingRun']
 ```
 
+## Data
+
+Two sources, one column contract. `data.normalize_columns` maps either
+onto the canonical lower-case names (`time`, `amount`, `v1`..`v28`,
+`class`), so the schema hash — and therefore every readiness check — is
+identical whichever you train on.
+
+| Source | Rows | Fraud | Header | Committed |
+|---|---|---|---|---|
+| `data/creditcard.csv` | 284,807 | 492 (0.173%) | `Time,V1..V28,Amount,Class` | no — 144 MB |
+| `data.generate()` / `write_csv()` | configurable | configurable | `time,amount,v1..v28,class` | n/a, generated |
+
+### Getting the real dataset
+
+`creditcard.csv` is the [Kaggle Credit Card Fraud Detection][kaggle]
+dataset: 48 hours of European card transactions, features `V1`..`V28`
+already PCA-anonymised. At 144 MB it is past GitHub's 100 MB per-file
+limit, so it is gitignored and downloaded rather than committed:
+
+```bash
+# needs a Kaggle account + ~/.kaggle/kaggle.json
+kaggle datasets download -d mlg-ulb/creditcardfraud \
+  -p case_studies/fraud_detection/data --unzip
+```
+
+[kaggle]: https://www.kaggle.com/datasets/mlg-ulb/creditcardfraud
+
+The tests never touch it — they use the synthetic generator, so the
+suite stays hermetic and fast.
+
+## Training on the real data through the framework
+
+```bash
+MLFLOW_TRACKING_URI=http://<host>:5000 \
+AIRFLOW_BASE_URL=http://<host>:8080 \
+AIRFLOW_USERNAME=admin AIRFLOW_PASSWORD=... \
+python -m scripts.run_fraud_detection_e2e
+```
+
+That script registers the dataset version (row count and schema read off
+the file, plus a SHA-256 of its bytes), runs the readiness engine, trains
+`train_xgboost` through `LocalDockerOrchestrator`, logs to a real MLflow
+server, and applies the promotion policy. Read its module docstring for
+what it does and does not claim about Airflow.
+
+### Why the promotion policy gates on `average_precision`
+
+At a 0.173% positive rate, a model that never predicts fraud still
+scores about 0.95 ROC-AUC — the metric is dominated by the 284,315
+negatives. Average precision (area under the precision-recall curve)
+stays near the 0.0017 base rate for that same useless model, so it is
+the metric that actually distinguishes a working classifier here. The
+pipeline reports both; the policy gates on the former.
+
 ## Running the real end-to-end demo (Week 5)
 
 ```bash

@@ -91,9 +91,14 @@ class TrainingRunOut(ApiModel):
     model_id: Optional[int] = None
     pipeline_id: Optional[str] = None
     status: str
+    trigger_type: Optional[str] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
+    duration_seconds: Optional[float] = None
     error_message: Optional[str] = None
+    mlflow_run_id: Optional[str] = None
+    orchestrator: Optional[str] = None
+    execution_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
     metrics: Optional[Dict[str, Any]] = None
     metadata: Optional[Dict[str, Any]] = None
@@ -118,18 +123,43 @@ class TrainingRunOut(ApiModel):
                 return None
 
         metadata = _maybe_load(getattr(obj, "metadata_json", None)) or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+
+        # A pipeline's own report lands under `orchestrator_result` (see
+        # TrainingService.wait_for_completion). Prefer the caller-supplied
+        # keys when present so a hand-written run still shows, but fall
+        # back to what the pipeline actually computed — otherwise every
+        # real training run renders with no metrics at all.
+        result = metadata.get("orchestrator_result")
+        if not isinstance(result, dict):
+            result = {}
+
+        started = getattr(obj, "started_at", None)
+        completed = getattr(obj, "completed_at", None)
+        duration = None
+        if started and completed:
+            duration = max((completed - started).total_seconds(), 0.0)
+
+        status = obj.status
+        trigger = getattr(obj, "trigger_type", None)
         return cls(
             id=obj.id,
             dataset_version_id=getattr(obj, "dataset_version_id", None),
             model_id=getattr(obj, "model_id", None),
             pipeline_id=getattr(obj, "pipeline_id", None),
-            status=obj.status,
-            started_at=getattr(obj, "started_at", None),
-            completed_at=getattr(obj, "completed_at", None),
+            status=getattr(status, "value", status),
+            trigger_type=getattr(trigger, "value", trigger),
+            started_at=started,
+            completed_at=completed,
+            duration_seconds=duration,
             error_message=getattr(obj, "error_message", None),
-            parameters=metadata.get("parameters") if isinstance(metadata, dict) else None,
-            metrics=metadata.get("metrics") if isinstance(metadata, dict) else None,
-            metadata=metadata if isinstance(metadata, dict) else None,
+            mlflow_run_id=getattr(obj, "mlflow_run_id", None),
+            orchestrator=metadata.get("orchestrator"),
+            execution_id=metadata.get("orchestrator_execution_id"),
+            parameters=metadata.get("parameters") or result.get("params") or None,
+            metrics=metadata.get("metrics") or result.get("metrics") or None,
+            metadata=metadata,
             created_at=getattr(obj, "created_at", None),
         )
 
