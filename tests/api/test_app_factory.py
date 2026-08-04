@@ -11,7 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from mlops_framework.api.app import create_app
-from mlops_framework.api.deps import get_db, get_db_manager_dep
+from mlops_framework.api.deps import get_db_manager_dep
 from mlops_framework.database.base import Base
 from mlops_framework.database.session import DatabaseManager
 
@@ -35,15 +35,9 @@ def in_memory_app():
     def _mgr_dep():
         return mgr
 
-    def _db_dep():
-        s = factory()
-        try:
-            yield s
-        finally:
-            s.close()
-
+    # Only the manager is overridden — `get_db` itself must run for real
+    # so its commit/rollback handling is under test. See tests/api/conftest.py.
     app.dependency_overrides[get_db_manager_dep] = _mgr_dep
-    app.dependency_overrides[get_db] = _db_dep
     return app
 
 
@@ -75,15 +69,7 @@ class TestFullAppBoot:
         def _mgr_dep():
             return mgr
 
-        def _db_dep():
-            s = factory()
-            try:
-                yield s
-            finally:
-                s.close()
-
         app.dependency_overrides[get_db_manager_dep] = _mgr_dep
-        app.dependency_overrides[get_db] = _db_dep
 
         client = TestClient(app)
         # UI is not mounted — but '/' returns a 404

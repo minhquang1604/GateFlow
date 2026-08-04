@@ -28,15 +28,26 @@ def get_db_manager_dep() -> DatabaseManager:
 def get_db(
     manager: DatabaseManager = Depends(get_db_manager_dep),
 ) -> Iterator[Session]:
-    """Yield a database session, closing it after the request.
+    """Yield a request-scoped database session inside a transaction.
 
     Mirrors the behaviour of :func:`mlops_framework.database.session.get_session`
     but is wired as a FastAPI dependency so request handlers can declare
     ``db: Session = Depends(get_db)`` and stay free of context-manager noise.
+
+    The commit belongs here, not in the managers: managers only ``flush()``
+    so that several of them can compose within a single request (creating a
+    ModelVersion *and* transitioning it *and* archiving its predecessor is
+    one atomic promotion, not three). Without the commit below, closing the
+    session discards the whole unit of work while the handler still returns
+    a healthy 2xx — see ``tests/api/test_internal_api.py``.
     """
     session = manager.session_factory()
     try:
         yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 

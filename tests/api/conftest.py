@@ -11,10 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from mlops_framework.api.app import create_app
-from mlops_framework.api.deps import (
-    get_db,
-    get_db_manager_dep,
-)
+from mlops_framework.api.deps import get_db_manager_dep
 from mlops_framework.database.base import Base
 from mlops_framework.database.session import DatabaseManager
 
@@ -50,15 +47,11 @@ def app(session_factory):
     def _override_get_db_manager_dep():
         return mgr
 
-    def _override_get_db():
-        s = session_factory()
-        try:
-            yield s
-        finally:
-            s.close()
-
+    # Only the manager is overridden. `get_db` itself is deliberately left
+    # alone so the tests exercise the real transaction handling — an
+    # override that re-implements it would hide bugs in the code that
+    # actually runs in production.
     test_app.dependency_overrides[get_db_manager_dep] = _override_get_db_manager_dep
-    test_app.dependency_overrides[get_db] = _override_get_db
     return test_app
 
 

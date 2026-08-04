@@ -1,0 +1,83 @@
+# Docker build context exclusions.
+#
+# Docker does NOT read .gitignore. Without this file, the `COPY . /opt/framework`
+# in infrastructure/app/Dockerfile bakes every gitignored secret in the repo
+# into an image that gets pushed to ECR by .github/workflows/deploy.yml:
+# .env, the local SQLite database, and — worst — the Terraform state under
+# infrastructure/terraform/environments/prod/, which stores the RDS master
+# password, the Airflow Fernet key, the webserver secret key and the Airflow
+# admin password in plaintext.
+#
+# It is also a build-time fix: the context was 7.7 GB (7.4 GB of it the
+# per-module .terraform/ provider caches), re-uploaded to the daemon on
+# every build.
+#
+# Both root-context builds share this file — infrastructure/app/Dockerfile
+# and infrastructure/airflow/Dockerfile. Anything either of them COPYs must
+# stay out of the exclusions below:
+#   app     -> pyproject.toml, README.md, src/, alembic/, alembic.ini, scripts/
+#   airflow -> case_studies/, infrastructure/airflow/{requirements.txt,dags,entrypoint.sh}
+
+# --------------------------------------------------------------------- #
+# Secrets and infrastructure state — never in an image.                  #
+# --------------------------------------------------------------------- #
+.env
+.env.*
+*.tfstate
+*.tfstate.*
+*.tfvars
+**/.terraform/
+**/.terraform.lock.hcl
+# The whole Terraform tree: state, tfvars, and the provider caches that
+# made up 96% of the build context. Nothing here is needed at runtime.
+infrastructure/terraform/
+*.pem
+*.key
+id_rsa*
+
+# --------------------------------------------------------------------- #
+# Version control and CI metadata                                        #
+# --------------------------------------------------------------------- #
+.git/
+.gitignore
+.github/
+.claude/
+
+# --------------------------------------------------------------------- #
+# Virtualenvs, build artifacts, caches                                   #
+# --------------------------------------------------------------------- #
+.venv/
+venv/
+ENV/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --------------------------------------------------------------------- #
+# Local databases and logs                                               #
+# --------------------------------------------------------------------- #
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# --------------------------------------------------------------------- #
+# Not needed at runtime                                                  #
+# --------------------------------------------------------------------- #
+tests/
+docs/
+.vscode/
+.idea/
+*.swp
+.DS_Store

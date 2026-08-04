@@ -28,6 +28,8 @@ on:
       - "case_studies/**"
       - "src/**"
       - "pyproject.toml"
+      # Changes what lands inside the images, so it must retrigger a build.
+      - ".dockerignore"
       - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
