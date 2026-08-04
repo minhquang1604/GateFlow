@@ -134,6 +134,7 @@ module "iam" {
 module "rds" {
   source                 = "../../modules/rds"
   name_prefix            = local.name_prefix
+  engine_version         = var.db_engine_version
   instance_class         = var.db_instance_class
   allocated_storage_gb   = var.db_allocated_storage_gb
   db_name                = var.db_name
@@ -178,11 +179,20 @@ module "ecs" {
   ecs_task_execution_role_arn = module.iam.ecs_task_execution_role_arn
   ecs_task_role_arn           = module.iam.ecs_task_role_arn
 
-  # Memory budget: the 5 services below sum to 2370 MiB of
-  # memoryReservation, plus ~40 MiB per task for the Service Connect
-  # proxy sidecar (5 tasks * 40 = 200 MiB) = ~2570 MiB total. That
-  # fits comfortably on a single m7i-flex.large (8 GiB), which is
-  # why instance_count defaults to 1.
+  # Resource budget on a single m7i-flex.large (8 GiB, 2 vCPU =
+  # 2048 CPU units):
+  #
+  #   memory  2446 MiB + ~40 MiB/task Service Connect sidecar
+  #           (5 * 40 = 200) = ~2646 MiB of 7783   (~34%)
+  #   cpu     1984 units of 2048                    (~97%)
+  #
+  # CPU is the binding constraint here, not memory — the instance
+  # has memory to spare but only 2 vCPU. Three services previously
+  # sat on the 128-unit default and contended badly under load;
+  # they now carry real reservations. If you need to raise any CPU
+  # value further, either take units from another service or move
+  # to a 4 vCPU instance (m7i-flex.xlarge) — the total cannot
+  # exceed 2048.
   #
   # Whatever instance type you run, check this total against the
   # per-instance schedulable memory before raising any reservation —
@@ -206,11 +216,14 @@ module "ecs" {
     mlflow = {
       image          = local.mlflow_image
       container_port = 5000
-      # 640 MiB. CloudWatch measured this service at 94% average and
-      # 109% peak MemoryUtilization against a 400 MiB reservation —
-      # i.e. it was riding the limit and spilling over it, which is
-      # what produced the earlier exit-137 kills.
+      # 640 MiB / 384 CPU units. CloudWatch measured this service at
+      # 94% average and 109% peak MemoryUtilization against a 400 MiB
+      # reservation — i.e. it was riding the limit and spilling over
+      # it, which is what produced the earlier exit-137 kills. CPU is
+      # raised off the 128-unit default because gunicorn + sqlalchemy
+      # + boto3 contend badly at low shares.
       memory = 640
+      cpu    = 384
       environment = {
         POSTGRES_HOST      = module.rds.address
         POSTGRES_PORT      = tostring(module.rds.port)
@@ -357,7 +370,11 @@ module "ecs" {
     app = {
       image          = local.app_image
       container_port = 8000
-      memory         = 250
+      # 320 MiB / 320 CPU units — raised off the 128-unit default so
+      # uvicorn isn't starved during alembic migrations and request
+      # bursts. Memory is cheap on this instance (only ~33% used).
+      memory = 320
+      cpu    = 320
       command = [
         "/bin/bash", "-c",
         "export DATABASE_URL=\"postgresql+psycopg://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB\" && cd /opt/framework && PYTHONPATH=/opt/framework/src alembic upgrade head && uvicorn mlops_framework.api.app:create_app --factory --host 0.0.0.0 --port 8000",
@@ -391,7 +408,9 @@ module "ecs" {
     serving = {
       image          = local.app_image
       container_port = 8001
-      memory         = 200
+      # 256 MiB / 256 CPU units — same reasoning as app above.
+      memory = 256
+      cpu    = 256
       command = [
         "/bin/bash", "-c",
         "export DATABASE_URL=\"postgresql+psycopg://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT/$POSTGRES_DB\" && cd /opt/framework && PYTHONPATH=/opt/framework/src python -m mlops_framework.serving.run --host 0.0.0.0 --port 8001",

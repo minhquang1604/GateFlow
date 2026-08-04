@@ -1,7 +1,12 @@
 variable "aws_region" {
-  description = "AWS region to deploy resources into. Free-Tier eligible regions include us-east-1, us-east-2, us-west-2."
+  description = <<-EOT
+    AWS region to deploy resources into. Note that available RDS
+    engine versions differ by region — `db_engine_version` must name
+    a version offered in this region (e.g. Postgres 15.7 exists in
+    us-east-1 but not ap-southeast-1, which offers 15.13+).
+  EOT
   type        = string
-  default     = "us-east-1"
+  default     = "ap-southeast-1"
 }
 
 variable "project_name" {
@@ -70,9 +75,9 @@ variable "instance_count" {
   description = <<-EOT
     Number of ECS container instances to run. 1 is enough on the
     default m7i-flex.large: the full stack (MLflow, Airflow
-    webserver + scheduler, app, serving) reserves ~2570 MiB
-    including Service Connect sidecars, well under that instance's
-    schedulable memory. See the memory-budget comment above
+    webserver + scheduler, app, serving) reserves ~2646 MiB and
+    1984 of 2048 CPU units. Memory is comfortable; CPU is nearly
+    fully committed — see the resource-budget comment above
     `services` in main.tf before changing instance sizing.
 
     Tradeoff of running a single instance: no spare host. Twice
@@ -91,12 +96,12 @@ variable "instance_count" {
 
 variable "ec2_ebs_size_gb" {
   description = <<-EOT
-    Root EBS volume size in GB, per instance. Free Tier includes 30
-    GB/month of gp2/gp3 storage *total across all volumes* — with
-    instance_count = 2 at 30 GB each, this stack uses 60 GB/month
-    (30 GB over Free Tier). The ECS-optimized AL2023 AMI's root
-    snapshot requires >= 30 GB; a smaller value fails at apply time
-    with a "Volume of size ... is smaller than snapshot" error.
+    Root EBS volume size in GB, per instance. The ECS-optimized
+    AL2023 AMI's root snapshot requires >= 30 GB; a smaller value
+    fails at apply time with a "Volume of size ... is smaller than
+    snapshot" error. Free Tier includes 30 GB/month of gp2/gp3
+    storage total across all volumes, so the single-instance
+    default sits right at that limit.
   EOT
   type        = number
   default     = 30
@@ -145,6 +150,20 @@ variable "db_allocated_storage_gb" {
   description = "RDS allocated storage in GB. Free Tier includes 20 GB; do not exceed without expecting charges."
   type        = number
   default     = 20
+}
+
+variable "db_engine_version" {
+  description = <<-EOT
+    PostgreSQL engine version for RDS. Must be a version offered in
+    `aws_region` — this varies by region. ap-southeast-1 (Singapore)
+    does not offer 15.7 (the module default); its oldest 15.x with
+    db.t3.micro support is 15.13. Check with:
+
+      aws rds describe-db-engine-versions --engine postgres \
+        --region <region> --query 'DBEngineVersions[].EngineVersion'
+  EOT
+  type        = string
+  default     = "15.13"
 }
 
 variable "mlflow_image_tag" {

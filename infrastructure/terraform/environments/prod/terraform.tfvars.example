@@ -1,7 +1,7 @@
 # Copy this file to `terraform.tfvars` and fill in real values.
 # `terraform.tfvars` is gitignored. NEVER commit secrets.
 
-aws_region   = "us-east-1"
+aws_region   = "ap-southeast-1"
 project_name = "mlops-framework"
 env          = "prod"
 owner        = "mlops"
@@ -35,6 +35,9 @@ db_username = "mlops_admin"
 # db_password        = "REPLACE_ME"
 db_name                 = "mlops_framework"
 db_instance_class       = "db.t3.micro"
+# Must exist in aws_region — versions differ by region. 15.7 is not
+# offered in ap-southeast-1; 15.13 is.
+db_engine_version       = "15.13"
 db_allocated_storage_gb = 20
 
 # ECS image tags. Terraform only creates the ECR repositories and
