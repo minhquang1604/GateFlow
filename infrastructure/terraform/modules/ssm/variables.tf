@@ -31,11 +31,20 @@ variable "generated_secrets" {
     Map of secrets to generate and store in SSM Parameter Store. Each
     suffix is appended to the ssm_prefix. The actual key in the map is
     used as the suffix.
+
+    `base64_encode` stores base64(value) instead of the raw string. It
+    exists for consumers that require a fixed number of *bytes* rather
+    than characters — notably Airflow's Fernet key, which must decode to
+    exactly 32 bytes. Set `length = 32` alongside it: 32 ASCII characters
+    base64-encode to 44 characters that decode back to 32 bytes.
+    Generating 44 raw characters instead yields 33 bytes, which
+    `cryptography.fernet.Fernet` rejects outright.
   EOT
   type = map(object({
-    length      = number
-    special     = optional(bool, false)
-    description = string
+    length        = number
+    special       = optional(bool, false)
+    base64_encode = optional(bool, false)
+    description   = string
   }))
   default = {}
 }

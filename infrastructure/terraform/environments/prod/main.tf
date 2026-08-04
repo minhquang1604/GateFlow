@@ -96,10 +96,18 @@ module "ssm" {
   ssm_prefix  = local.ssm_prefix
   db_password = var.db_password
   generated_secrets = {
+    # 32 characters, base64-encoded to 44 — NOT 44 raw characters.
+    # Airflow feeds this straight to cryptography.fernet.Fernet, which
+    # requires the value to decode to exactly 32 bytes; 44 raw
+    # alphanumeric characters decode to 33 and are rejected. The failure
+    # is latent: Fernet is only constructed when Airflow encrypts or
+    # decrypts a Connection/Variable, so the containers boot fine and
+    # blow up later.
     "airflow/fernet-key" = {
-      length      = 44
-      special     = false
-      description = "Fernet key for Airflow connection encryption."
+      length        = 32
+      special       = false
+      base64_encode = true
+      description   = "Fernet key for Airflow connection encryption (base64 of 32 bytes)."
     }
     "airflow/web-secret" = {
       length      = 32

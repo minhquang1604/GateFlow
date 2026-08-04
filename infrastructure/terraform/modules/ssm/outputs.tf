@@ -31,9 +31,16 @@ output "parameter_arns" {
 }
 
 output "generated_secret_values" {
-  description = "Map of secret suffix -> generated plaintext value (sensitive)."
+  description = "Map of secret suffix -> the value actually stored in SSM (sensitive)."
   value = {
-    for k, p in random_password.generated : k => p.result
+    # Mirrors aws_ssm_parameter.generated.value, base64 encoding included,
+    # so a caller comparing this against Parameter Store sees the same string.
+    for k, v in var.generated_secrets :
+    k => (
+      v.base64_encode
+      ? base64encode(random_password.generated[k].result)
+      : random_password.generated[k].result
+    )
   }
   sensitive = true
 }

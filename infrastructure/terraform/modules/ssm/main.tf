@@ -39,7 +39,11 @@ resource "aws_ssm_parameter" "generated" {
   name        = "${var.ssm_prefix}/${each.key}"
   description = each.value.description
   type        = "SecureString"
-  value       = random_password.generated[each.key].result
+  value = (
+    each.value.base64_encode
+    ? base64encode(random_password.generated[each.key].result)
+    : random_password.generated[each.key].result
+  )
 
   tags = {
     Purpose = "Airflow"
