@@ -65,7 +65,7 @@ from case_studies.fraud_detection import data as fraud_data  # noqa: E402
 DATASET_NAME = "credit-card-fraud"
 MODEL_NAME = "fraud-xgboost"
 DAG_ID = "mlops_training_pipeline"
-PIPELINE_ID = "case_studies.fraud_detection.pipelines:train_xgboost"
+TRAINING_ENTRYPOINT = "case_studies.fraud_detection.pipelines:train_xgboost"
 
 
 def _say(step: str) -> None:
@@ -209,8 +209,11 @@ def main() -> int:
                 "pipeline_id": DAG_ID,
                 "trigger_type": "API",
                 "metadata": {
-                    # The DAG reads these out of /context.
-                    "pipeline_id": PIPELINE_ID,
+                    # The DAG reads these out of /context. `pipeline_id` above
+                    # is the dag_id AirflowOrchestrator triggers; the Python
+                    # callable that does the training is a different thing and
+                    # travels under its own name.
+                    "training_entrypoint": TRAINING_ENTRYPOINT,
                     "model_name": MODEL_NAME,
                     "min_f1": 0.70,
                     "orchestrator": "AirflowOrchestrator",

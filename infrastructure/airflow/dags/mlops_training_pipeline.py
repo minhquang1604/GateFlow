@@ -67,16 +67,48 @@ SERVING_BRIDGE_URL = os.environ.get("SERVING_BRIDGE_URL", "http://serving:8001")
 # ---------------------------------------------------------------------- #
 
 
-def _import_pipeline(pipeline_id: str):
-    """Resolve ``"module:callable"`` and return the callable."""
-    if ":" in pipeline_id:
-        module_name, _, fn_name = pipeline_id.partition(":")
-    else:
-        module_name, fn_name = pipeline_id, "main"
+def _import_pipeline(entrypoint: str):
+    """Resolve ``"module:callable"`` and return the callable.
+
+    The colon is required here, unlike in ``LocalDockerOrchestrator``.
+    Defaulting a bare name to ``<module>:main`` is what let a dag_id be
+    mistaken for a training entry point: ``mlops_training_pipeline``
+    imported *this module* and then failed looking for ``main`` on it.
+    """
+    if ":" not in entrypoint:
+        raise RuntimeError(
+            f"training entrypoint {entrypoint!r} must be 'module:callable'. "
+            "TrainingRun.pipeline_id holds the Airflow dag_id here, not the "
+            "Python callable — set metadata.training_entrypoint instead."
+        )
+    module_name, _, fn_name = entrypoint.partition(":")
     import importlib
 
     module = importlib.import_module(module_name)
     return getattr(module, fn_name)
+
+
+def _resolve_entrypoint(payload: dict[str, Any]) -> str:
+    """Find the training callable for a run.
+
+    ``TrainingRun.pipeline_id`` means different things to different
+    orchestrators: ``module:callable`` for the local one, a ``dag_id`` for
+    this one. So the callable travels in the run's metadata, and the
+    top-level field is only a fallback for runs created against the local
+    orchestrator's convention.
+    """
+    meta = payload.get("metadata") or {}
+    entrypoint = meta.get("training_entrypoint") or meta.get("pipeline_id")
+    if entrypoint:
+        return entrypoint
+    fallback = payload.get("pipeline_id") or ""
+    if ":" in fallback:
+        return fallback
+    raise RuntimeError(
+        "no training entrypoint for this run: set "
+        "metadata.training_entrypoint to 'module:callable' when creating "
+        f"the TrainingRun (pipeline_id={fallback!r} is the dag_id)."
+    )
 
 
 # ---------------------------------------------------------------------- #
@@ -116,8 +148,8 @@ def train(**context: Any) -> dict[str, Any]:
     if not payload:
         raise RuntimeError("resolve_context did not return a payload")
 
-    pipeline_id = payload["pipeline_id"]
-    fn = _import_pipeline(pipeline_id)
+    entrypoint = _resolve_entrypoint(payload)
+    fn = _import_pipeline(entrypoint)
 
     training_config = {
         "training_run_id": payload["training_run_id"],
@@ -132,11 +164,11 @@ def train(**context: Any) -> dict[str, Any]:
     result = fn(training_config)
     if not isinstance(result, dict):
         raise RuntimeError(
-            f"pipeline {pipeline_id!r} returned {type(result).__name__}, expected a dict"
+            f"pipeline {entrypoint!r} returned {type(result).__name__}, expected a dict"
         )
     if result.get("status") != "SUCCESS":
         raise RuntimeError(
-            f"pipeline {pipeline_id!r} failed: {result.get('error') or 'unknown'}"
+            f"pipeline {entrypoint!r} failed: {result.get('error') or 'unknown'}"
         )
     return {
         "metrics": result.get("metrics", {}),
