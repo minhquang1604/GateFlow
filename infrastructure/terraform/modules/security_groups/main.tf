@@ -59,6 +59,29 @@ resource "aws_security_group" "app" {
     cidr_blocks = [var.ingress_cidr_internet]
   }
 
+  # ECS Service Connect between container instances.
+  #
+  # The five rules above open exactly the five published ports to the
+  # internet, which covers a browser reaching a service — but nothing
+  # covers one container instance reaching another. Service Connect's
+  # Envoy sidecars talk to each other's ingress listeners on *ephemeral*
+  # ports assigned per task, not on the published ones, so without this
+  # rule every cross-host call is dropped.
+  #
+  # The symptom is silent and easy to misread: same-host calls succeed
+  # (they never leave the box) while cross-host calls to the identical
+  # DNS name time out, so it looks like one service is unhealthy rather
+  # than like a firewall. This is what kept the Airflow DAG from ever
+  # running — its tasks call the app, and mlflow's tracking URI resolves
+  # the same way.
+  ingress {
+    description = "Service Connect / dynamic port mapping between container instances"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    self        = true
+  }
+
   egress {
     description = "Allow all egress (pull images, talk to S3/RDS via AWS APIs)"
     from_port   = 0

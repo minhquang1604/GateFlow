@@ -225,7 +225,16 @@ def main() -> int:
         run_id = run["id"]
         _detail(f"TrainingRun {run_id} created (PENDING)")
 
-        started = app.post(f"/training-runs/{run_id}/start", {"dag_id": DAG_ID})
+        # ECS Service Connect's ingress listener cuts a request at 60s, so a
+        # slow /start is reported to the client as a dropped connection even
+        # when the server carries on. Treat that as "probably started" and
+        # let the poll below establish the truth, rather than failing a run
+        # that is already on its way.
+        try:
+            started = app.post(f"/training-runs/{run_id}/start", {"dag_id": DAG_ID})
+        except (httpx.ReadTimeout, httpx.RemoteProtocolError) as exc:
+            _detail(f"start request dropped ({type(exc).__name__}); checking the run")
+            started = app.get_run(run_id)
         _detail(f"MLflow run  = {started.get('mlflow_run_id')}")
         _detail(f"Airflow run = {started.get('execution_id')}")
         _detail(f"status      = {started['status']}")
