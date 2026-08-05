@@ -24,3 +24,8 @@ numpy==2.1.3
 # Server-side keeps httpx so any in-worker HTTP calls (e.g. talking
 # to the ServingBridge) work without a separate install.
 httpx==0.27.2
+
+# S3 access for pandas.read_csv("s3://...") — the deployed stack registers
+# dataset versions by S3 URI because the Kaggle CSV is 144 MB and is
+# deliberately kept out of both git and the image (.dockerignore).
+s3fs==2024.10.0

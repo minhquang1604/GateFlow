@@ -130,6 +130,10 @@ def train(**context: Any) -> dict[str, Any]:
     training_config.update(payload["metadata"].get("parameters", {}) or {})
 
     result = fn(training_config)
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            f"pipeline {pipeline_id!r} returned {type(result).__name__}, expected a dict"
+        )
     if result.get("status") != "SUCCESS":
         raise RuntimeError(
             f"pipeline {pipeline_id!r} failed: {result.get('error') or 'unknown'}"
@@ -140,6 +144,60 @@ def train(**context: Any) -> dict[str, Any]:
         "params": result.get("params", {}),
         "pipeline": result.get("pipeline"),
     }
+
+
+def report_status(**context: Any) -> dict[str, Any]:
+    """Tell the framework how this DAG run ended.
+
+    Runs with ``trigger_rule="all_done"`` so it fires whether the upstream
+    tasks succeeded or failed. Without it a TrainingRun stayed PENDING in
+    the framework's database no matter what Airflow did — the DAG had no
+    write path back, so the UI could never show a finished run.
+    """
+    import httpx
+
+    ti = context["ti"]
+    ctx_payload = ti.xcom_pull(task_ids="resolve_context")
+    if not ctx_payload:
+        # resolve_context itself failed; there is no run id to report against.
+        print("[airflow] no context payload — nothing to report")
+        return {"reported": False}
+
+    run_id = ctx_payload["training_run_id"]
+    train_payload = ti.xcom_pull(task_ids="train")
+
+    if train_payload:
+        body = {
+            "status": "SUCCESS",
+            "result": {
+                "metrics": train_payload.get("metrics", {}),
+                "params": train_payload.get("params", {}),
+                "artifact_path": train_payload.get("artifact_path"),
+                "pipeline": train_payload.get("pipeline"),
+            },
+        }
+    else:
+        failed = [
+            t.task_id
+            for t in context["dag_run"].get_task_instances()
+            if t.state == "failed"
+        ]
+        body = {
+            "status": "FAILED",
+            "error_message": (
+                f"Airflow tasks failed: {', '.join(failed) or 'unknown'} "
+                f"(dag_run {context['dag_run'].run_id})"
+            ),
+        }
+
+    response = httpx.post(
+        f"{APP_BASE_URL}/api/internal/training-runs/{run_id}/finish",
+        json=body,
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    print(f"[airflow] reported {body['status']} for training run {run_id}")
+    return {"reported": True, "status": body["status"]}
 
 
 def register_and_promote(**context: Any) -> dict[str, Any]:
@@ -223,4 +281,11 @@ with DAG(
         task_id="register_and_promote",
         python_callable=register_and_promote,
     )
-    resolve >> train_task >> promote
+    # all_done: this must run on the failure path too, otherwise a failed
+    # training leaves its TrainingRun stuck PENDING in the framework.
+    report = PythonOperator(
+        task_id="report_status",
+        python_callable=report_status,
+        trigger_rule="all_done",
+    )
+    resolve >> train_task >> promote >> report

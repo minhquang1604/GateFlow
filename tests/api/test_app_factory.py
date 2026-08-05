@@ -50,13 +50,17 @@ class TestFullAppBoot:
         # Static assets
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
-        # OpenAPI exposes 19 distinct /api paths: 15 over the framework's
-        # own rows, 2 that proxy the systems a run executed on (Airflow
-        # task state, MLflow metric history), and 2 internal ones for the
-        # Airflow DAG's HTTP calls (mlops_framework.api.routers.internal).
+        # OpenAPI exposes 26 distinct /api paths: 15 read endpoints over the
+        # framework's own rows, 2 that proxy the systems a run executed on
+        # (Airflow task state, MLflow metric history), and 9 under /internal
+        # (mlops_framework.api.routers.internal) — the DAG's callbacks plus
+        # the write endpoints, which are the only route into the deployed
+        # database from outside the VPC.
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 19, f"Expected 19, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 26, f"Expected 26, got {len(api_paths)}: {api_paths}"
+        internal = [p for p in api_paths if p.startswith("/api/internal/")]
+        assert len(internal) == 9, internal
 
     def test_app_without_ui(self, in_memory_app):
         # Build a second app with UI disabled

@@ -51,6 +51,15 @@ module "s3" {
     "app-backups" = {
       purpose = "Application backup target"
     }
+    # Training data. Dataset versions are registered by S3 URI rather than
+    # by a path inside an image: the fraud case study's CSV is 144 MB, kept
+    # out of git and out of the images (.dockerignore), and the Airflow
+    # worker reads it straight from here via s3fs. Versioned, so a
+    # DatasetVersion's content hash stays resolvable after an overwrite.
+    "datasets" = {
+      purpose              = "Training datasets read by pipelines"
+      multipart_abort_days = 7
+    }
   }
 }
 
@@ -312,12 +321,24 @@ module "ecs" {
     airflow-scheduler = {
       image          = local.airflow_image
       container_port = 8793
-      # 512 MiB / 512 CPU units. At the default 128 CPU units the
+      # 1280 MiB / 512 CPU units. At the default 128 CPU units the
       # scheduler measured 150-200% average CPU with ~700% peaks
       # (i.e. 2-7x its reservation), starving whichever instance it
       # landed on. The tuning below cuts the actual work; this
       # raises the reservation so ECS accounts for it honestly.
-      memory  = 512
+      #
+      # Memory went 512 -> 1280 because LocalExecutor runs DAG tasks as
+      # subprocesses of the scheduler, so the training itself lives in
+      # this reservation. mlops_training_pipeline reads a 144 MB CSV into
+      # pandas (284,807 x 31), converts to a float32 matrix and fits 200
+      # XGBoost trees; 512 MiB is an OOM kill, not a tight fit.
+      #
+      # This puts the fleet at 91% of schedulable memory (3464 of 3826
+      # MiB across 2x t3.small). It packs — scheduler+serving on one
+      # host, webserver+mlflow+app on the other — but there is no room
+      # left for a sixth task. If another service is added, or training
+      # grows, move to t3.medium rather than shaving this back.
+      memory  = 1280
       cpu     = 512
       command = ["scheduler"]
       environment = {

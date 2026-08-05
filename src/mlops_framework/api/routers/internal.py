@@ -11,28 +11,49 @@ These routes intentionally do the same work
 ``mlops_training_pipeline.py`` used to do in-process: resolve a
 TrainingRun + its DatasetVersion, and apply the model promotion
 policy after a training run completes.
+
+They are also the *only* way anything outside the VPC can write to the
+framework's database. RDS is reachable from the app's security group and
+nowhere else, so an application that wants to register a dataset or start
+a training run against the deployed stack has to come through here. The
+handlers are thin: each one calls the same manager an in-process caller
+would, so there is no second implementation of the lifecycle rules.
+
+Creation endpoints are **get-or-create** where a natural key exists
+(dataset name, model name). Registering the same dataset twice is a
+normal thing for a client script to do on a re-run, and returning 409
+would push the retry logic into every caller.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mlops_framework.api.deps import get_db, get_model_manager
+from mlops_framework.api.deps import (
+    get_dataset_manager,
+    get_db,
+    get_model_manager,
+    get_training_manager,
+)
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
+from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.governance.promotion import (
     ModelPromotionPolicy,
     PromotionConfig,
     PromotionContext,
 )
 from mlops_framework.model.manager import ModelManager
+from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy
+from mlops_framework.training.manager import TrainingManager
 
 router = APIRouter()
 
@@ -171,3 +192,349 @@ def promote_model(
         model_version_id=candidate.id,
         model_version=candidate.version_number,
     )
+
+
+# ---------------------------------------------------------------------- #
+# Write endpoints — dataset / model registration
+# ---------------------------------------------------------------------- #
+
+
+class CreateDatasetRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class DatasetOut(BaseModel):
+    id: int
+    name: str
+    created: bool
+
+
+@router.post("/internal/datasets", response_model=DatasetOut)
+def create_dataset(
+    request: CreateDatasetRequest,
+    dm: DatasetManager = Depends(get_dataset_manager),
+) -> DatasetOut:
+    """Get or create a dataset by name."""
+    existing = dm.get_dataset_by_name(request.name)
+    if existing is not None:
+        return DatasetOut(id=existing.id, name=existing.name, created=False)
+    dataset = dm.create_dataset(request.name, description=request.description)
+    return DatasetOut(id=dataset.id, name=dataset.name, created=True)
+
+
+class CreateDatasetVersionRequest(BaseModel):
+    storage_uri: str
+    row_count: int
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class DatasetVersionOut(BaseModel):
+    id: int
+    dataset_id: int
+    version_number: int
+    storage_uri: str
+    row_count: int
+    checksum: str
+    schema_hash: str
+    created: bool
+
+
+@router.post(
+    "/internal/datasets/{dataset_id}/versions",
+    response_model=DatasetVersionOut,
+)
+def create_dataset_version(
+    dataset_id: int,
+    request: CreateDatasetVersionRequest,
+    dm: DatasetManager = Depends(get_dataset_manager),
+) -> DatasetVersionOut:
+    """Register a new immutable version of a dataset.
+
+    If ``metadata`` carries a ``content_sha256`` and an existing version of
+    this dataset has the same one, that version is returned instead of a new
+    one. The framework's own checksum hashes the storage URI plus metadata
+    rather than the bytes, so without this a client re-running against
+    unchanged data would mint a fresh version every time and break the
+    "a version pins the data" promise the readiness engine relies on.
+    """
+    try:
+        dm.get_dataset(dataset_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    content_hash = request.metadata.get("content_sha256")
+    if content_hash:
+        for existing in dm.list_versions(dataset_id):
+            meta = json.loads(existing.metadata_json or "{}")
+            if meta.get("content_sha256") == content_hash:
+                return DatasetVersionOut(
+                    id=existing.id,
+                    dataset_id=existing.dataset_id,
+                    version_number=existing.version_number,
+                    storage_uri=existing.storage_uri,
+                    row_count=existing.row_count,
+                    checksum=existing.checksum,
+                    schema_hash=existing.schema_hash,
+                    created=False,
+                )
+
+    version = dm.create_version(
+        dataset_id=dataset_id,
+        storage_uri=request.storage_uri,
+        row_count=request.row_count,
+        metadata=request.metadata or None,
+    )
+    return DatasetVersionOut(
+        id=version.id,
+        dataset_id=version.dataset_id,
+        version_number=version.version_number,
+        storage_uri=version.storage_uri,
+        row_count=version.row_count,
+        checksum=version.checksum,
+        schema_hash=version.schema_hash,
+        created=True,
+    )
+
+
+class CreateModelRequest(BaseModel):
+    name: str
+    task: Optional[str] = None
+    description: Optional[str] = None
+
+
+class ModelOut(BaseModel):
+    id: int
+    name: str
+    created: bool
+
+
+@router.post("/internal/models", response_model=ModelOut)
+def create_model(
+    request: CreateModelRequest,
+    mm: ModelManager = Depends(get_model_manager),
+) -> ModelOut:
+    """Get or create a model by name."""
+    existing = mm.get_model_by_name(request.name)
+    if existing is not None:
+        return ModelOut(id=existing.id, name=existing.name, created=False)
+    model = mm.create_model(
+        request.name, task=request.task, description=request.description
+    )
+    return ModelOut(id=model.id, name=model.name, created=True)
+
+
+# ---------------------------------------------------------------------- #
+# POST /internal/readiness/{version_id}
+# ---------------------------------------------------------------------- #
+
+
+class ReadinessRequest(BaseModel):
+    policy: dict[str, Any] = Field(default_factory=dict)
+
+
+class ReadinessOut(BaseModel):
+    dataset_version_id: int
+    status: str
+    is_ready: bool
+    checks: dict[str, str]
+    reasons: list[str]
+
+
+@router.post("/internal/readiness/{version_id}", response_model=ReadinessOut)
+def evaluate_readiness(
+    version_id: int,
+    request: ReadinessRequest,
+    db: Session = Depends(get_db),
+    dm: DatasetManager = Depends(get_dataset_manager),
+) -> ReadinessOut:
+    """Run the readiness engine against a dataset version and persist it.
+
+    The decision is what gates training, so it has to be made by the
+    framework rather than asserted by the caller.
+    """
+    try:
+        version = dm.get_version(version_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    policy = TrainingPolicy.from_dict(request.policy) if request.policy else TrainingPolicy()
+    result = ReadinessEngine(db).evaluate(version, policy=policy)
+    return ReadinessOut(
+        dataset_version_id=version_id,
+        status=result.status.value,
+        is_ready=bool(result.is_ready),
+        checks=result.check_dict(),
+        reasons=list(result.reasons),
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Training-run lifecycle
+# ---------------------------------------------------------------------- #
+
+
+class CreateTrainingRunRequest(BaseModel):
+    dataset_version_id: int
+    pipeline_id: str
+    trigger_type: str = "API"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TrainingRunOut(BaseModel):
+    id: int
+    status: str
+    pipeline_id: Optional[str] = None
+    dataset_version_id: Optional[int] = None
+    mlflow_run_id: Optional[str] = None
+    execution_id: Optional[str] = None
+
+
+def _run_out(run: TrainingRun, tm: TrainingManager) -> TrainingRunOut:
+    meta = tm.get_run_metadata(run.id)
+    status = run.status
+    return TrainingRunOut(
+        id=run.id,
+        status=getattr(status, "value", status),
+        pipeline_id=run.pipeline_id,
+        dataset_version_id=run.dataset_version_id,
+        mlflow_run_id=run.mlflow_run_id,
+        execution_id=meta.get("orchestrator_execution_id"),
+    )
+
+
+@router.post("/internal/training-runs", response_model=TrainingRunOut)
+def create_training_run(
+    request: CreateTrainingRunRequest,
+    tm: TrainingManager = Depends(get_training_manager),
+) -> TrainingRunOut:
+    """Create a PENDING training run against a dataset version."""
+    try:
+        run = tm.create_run(
+            dataset_version_id=request.dataset_version_id,
+            pipeline_id=request.pipeline_id,
+            trigger_type=request.trigger_type,
+            metadata=request.metadata or None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return _run_out(run, tm)
+
+
+class StartTrainingRunRequest(BaseModel):
+    # Defaults come from the app's own environment so a client does not
+    # need to know the deployment's internal hostnames.
+    experiment_name: str = "fraud-detection"
+    dag_id: Optional[str] = None
+
+
+@router.post("/internal/training-runs/{run_id}/start", response_model=TrainingRunOut)
+def start_training_run(
+    run_id: int,
+    request: StartTrainingRunRequest,
+    db: Session = Depends(get_db),
+    tm: TrainingManager = Depends(get_training_manager),
+) -> TrainingRunOut:
+    """Start an MLflow run, trigger the Airflow DAG, mark the run RUNNING.
+
+    This is ``TrainingService.start_run`` exposed over HTTP. It belongs on
+    the server rather than in the client for two reasons: the app already
+    holds the MLflow and Airflow credentials, and the tracker run must
+    exist *before* the DAG reads it out of the run context — a client that
+    created it separately would race the scheduler.
+    """
+    from mlops_framework.orchestration.airflow import AirflowOrchestrator
+    from mlops_framework.training.service import TrainingService
+
+    base_url = os.environ.get("AIRFLOW_BASE_URL")
+    if not base_url:
+        raise HTTPException(
+            status_code=503,
+            detail="AIRFLOW_BASE_URL is not configured on this deployment",
+        )
+
+    tracker = None
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        from mlops_framework.tracking.mlflow import MLflowTracker
+
+        tracker = MLflowTracker(
+            tracking_uri=tracking_uri, experiment_name=request.experiment_name
+        )
+
+    run = tm.get_run(run_id)
+    if request.dag_id and run.pipeline_id != request.dag_id:
+        run.pipeline_id = request.dag_id
+
+    with AirflowOrchestrator(
+        base_url=base_url,
+        username=os.environ.get("AIRFLOW_USERNAME", "airflow"),
+        password=os.environ.get("AIRFLOW_PASSWORD", "airflow"),
+    ) as orchestrator:
+        service = TrainingService(
+            training_manager=tm, orchestrator=orchestrator, tracker=tracker
+        )
+        # The DAG reads tracker_run_id and tracking_uri out of the run's
+        # metadata via /context, so they must be persisted, not just passed
+        # to the orchestrator.
+        try:
+            service.start_run(run_id)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"start failed: {exc}") from exc
+
+    run = tm.get_run(run_id)
+    if tracker is not None and run.mlflow_run_id:
+        tm.update_metadata(
+            run_id,
+            {"tracker_run_id": run.mlflow_run_id, "tracking_uri": tracking_uri},
+        )
+    return _run_out(run, tm)
+
+
+class FinishTrainingRunRequest(BaseModel):
+    status: str = Field(description="SUCCESS or FAILED")
+    error_message: Optional[str] = None
+    result: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/internal/training-runs/{run_id}/finish", response_model=TrainingRunOut)
+def finish_training_run(
+    run_id: int,
+    request: FinishTrainingRunRequest,
+    tm: TrainingManager = Depends(get_training_manager),
+) -> TrainingRunOut:
+    """Close out a run from the orchestrator that executed it.
+
+    Without this the DAG had no way to report back, so a run stayed
+    PENDING in the UI forever no matter how the training actually went.
+    ``result`` carries the pipeline's own report (metrics, params,
+    artifact path) and is stored where the API's run schema reads it.
+    """
+    wanted = request.status.upper()
+    if wanted not in {"SUCCESS", "FAILED"}:
+        raise HTTPException(
+            status_code=422, detail="status must be SUCCESS or FAILED"
+        )
+    try:
+        run = tm.get_run(run_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # The lifecycle has no PENDING -> SUCCESS/FAILED edge, by design. A DAG
+    # that blew up in its first task still executed, though, so move the run
+    # through RUNNING rather than rejecting the report and leaving it PENDING
+    # forever — which is the exact failure this endpoint exists to end.
+    status = getattr(run.status, "value", run.status)
+    if status == "PENDING":
+        tm.start_run(run_id)
+
+    try:
+        if request.result:
+            tm.update_metadata(run_id, {"orchestrator_result": request.result})
+        if wanted == "SUCCESS":
+            run = tm.complete_run(run_id)
+        else:
+            run = tm.fail_run(run_id, error_message=request.error_message)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _run_out(run, tm)
