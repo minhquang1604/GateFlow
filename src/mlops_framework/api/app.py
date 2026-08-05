@@ -66,4 +66,41 @@ def create_app(
 
         _mount_ui(app, templates_dir=ui_templates_dir)
 
+    _warm_mlflow_import(app)
+
     return app
+
+
+def _warm_mlflow_import(app: FastAPI) -> None:
+    """Import mlflow in the background at boot when it will be needed.
+
+    ``importing mlflow`` costs ~14s of CPU — it drags in pandas, sqlalchemy,
+    alembic and more. The framework imports it lazily on purpose so it stays
+    usable without MLflow installed, but that put the whole cost inside the
+    first request that needed it. On a container reserved 320 CPU units
+    (0.31 vCPU) that stretched past the 60s timeout on ECS Service Connect's
+    ingress listener, so ``POST /internal/training-runs/{id}/start`` was cut
+    off mid-import every time and the caller saw an empty reply.
+
+    Warming it on a daemon thread keeps startup itself fast — blocking here
+    would eat into the health check's start period — and by the time a
+    client can reach ``/start`` the module is already in ``sys.modules``.
+    Failures are ignored: this is a cache warm, and the endpoint still
+    reports a missing or unreachable MLflow properly on its own.
+    """
+    import os
+
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        return
+
+    @app.on_event("startup")
+    def _warm() -> None:
+        import threading
+
+        def _load() -> None:
+            try:
+                import mlflow  # noqa: F401
+            except Exception:  # pragma: no cover - environment dependent
+                pass
+
+        threading.Thread(target=_load, name="mlflow-warm", daemon=True).start()

@@ -28,6 +28,7 @@ would push the retry logic into every caller.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any, Optional
 
@@ -54,6 +55,8 @@ from mlops_framework.governance.promotion import (
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy
 from mlops_framework.training.manager import TrainingManager
+
+_log = logging.getLogger("mlops_framework.api.internal")
 
 router = APIRouter()
 
@@ -458,14 +461,25 @@ def start_training_run(
     if tracking_uri:
         from mlops_framework.tracking.mlflow import MLflowTracker
 
-        tracker = MLflowTracker(
-            tracking_uri=tracking_uri, experiment_name=request.experiment_name
-        )
+        # Constructing the tracker reaches out to the tracking server, so it
+        # fails the same way a network call does. It sat outside the try
+        # below once, and an unreachable MLflow surfaced as an opaque 500
+        # instead of naming the dependency that was down.
+        try:
+            tracker = MLflowTracker(
+                tracking_uri=tracking_uri, experiment_name=request.experiment_name
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"MLflow at {tracking_uri} is unreachable: {exc}",
+            ) from exc
 
     run = tm.get_run(run_id)
     if request.dag_id and run.pipeline_id != request.dag_id:
         run.pipeline_id = request.dag_id
 
+    _log.info("run %s: tracker ready, triggering %s", run_id, base_url)
     with AirflowOrchestrator(
         base_url=base_url,
         username=os.environ.get("AIRFLOW_USERNAME", "airflow"),
@@ -478,9 +492,11 @@ def start_training_run(
         # metadata via /context, so they must be persisted, not just passed
         # to the orchestrator.
         try:
-            service.start_run(run_id)
+            execution_id = service.start_run(run_id)
         except Exception as exc:
+            _log.exception("run %s: start failed", run_id)
             raise HTTPException(status_code=502, detail=f"start failed: {exc}") from exc
+        _log.info("run %s: triggered %s", run_id, execution_id)
 
     run = tm.get_run(run_id)
     if tracker is not None and run.mlflow_run_id:
