@@ -369,6 +369,13 @@ module "ecs" {
         # mlops_training_pipeline.py's HTTP calls need these.
         APP_BASE_URL       = "http://app:8000"
         SERVING_BRIDGE_URL = "http://serving:8001"
+        # Training reads its dataset straight from S3 (s3fs), so the
+        # scheduler needs a region the same way mlflow does. boto3 can
+        # usually recover this from instance metadata, but s3fs reaches S3
+        # through aiobotocore and that fallback is not dependable — an
+        # unset region surfaces as a bucket-region error mid-task rather
+        # than as a missing configuration.
+        AWS_DEFAULT_REGION = var.aws_region
       }
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
