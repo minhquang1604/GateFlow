@@ -182,15 +182,30 @@ def _icon(key: str) -> str:
     )
 
 
+def _nav_link(key: str, href: str, label: str, active: str) -> str:
+    """Render one side-navigation entry.
+
+    Split out of :func:`_sidebar` rather than inlined as an f-string: the
+    markup needs escaped quotes, and an f-string expression may not
+    contain a backslash before Python 3.12 (PEP 701). The package
+    supports 3.11, so building the two conditional fragments as plain
+    locals first is the portable form.
+    """
+    is_active = key == active
+    css = "nav-item active" if is_active else "nav-item"
+    current = ' aria-current="page"' if is_active else ""
+    return (
+        f'<a class="{css}" href="{href}"{current}>'
+        f"{_icon(key)}<span>{label}</span></a>"
+    )
+
+
 def _sidebar(active: str) -> str:
     """Render the contextual left navigation for the active page."""
     blocks: list[str] = []
     for section, items in _NAV:
         links = "".join(
-            f'<a class="nav-item{" active" if key == active else ""}" '
-            f'href="{href}"{" aria-current=\"page\"" if key == active else ""}>'
-            f"{_icon(key)}<span>{label}</span></a>"
-            for key, href, label in items
+            _nav_link(key, href, label, active) for key, href, label in items
         )
         blocks.append(
             f'<div class="nav-section">'
