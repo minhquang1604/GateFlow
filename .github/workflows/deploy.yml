@@ -17,6 +17,9 @@ name: Build, push, and deploy
 # `terraform apply`, ECS services are created pointed at `:latest`,
 # which doesn't exist in ECR yet; run this workflow (push to main, or
 # `gh workflow run deploy.yml`) to populate it.
+#
+# The `test` job gates everything below it, on the same Python the app
+# image is built from. Nothing reaches ECR unless it passes.
 
 on:
   push:
@@ -41,7 +44,41 @@ env:
   ECR_APP_REPOSITORY: ${{ vars.ECR_APP_REPOSITORY }}
 
 jobs:
+  # Gate. Until this existed the workflow built and shipped straight to
+  # ECS with nothing run against the code, and it cost an outage: an
+  # f-string containing an escaped quote is valid from Python 3.12 (PEP
+  # 701) but a SyntaxError on 3.11, so it passed the whole suite in a
+  # 3.12 dev venv and then killed the app container at import, which ECS
+  # crash-looped.
+  #
+  # The version below is the point of the job. It must track
+  # infrastructure/app/Dockerfile's base image, because testing on
+  # anything else reproduces exactly the gap that let that through.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # match infrastructure/app/Dockerfile
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install the package and its test extras
+        run: pip install -e ".[dev]"
+
+      - name: Byte-compile every module
+        # Catches version-specific syntax in files the suite never imports
+        # — the Airflow DAGs and the scripts/ helpers — which is where the
+        # tests alone would still be blind.
+        run: python -m compileall -q src case_studies infrastructure scripts tests
+
+      - name: Run the test suite
+        run: pytest tests/ -q
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.tag.outputs.tag }}
