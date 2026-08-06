@@ -80,22 +80,34 @@ variable "ec2_instance_type" {
 
 variable "instance_count" {
   description = <<-EOT
-    Number of ECS container instances to run. 2 is required on the
-    default t3.small: the full stack reserves ~2696 MiB and 1984 CPU
+    Number of ECS container instances to run. 2 is the floor on the
+    default t3.small: the full stack reserves ~3264 MiB and 1984 CPU
     units, which exceeds a single t3.small's ~1913 MiB / 2048 units.
     Setting this to 1 will leave tasks stuck PENDING forever. See
     the resource-budget comment above `services` in main.tf.
 
-    Two instances also mean a spare host. Twice during bring-up an
+    3 is the default because 2 only satisfies the total, not the
+    packing. Reservations are scheduler 1280, webserver 768, mlflow
+    640, app 320, serving 256 — the largest task alone claims 67% of
+    a node, so ECS cannot always find room for the rest after a
+    rolling redeploy shuffles placement. On 2026-08-06 exactly that
+    happened: the fleet settled into `scheduler` on one host and
+    `webserver + app + serving` on the other, leaving 633 and 569 MiB
+    free, and mlflow's 640 MiB fit neither — down by 7 MiB, with the
+    ASG pinned at 2 so ECS could not add a host itself. A third
+    instance takes the fleet from 85% to ~57% committed, which leaves
+    room for the largest task to land anywhere during a deploy.
+
+    Multiple instances also mean a spare host. Twice during bring-up an
     instance became network-wedged (ECS/SSM agents unreachable while
     EC2's own health checks still reported "ok"), and the second
     instance kept the stack serving until the bad one was replaced.
 
     Cost note: t3.small is NOT Free-Tier-eligible — roughly
-    2 x 730 hrs x $0.0264/hr ~= $39/month total in ap-southeast-1.
+    3 x 730 hrs x $0.0264/hr ~= $58/month total in ap-southeast-1.
   EOT
   type        = number
-  default     = 2
+  default     = 3
 }
 
 variable "ec2_ebs_size_gb" {
