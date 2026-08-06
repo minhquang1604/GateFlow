@@ -297,23 +297,6 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .bn-accent { color: var(--logo-accent); }
 .bn-deep { color: var(--logo-deep); }
 
-.topnav-divider {
-  width: 1px;
-  height: 20px;
-  background: var(--nav-border);
-}
-
-.env-badge {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: .04em;
-  text-transform: uppercase;
-  padding: 2px 9px;
-  border-radius: var(--radius-pill);
-  border: 1px solid var(--nav-border);
-  color: var(--nav-text);
-}
-
 .topnav-spacer { flex: 1; }
 
 .topnav-util {

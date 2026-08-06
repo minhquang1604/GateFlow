@@ -268,9 +268,6 @@ def _document(title: str, active: str, fragment: str) -> str:
     <span class="brand-name" aria-hidden="true"
       ><span class="bn-accent">ate</span><span class="bn-deep">flow</span></span>
   </a>
-  <span class="topnav-divider" aria-hidden="true"></span>
-  <span class="env-badge" title="Deployment environment">local</span>
-
   <div class="topnav-spacer"></div>
 
   <nav class="topnav-util" aria-label="Utilities">
