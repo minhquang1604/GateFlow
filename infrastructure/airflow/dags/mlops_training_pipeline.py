@@ -155,6 +155,10 @@ def train(**context: Any) -> dict[str, Any]:
         "training_run_id": payload["training_run_id"],
         "dataset_version_id": payload["dataset_version_id"],
         "csv_uri": payload["storage_uri"],
+        # Lets the pipeline confirm the S3 object still hashes to what the
+        # dataset version was registered from. .get() rather than [] so an
+        # older API that predates the field does not break the DAG.
+        "dataset_content_sha256": payload.get("dataset_content_sha256"),
         "tracker_run_id": payload["metadata"].get("tracker_run_id"),
         "tracking_uri": payload["metadata"].get("tracking_uri"),
     }

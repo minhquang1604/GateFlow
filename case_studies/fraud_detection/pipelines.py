@@ -21,10 +21,50 @@ Four pipelines are provided:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import tempfile
-from typing import Any
+from typing import Any, Optional
+
+
+_HASH_CHUNK_BYTES = 1024 * 1024
+
+
+def _source_sha256(uri: str) -> Optional[str]:
+    """SHA-256 of the bytes behind ``uri``, or None if it cannot be read.
+
+    Streams in chunks rather than reading the file in: the deployed
+    dataset is a 144 MB CSV on S3, and the Airflow worker that trains on
+    it has 1280 MiB to itself.
+
+    This is a second pass over the source — ``pandas`` reads it again to
+    parse. That is the deliberate trade: hashing the parsed frame instead
+    would not prove anything about the file, and holding the raw bytes
+    between the two steps costs the memory this avoids. Remote URIs go
+    through ``fsspec``, which ``s3fs`` brings into the Airflow image for
+    ``pandas.read_csv("s3://...")``; locally there is no scheme and the
+    plain builtin handles it.
+    """
+    try:
+        if "://" in uri and not uri.startswith("file://"):
+            import fsspec  # type: ignore[import-not-found]
+
+            handle = fsspec.open(uri, "rb")
+        else:
+            path = uri[len("file://"):] if uri.startswith("file://") else uri
+            handle = open(path, "rb")  # noqa: SIM115 - closed by the with below
+
+        digest = hashlib.sha256()
+        with handle as fh:
+            for chunk in iter(lambda: fh.read(_HASH_CHUNK_BYTES), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception as exc:  # noqa: BLE001 - an unreadable source is not
+        # this function's failure to report; the caller decides whether an
+        # unverifiable dataset should stop the run.
+        print(f"[fraud-xgboost] checksum read failed for {uri}: {exc}")
+        return None
 
 
 def train_baseline(config: dict) -> dict:
@@ -153,9 +193,41 @@ def train_xgboost(config: dict) -> dict:
         target_column,
     )
 
+    expected_sha256 = config.get("dataset_content_sha256")
+    if expected_sha256:
+        actual_sha256 = _source_sha256(csv_uri)
+        if actual_sha256 is None:
+            print(
+                f"[fraud-xgboost] could not hash {csv_uri}; "
+                "training on it unverified"
+            )
+        elif actual_sha256 != expected_sha256:
+            # Fail rather than warn. The framework's lineage will happily
+            # record this run against the registered dataset version, so a
+            # run that trained on different bytes would be indistinguishable
+            # afterwards from one that did not.
+            return {
+                "status": "FAILED",
+                "error": (
+                    "dataset content does not match the registered version: "
+                    f"expected sha256 {expected_sha256}, read {actual_sha256} "
+                    f"from {csv_uri}"
+                ),
+                "pipeline": "fraud-xgboost",
+            }
+
     try:
         df = normalize_columns(pd.read_csv(csv_uri))
-    except ValueError as exc:
+    except (ValueError, OSError, ImportError) as exc:
+        # More than ValueError: normalize_columns raises that for a bad
+        # schema, but the read itself fails with FileNotFoundError for a
+        # missing path and — since s3fs surfaces a missing key the same way
+        # — for an S3 object that has been moved, and with ImportError when
+        # a remote URI is used in an environment without fsspec installed.
+        # All three used to escape as a traceback, breaking this function's
+        # contract of always returning a status dict. Returning one instead
+        # puts the reason in TrainingRun.error_message, where the console
+        # shows it, rather than only in a worker log.
         return {
             "status": "FAILED",
             "error": f"{exc} (source: {csv_uri})",

@@ -73,6 +73,9 @@ class TrainingRunContextOut(BaseModel):
     row_count: int
     pipeline_id: Optional[str] = None
     metadata: dict[str, Any] = {}
+    # The registered file digest, so a remote worker can confirm it read
+    # the same bytes. None when the version was registered without one.
+    dataset_content_sha256: Optional[str] = None
 
 
 @router.get(
@@ -97,6 +100,10 @@ def get_training_run_context(
             status_code=404,
             detail=f"DatasetVersion {run.dataset_version_id} not found",
         )
+    try:
+        version_meta = json.loads(dataset_version.metadata_json or "{}")
+    except (TypeError, ValueError):
+        version_meta = {}
     return TrainingRunContextOut(
         training_run_id=run.id,
         dataset_version_id=dataset_version.id,
@@ -104,6 +111,7 @@ def get_training_run_context(
         row_count=dataset_version.row_count,
         pipeline_id=run.pipeline_id,
         metadata=json.loads(run.metadata_json or "{}"),
+        dataset_content_sha256=version_meta.get("content_sha256"),
     )
 
 

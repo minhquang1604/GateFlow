@@ -17,6 +17,7 @@ construction time.
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Optional
 
@@ -138,6 +139,24 @@ class TrainingService:
         # `storage_uri` is the framework's own name for it.
         config["storage_uri"] = version.storage_uri
         config["csv_uri"] = version.storage_uri
+
+        # The content digest, so the pipeline can confirm it is training on
+        # the bytes this version was registered from.
+        #
+        # Deliberately NOT DatasetVersion.checksum: that is a hash of the
+        # storage URI plus the metadata dict (see
+        # DatasetManager._calculate_version_checksum), so re-deriving it at
+        # training time would only re-confirm two values that came out of
+        # the same row. content_sha256 is the real file hash, recorded by
+        # whoever registered the version, and is absent when they did not
+        # supply one — in which case the pipeline simply cannot check.
+        try:
+            version_meta = json.loads(version.metadata_json or "{}")
+        except (TypeError, ValueError):
+            version_meta = {}
+        content_sha256 = version_meta.get("content_sha256")
+        if content_sha256:
+            config["dataset_content_sha256"] = content_sha256
 
         if tracker_run_id is not None:
             config["tracker_run_id"] = tracker_run_id
