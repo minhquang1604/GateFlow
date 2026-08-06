@@ -1,7 +1,68 @@
-// MLOps Management UI — vanilla JS, no framework and no build step.
-// Every page calls its own init function; all data comes from the JSON API.
+// Gateflow Management Console — vanilla JS, no framework and no build step.
+// The shell is composed server-side in ui/mount.py; every page calls its own
+// init function; all data comes from the JSON API.
 
 const API = "/api";
+
+/* ------------------------------------------------------------------ */
+/* Console shell — side-nav toggle and theme                           */
+/* ------------------------------------------------------------------ */
+
+const NAV_BREAKPOINT = 900; // keep in sync with the media query in app.css
+const THEME_KEY = "gateflow-theme";
+
+// Called from the shell in ui/mount.py, on every page.
+function initShell() {
+  const body = document.body;
+  const toggle = document.getElementById("nav-toggle");
+  const scrim = document.getElementById("nav-scrim");
+
+  // One button, two behaviours: on a wide viewport it folds the menu
+  // away beside the content; on a narrow one it opens a drawer over it.
+  const isNarrow = () => window.innerWidth <= NAV_BREAKPOINT;
+
+  function setExpanded() {
+    const open = isNarrow()
+      ? body.classList.contains("nav-open")
+      : !body.classList.contains("nav-collapsed");
+    toggle.setAttribute("aria-expanded", String(open));
+    scrim.hidden = !body.classList.contains("nav-open");
+  }
+
+  function closeDrawer() {
+    body.classList.remove("nav-open");
+    setExpanded();
+  }
+
+  toggle.addEventListener("click", () => {
+    body.classList.toggle(isNarrow() ? "nav-open" : "nav-collapsed");
+    setExpanded();
+  });
+  scrim.addEventListener("click", closeDrawer);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeDrawer();
+  });
+  // Resizing past the breakpoint leaves the drawer state stale otherwise.
+  window.addEventListener("resize", () => {
+    if (!isNarrow()) closeDrawer();
+    else setExpanded();
+  });
+  setExpanded();
+
+  const themeBtn = document.getElementById("theme-toggle");
+  themeBtn.addEventListener("click", () => {
+    const root = document.documentElement;
+    const dark = root.dataset.theme
+      ? root.dataset.theme === "dark"
+      : window.matchMedia("(prefers-color-scheme: dark)").matches;
+    root.dataset.theme = dark ? "light" : "dark";
+    try { localStorage.setItem(THEME_KEY, root.dataset.theme); } catch (e) { /* private mode */ }
+  });
+
+  for (const b of document.querySelectorAll('[data-action="reload"]')) {
+    b.addEventListener("click", () => location.reload());
+  }
+}
 
 async function api(path, opts = {}) {
   const r = await fetch(API + path, {

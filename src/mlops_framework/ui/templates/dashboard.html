@@ -1,30 +1,28 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dashboard · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard" class="active">Dashboard</a>
-      <a href="/datasets">Datasets</a>
-      <a href="/runs">Runs</a>
-      <a href="/models">Models</a>
-      <a href="/lineage">Lineage</a>
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Dashboard</span>
     </nav>
-  </header>
-  <main>
-    <h2>Dashboard</h2>
-    <p class="subtitle">Datasets, training runs and models tracked by this framework.</p>
-    <div id="kpi-grid" class="kpi-grid"></div>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Dashboard</h1>
+        <p class="page-desc">Datasets, training runs and models tracked by this framework.</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" data-action="reload">Refresh</button>
+        <a class="btn primary" href="/runs">View training runs</a>
+      </div>
+    </div>
+
+    <section class="container">
+      <div class="container-header">
+        <h2>Service summary</h2>
+        <span class="container-desc">Aggregate counts across the platform</span>
+      </div>
+      <div class="container-body flush">
+        <div id="kpi-grid" class="kpi-grid"></div>
+      </div>
+    </section>
+
     <h3>Activity</h3>
     <div id="recent-runs"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initDashboard();</script>
-</body>
-</html>
+<script>initDashboard();</script>

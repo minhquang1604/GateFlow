@@ -1,27 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Run · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard">Dashboard</a>
-      <a href="/datasets">Datasets</a>
-      <a href="/runs" class="active">Runs</a>
-      <a href="/models">Models</a>
-      <a href="/lineage">Lineage</a>
-    </nav>
-  </header>
-  <main>
     <div id="run-head"></div>
     <div id="run-body"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initRunDetail(location.pathname.split('/').pop());</script>
-</body>
-</html>
+<script>initRunDetail(location.pathname.split('/').pop());</script>

@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="95 95 693 714" fill="none"
+     role="img" aria-label="Gateflow">
+  <title>Gateflow</title>
+  <!-- Outer "C": a filled ring segment, not a stroke. The two end faces
+       are cut differently in the artwork — radial at the top, vertical
+       where it meets the gate — which a stroke linecap cannot express.
+       Centre (452,452); outer r=357; inner r=247. -->
+  <path fill="#2E7DD1"
+        d="M708.8 204A357 357 0 1 0 525 801.5V688A247 247 0 1 1 629.7 280.4Z"/>
+  <!-- The gate: the G's crossbar, the vertical pillar, the curved shield
+       foot, and the wedge of the open door leaf pointing up-left. -->
+  <path fill="#23528D"
+        d="M450 424H788V610A400 400 0 0 1 612 800V616L533 536L612 566V524H450Z"/>
+  <!-- Door handle. -->
+  <path fill="#23528D"
+        d="M573 638a7 7 0 0 1 7 7v20a7 7 0 0 1-14 0v-20a7 7 0 0 1 7-7Z"/>
+</svg>

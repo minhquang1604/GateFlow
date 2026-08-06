@@ -1,28 +1,13 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Lineage · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard">Dashboard</a>
-      <a href="/datasets">Datasets</a>
-      <a href="/runs">Runs</a>
-      <a href="/models">Models</a>
-      <a href="/lineage" class="active">Lineage</a>
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Lineage</span>
     </nav>
-  </header>
-  <main>
-    <h2>Lineage</h2>
-    <p class="subtitle">Dataset → DatasetVersion → TrainingRun → ModelVersion → ServingInstance.</p>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Lineage</h1>
+        <p class="page-desc">Dataset &rarr; DatasetVersion &rarr; TrainingRun &rarr; ModelVersion &rarr; ServingInstance.</p>
+      </div>
+    </div>
+
     <div id="lineage-out"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initLineage();</script>
-</body>
-</html>
+<script>initLineage();</script>

@@ -1,15 +1,28 @@
-"""Mount the Management UI on a FastAPI app.
+"""Mount the Gateflow Management UI on a FastAPI app.
 
-The UI is a collection of plain HTML pages served as ``HTMLResponse``
-strings. There is no build step and no templating engine — every page is
-a self-contained HTML document that calls the JSON API via ``fetch()`` in
-``static/app.js``.
+There is no build step and no templating engine. The console shell — top
+navigation, left side navigation, content frame — is composed here, and
+each file under ``templates/`` is a *fragment*: the inner content of
+``<main>`` plus the ``<script>`` line that boots its page. Keeping the
+shell in one place is what makes the navigation consistent; before this,
+every page carried its own copy of the header and they drifted.
+
+Layout (AWS Console style):
+
+    +--------------------------------------------------+
+    |  top navigation (dark, sticky)                    |
+    +-------------+------------------------------------+
+    |  side nav   |  main content                      |
+    |  (scrolls   |  (scrolls with the page)           |
+    |   on its    |                                    |
+    |   own)      |                                    |
+    +-------------+------------------------------------+
 
 Pages:
 
 * ``/`` and ``/dashboard`` — KPI dashboard
 * ``/datasets``, ``/datasets/{id}`` — dataset list and detail
-* ``/runs``, ``/runs/{id}`` — run list and detail
+* ``/runs``, ``/runs/{id}``, ``/runs/compare`` — runs, detail, compare
 * ``/models``, ``/models/{id}`` — model list and detail
 * ``/lineage`` — lineage explorer
 
@@ -28,6 +41,56 @@ from fastapi.staticfiles import StaticFiles
 
 _PKG_UI = Path(__file__).parent
 
+BRAND = "Gateflow"
+
+# Inline 16px stroke icons. Inlined rather than linked so the console has
+# no external asset to fetch and renders identically offline.
+_ICONS: dict[str, str] = {
+    "dashboard": (
+        '<rect x="2" y="2" width="5.5" height="5.5" rx="1"/>'
+        '<rect x="10.5" y="2" width="5.5" height="5.5" rx="1"/>'
+        '<rect x="2" y="10.5" width="5.5" height="5.5" rx="1"/>'
+        '<rect x="10.5" y="10.5" width="5.5" height="5.5" rx="1"/>'
+    ),
+    "datasets": (
+        '<ellipse cx="9" cy="4" rx="6.5" ry="2.4"/>'
+        '<path d="M2.5 4v10c0 1.3 2.9 2.4 6.5 2.4s6.5-1.1 6.5-2.4V4"/>'
+        '<path d="M2.5 9c0 1.3 2.9 2.4 6.5 2.4s6.5-1.1 6.5-2.4"/>'
+    ),
+    "runs": (
+        '<path d="M1.5 12.5l3.5-4.5 3 3 4-6 4.5 7.5"/>'
+        '<circle cx="5" cy="8" r="1.3"/><circle cx="8" cy="11" r="1.3"/>'
+    ),
+    "compare": (
+        '<path d="M9 2v14"/><rect x="2" y="5" width="4.5" height="9" rx="1"/>'
+        '<rect x="11.5" y="8" width="4.5" height="6" rx="1"/>'
+    ),
+    "models": (
+        '<path d="M9 1.8l6.5 3.6v7.2L9 16.2 2.5 12.6V5.4z"/>'
+        '<path d="M2.5 5.4L9 9l6.5-3.6M9 9v7.2"/>'
+    ),
+    "lineage": (
+        '<circle cx="3.5" cy="4" r="2"/><circle cx="3.5" cy="14" r="2"/>'
+        '<circle cx="14.5" cy="9" r="2"/><path d="M5.5 4.8l7 3.4M5.5 13.2l7-3.4"/>'
+    ),
+}
+
+# (section label, [(nav key, href, label)]). The nav key is what a route
+# passes as ``active``, so a page and its menu entry cannot drift apart.
+_NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
+    ("Overview", [("dashboard", "/dashboard", "Dashboard")]),
+    ("Data", [("datasets", "/datasets", "Datasets")]),
+    (
+        "Training",
+        [
+            ("runs", "/runs", "Training runs"),
+            ("compare", "/runs/compare", "Compare runs"),
+        ],
+    ),
+    ("Models", [("models", "/models", "Model registry")]),
+    ("Governance", [("lineage", "/lineage", "Lineage")]),
+]
+
 
 def mount_ui(
     app: FastAPI,
@@ -38,7 +101,7 @@ def mount_ui(
     Args:
         app: The FastAPI application.
         templates_dir: Optional override for the directory holding the
-            ``.html`` pages. Defaults to ``src/mlops_framework/ui/templates``.
+            page fragments. Defaults to ``src/mlops_framework/ui/templates``.
     """
     pages = templates_dir or (_PKG_UI / "templates")
     static_dir = _PKG_UI / "static"
@@ -48,57 +111,172 @@ def mount_ui(
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
-        return _load(pages, "dashboard.html", "Dashboard")
+        return _page(pages, "dashboard.html", "Dashboard", "dashboard")
 
     @app.get("/dashboard", response_class=HTMLResponse)
     def dashboard() -> str:
-        return _load(pages, "dashboard.html", "Dashboard")
+        return _page(pages, "dashboard.html", "Dashboard", "dashboard")
 
     @app.get("/datasets", response_class=HTMLResponse)
     def datasets() -> str:
-        return _load(pages, "datasets.html", "Datasets")
+        return _page(pages, "datasets.html", "Datasets", "datasets")
 
     @app.get("/datasets/{dataset_id}", response_class=HTMLResponse)
     def dataset_detail(dataset_id: int) -> str:
-        return _load(pages, "dataset_detail.html", f"Dataset #{dataset_id}")
+        return _page(
+            pages, "dataset_detail.html", f"Dataset #{dataset_id}", "datasets"
+        )
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs() -> str:
-        return _load(pages, "runs.html", "Training Runs")
+        return _page(pages, "runs.html", "Training runs", "runs")
 
     # Registered before /runs/{run_id} so "compare" is not swallowed by the
     # int path converter (which would 422 on a non-numeric segment).
     @app.get("/runs/compare", response_class=HTMLResponse)
     def runs_compare() -> str:
-        return _load(pages, "runs_compare.html", "Compare Runs")
+        return _page(pages, "runs_compare.html", "Compare runs", "compare")
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_detail(run_id: int) -> str:
-        return _load(pages, "run_detail.html", f"Run #{run_id}")
+        return _page(pages, "run_detail.html", f"Run #{run_id}", "runs")
 
     @app.get("/models", response_class=HTMLResponse)
     def models() -> str:
-        return _load(pages, "models.html", "Models")
+        return _page(pages, "models.html", "Model registry", "models")
 
     @app.get("/models/{model_id}", response_class=HTMLResponse)
     def model_detail(model_id: int) -> str:
-        return _load(pages, "model_detail.html", f"Model #{model_id}")
+        return _page(pages, "model_detail.html", f"Model #{model_id}", "models")
 
     @app.get("/lineage", response_class=HTMLResponse)
     def lineage() -> str:
-        return _load(pages, "lineage.html", "Lineage")
+        return _page(pages, "lineage.html", "Lineage", "lineage")
 
 
-def _load(pages: Path, name: str, title: str) -> str:
-    """Load a page template, or return a minimal placeholder if missing."""
+# ---------------------------------------------------------------------- #
+# Shell composition
+# ---------------------------------------------------------------------- #
+
+
+def _page(pages: Path, name: str, title: str, active: str) -> str:
+    """Wrap a page fragment in the console shell."""
     target = pages / name
-    if target.exists():
-        return target.read_text(encoding="utf-8")
-    return (
-        "<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{title} - MLOps</title>"
-        "<link rel='stylesheet' href='/static/app.css'></head>"
-        f"<body><main><h1>{title}</h1>"
-        "<p class='muted'>Page not yet implemented.</p>"
-        "</main></body></html>"
+    fragment = (
+        target.read_text(encoding="utf-8")
+        if target.exists()
+        else (
+            f'<h1 class="page-title">{title}</h1>'
+            '<p class="page-desc">Page not yet implemented.</p>'
+        )
     )
+    return _document(title, active, fragment)
+
+
+def _icon(key: str) -> str:
+    body = _ICONS.get(key, "")
+    return (
+        '<svg class="nav-icon" viewBox="0 0 18 18" fill="none" '
+        'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" '
+        f'stroke-linejoin="round" aria-hidden="true">{body}</svg>'
+    )
+
+
+def _sidebar(active: str) -> str:
+    """Render the contextual left navigation for the active page."""
+    blocks: list[str] = []
+    for section, items in _NAV:
+        links = "".join(
+            f'<a class="nav-item{" active" if key == active else ""}" '
+            f'href="{href}"{" aria-current=\"page\"" if key == active else ""}>'
+            f"{_icon(key)}<span>{label}</span></a>"
+            for key, href, label in items
+        )
+        blocks.append(
+            f'<div class="nav-section">'
+            f'<div class="nav-section-title">{section}</div>{links}</div>'
+        )
+    blocks.append(
+        '<div class="nav-section nav-external">'
+        '<div class="nav-section-title">External</div>'
+        '<a class="nav-item" href="/docs" target="_blank" rel="noopener">'
+        '<span class="nav-icon-dot"></span><span>API reference</span>'
+        '<span class="ext">&#8599;</span></a>'
+        "</div>"
+    )
+    return "".join(blocks)
+
+
+def _document(title: str, active: str, fragment: str) -> str:
+    """Compose the full HTML document around a page fragment.
+
+    ``app.js`` is loaded in ``<head>`` without ``defer`` on purpose: each
+    fragment ends with an inline ``init*()`` call, and inline scripts run
+    during parsing — ahead of any deferred script. Loading it eagerly is
+    what keeps that call valid. The file only declares functions at the
+    top level, so nothing runs before the DOM it needs exists.
+    """
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} &middot; {BRAND}</title>
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="alternate icon" href="/static/favicon.png" sizes="32x32">
+<link rel="stylesheet" href="/static/app.css">
+<script>
+  // Applied before first paint so a dark-theme reload does not flash white.
+  try {{
+    var t = localStorage.getItem("gateflow-theme");
+    if (t) document.documentElement.dataset.theme = t;
+  }} catch (e) {{}}
+</script>
+<script src="/static/app.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#content">Skip to main content</a>
+
+<header class="topnav">
+  <button class="nav-toggle" id="nav-toggle" aria-label="Toggle navigation"
+          aria-controls="sidenav" aria-expanded="true">
+    <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+  </button>
+  <a class="brand" href="/dashboard" aria-label="{BRAND}">
+    <svg class="brand-mark" viewBox="95 95 693 714" fill="none" aria-hidden="true">
+      <path class="lm-accent"
+            d="M708.8 204A357 357 0 1 0 525 801.5V688A247 247 0 1 1 629.7 280.4Z"/>
+      <path class="lm-deep"
+            d="M450 424H788V610A400 400 0 0 1 612 800V616L533 536L612 566V524H450Z"/>
+      <path class="lm-deep" d="M573 638a7 7 0 0 1 7 7v20a7 7 0 0 1-14 0v-20a7 7 0 0 1 7-7Z"/>
+    </svg>
+    <span class="brand-name" aria-hidden="true"
+      ><span class="bn-accent">ate</span><span class="bn-deep">flow</span></span>
+  </a>
+  <span class="topnav-divider" aria-hidden="true"></span>
+  <span class="env-badge" title="Deployment environment">local</span>
+
+  <div class="topnav-spacer"></div>
+
+  <nav class="topnav-util" aria-label="Utilities">
+    <a href="/docs" target="_blank" rel="noopener">API</a>
+    <button id="theme-toggle" class="topnav-btn" aria-label="Toggle colour theme">
+      <span class="theme-icon" aria-hidden="true"></span>
+    </button>
+  </nav>
+</header>
+
+<div class="app-shell">
+  <div class="nav-scrim" id="nav-scrim" hidden></div>
+  <aside class="sidenav" id="sidenav" aria-label="Service navigation">
+    {_sidebar(active)}
+  </aside>
+  <main id="content">
+{fragment}
+  </main>
+</div>
+
+<script>initShell();</script>
+</body>
+</html>
+"""

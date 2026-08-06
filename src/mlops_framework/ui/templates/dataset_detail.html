@@ -1,27 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dataset · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard">Dashboard</a>
-      <a href="/datasets" class="active">Datasets</a>
-      <a href="/runs">Runs</a>
-      <a href="/models">Models</a>
-      <a href="/lineage">Lineage</a>
-    </nav>
-  </header>
-  <main>
     <div id="ds-head"></div>
     <div id="ds-body"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initDatasetDetail(location.pathname.split('/').pop());</script>
-</body>
-</html>
+<script>initDatasetDetail(location.pathname.split('/').pop());</script>

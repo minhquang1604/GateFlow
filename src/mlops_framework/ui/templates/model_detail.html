@@ -1,27 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Model · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard">Dashboard</a>
-      <a href="/datasets">Datasets</a>
-      <a href="/runs">Runs</a>
-      <a href="/models" class="active">Models</a>
-      <a href="/lineage">Lineage</a>
-    </nav>
-  </header>
-  <main>
     <div id="model-head"></div>
     <div id="model-body"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initModelDetail(location.pathname.split('/').pop());</script>
-</body>
-</html>
+<script>initModelDetail(location.pathname.split('/').pop());</script>

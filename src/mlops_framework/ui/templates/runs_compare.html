@@ -1,29 +1,14 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Compare runs · MLOps</title>
-  <link rel="stylesheet" href="/static/app.css">
-</head>
-<body>
-  <header class="topbar">
-    <h1>MLOps</h1>
-    <nav class="main-nav">
-      <a href="/dashboard">Dashboard</a>
-      <a href="/datasets">Datasets</a>
-      <a href="/runs" class="active">Runs</a>
-      <a href="/models">Models</a>
-      <a href="/lineage">Lineage</a>
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><a href="/runs">Training runs</a>
+      <span>/</span><span aria-current="page">Compare</span>
     </nav>
-  </header>
-  <main>
-    <div class="breadcrumb"><a href="/runs">Runs</a> / compare</div>
-    <h2>Compare runs</h2>
-    <p class="subtitle">Rows whose values differ are listed first and marked ●; the best number in each row is highlighted.</p>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Compare runs</h1>
+        <p class="page-desc">Rows whose values differ are listed first and marked &#9679;; the best number in each row is highlighted.</p>
+      </div>
+    </div>
+
     <div id="compare-body"></div>
-  </main>
-  <script src="/static/app.js"></script>
-  <script>initRunsCompare();</script>
-</body>
-</html>
+<script>initRunsCompare();</script>
