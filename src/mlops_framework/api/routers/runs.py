@@ -2,9 +2,13 @@
 
 Beyond the framework's own rows, two endpoints here reach out to the
 systems a run was executed on — Airflow for per-task state, MLflow for
-step-wise metric history. Both are strictly best-effort: the UI renders
-without them, so a tracking server being down degrades a panel rather
-than failing the page.
+what it recorded about the run. Both are strictly best-effort: the UI
+renders without them, so a tracking server being down degrades a panel
+rather than failing the page.
+
+The rest of the MLflow surface — experiments, artifacts, model signature
+— lives in ``mlflow_views.py``; only the per-run view is here, next to
+the run it belongs to.
 """
 
 from __future__ import annotations
@@ -13,12 +17,12 @@ import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import get_db
-from mlops_framework.api.schemas import TrainingRunOut
+from mlops_framework.api.mlflow_gateway import panel, tracking_uri
+from mlops_framework.api.schemas import ExternalPanel, TrainingRunOut
 from mlops_framework.config.settings import get_settings
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
 
@@ -60,19 +64,6 @@ def get_run(
 # ---------------------------------------------------------------------- #
 # External-system views. Best-effort by design — see the module docstring.
 # ---------------------------------------------------------------------- #
-
-
-class ExternalPanel(BaseModel):
-    """A panel the UI renders only when the backing system answered.
-
-    ``available`` false plus ``reason`` lets the page say *why* a panel is
-    empty ("no Airflow configured") instead of rendering a blank box that
-    looks like a bug.
-    """
-
-    available: bool
-    reason: Optional[str] = None
-    data: Any = None
 
 
 def _run_or_404(db: Session, run_id: int) -> TrainingRun:
@@ -122,45 +113,57 @@ def get_run_tasks(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
     )
 
 
-@router.get("/training-runs/{run_id}/metric-history", response_model=ExternalPanel)
-def get_run_metric_history(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
-    """Step-wise metric history from MLflow, for the run's charts.
+@router.get("/training-runs/{run_id}/mlflow", response_model=ExternalPanel)
+def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
+    """Everything MLflow holds about a run, in one call.
 
-    The framework stores only each metric's final value; MLflow keeps the
-    whole series, which is what makes a training curve renderable.
+    Renamed from ``/metric-history``: that endpoint already fetched the
+    whole run via ``get_run`` and then used only the metrics, throwing away
+    the tags and info alongside them. Those carry the run's provenance —
+    the git commit, the source file, the user — which is exactly what a
+    governance-oriented console should show. Widening the payload costs
+    nothing extra on the wire to MLflow and saves the browser a round trip.
+
+    Metric *history* is the part the framework cannot reproduce on its own:
+    it stores each metric's final value, while MLflow keeps the whole
+    series, which is what makes a training curve renderable.
     """
     run = _run_or_404(db, run_id)
     if not run.mlflow_run_id:
         return ExternalPanel(available=False, reason="run has no MLflow run id")
 
-    settings = get_settings()
-    if not settings.mlflow_tracking_uri:
-        return ExternalPanel(
-            available=False, reason="MLFLOW_TRACKING_URI is not configured"
-        )
+    mlflow_run_id = str(run.mlflow_run_id)
 
-    try:
-        from mlflow.tracking import MlflowClient
-
-        client = MlflowClient(tracking_uri=settings.mlflow_tracking_uri)
-        mlflow_run = client.get_run(run.mlflow_run_id)
+    def query(client: Any) -> dict[str, Any]:
+        mlflow_run = client.get_run(mlflow_run_id)
         series = {
             key: [
                 {"step": m.step, "value": m.value, "timestamp": m.timestamp}
-                for m in client.get_metric_history(run.mlflow_run_id, key)
+                for m in client.get_metric_history(mlflow_run_id, key)
             ]
             for key in mlflow_run.data.metrics
         }
-    except Exception as exc:  # noqa: BLE001 - never fail the page
-        return ExternalPanel(available=False, reason=f"MLflow unavailable: {exc}")
-
-    return ExternalPanel(
-        available=True,
-        data={
-            "mlflow_run_id": run.mlflow_run_id,
-            "tracking_uri": settings.mlflow_tracking_uri,
+        info = mlflow_run.info
+        return {
+            "mlflow_run_id": mlflow_run_id,
+            "tracking_uri": tracking_uri(),
             "params": dict(mlflow_run.data.params),
             "metrics": dict(mlflow_run.data.metrics),
             "history": series,
-        },
-    )
+            "tags": dict(mlflow_run.data.tags or {}),
+            "info": {
+                # experiment_id is what makes the "open in MLflow" deep link
+                # correct; it used to be hardcoded to 0 in the UI, which is
+                # wrong for every run outside the Default experiment.
+                "experiment_id": info.experiment_id,
+                "run_name": info.run_name,
+                "status": info.status,
+                "start_time": info.start_time,
+                "end_time": info.end_time,
+                "artifact_uri": info.artifact_uri,
+                "user_id": info.user_id,
+                "lifecycle_stage": info.lifecycle_stage,
+            },
+        }
+
+    return panel(query)

@@ -45,22 +45,31 @@ class TestFullAppBoot:
     def test_app_with_ui_mounted(self, in_memory_app):
         client = TestClient(in_memory_app)
         # UI
-        for path in ("/", "/dashboard", "/datasets", "/runs", "/models", "/lineage"):
+        for path in (
+            "/", "/dashboard", "/datasets", "/runs", "/models", "/lineage",
+            "/experiments",
+        ):
             assert client.get(path).status_code == 200
         # Static assets
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
-        # OpenAPI exposes 26 distinct /api paths: 15 read endpoints over the
-        # framework's own rows, 2 that proxy the systems a run executed on
-        # (Airflow task state, MLflow metric history), and 9 under /internal
+        assert client.get("/static/favicon.svg").status_code == 200
+        # OpenAPI exposes 31 distinct /api paths: 15 read endpoints over the
+        # framework's own rows, 7 that proxy the systems a run executed on
+        # (1 for Airflow task state, 6 for MLflow — the per-run view,
+        # experiments, the leaderboard, artifact listing and download, and
+        # the model descriptor), and 9 under /internal
         # (mlops_framework.api.routers.internal) — the DAG's callbacks plus
         # the write endpoints, which are the only route into the deployed
         # database from outside the VPC.
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 26, f"Expected 26, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 31, f"Expected 31, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
+        external = [p for p in api_paths if "mlflow" in p or p.endswith("/tasks")
+                    or "artifacts" in p or p.endswith("/model-info")]
+        assert len(external) == 7, external
 
     def test_app_without_ui(self, in_memory_app):
         # Build a second app with UI disabled

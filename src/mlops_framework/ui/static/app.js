@@ -135,6 +135,14 @@ function statusBadge(status) {
 // them to UTC unless the string already says otherwise.
 function parseTs(s) {
   if (!s) return null;
+  // MLflow reports times as epoch milliseconds, the framework's own rows as
+  // ISO strings. Both reach these formatters, so accept a number directly
+  // rather than running it through the string path, where appending "Z"
+  // would turn it into an Invalid Date and silently render "—".
+  if (typeof s === "number") {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+  }
   const hasZone = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(s);
   const d = new Date(hasZone ? s : s + "Z");
   return isNaN(d.getTime()) ? null : d;
@@ -682,41 +690,257 @@ async function initRunDetail(id) {
           : el("div", { class: "muted" }, "No task instances — the DAG has not been scheduled.")));
   }).catch(() => {});
 
-  // MLflow metric history — the training curves the framework doesn't store.
+  // MLflow: provenance, training curves, artifacts, model signature. Each
+  // panel is appended in place so a slow or missing tracking server never
+  // holds up the rest of the page.
   const mlPanel = el("div", {});
-  sections.push(mlPanel);
-  api(`/training-runs/${id}/metric-history`).then((p) => {
+  const artifactPanel = el("div", {});
+  const modelPanel = el("div", {});
+  sections.push(mlPanel, artifactPanel, modelPanel);
+
+  api(`/training-runs/${id}/mlflow`).then((p) => {
     if (!p.available) {
       if (run.mlflow_run_id) {
         mlPanel.replaceChildren(el("h3", {}, "MLflow"), banner(p.reason, "warn"));
       }
       return;
     }
-    const hist = p.data.history || {};
+    const d = p.data;
+    const hist = d.history || {};
     const charts = Object.entries(hist)
       .filter(([, series]) => series.length > 1)
       .map(([name, series]) => lineChart(name, series));
 
+    // The experiment id comes from the run itself. It used to be hardcoded
+    // to 0, which is wrong for every run outside the Default experiment.
+    const expId = d.info?.experiment_id;
+    const deepLink = `${d.tracking_uri}/#/experiments/${expId}/runs/${d.mlflow_run_id}`;
+
     mlPanel.replaceChildren(
       el("div", { class: "section-head" },
         el("h3", {}, "MLflow"),
-        el("a", {
-          class: "faint",
-          href: `${p.data.tracking_uri}/#/experiments/0/runs/${p.data.mlflow_run_id}`,
-          target: "_blank", rel: "noopener",
-        }, "open in MLflow ↗")),
+        el("a", { class: "faint", href: deepLink, target: "_blank", rel: "noopener" },
+          "open in MLflow ↗")),
+      provenanceCard(d),
       charts.length
-        ? el("div", { class: "grid-3" }, ...charts)
-        : el("div", { class: "card" },
+        ? el("div", { class: "grid-3", style: "margin-top:16px" }, ...charts)
+        : el("div", { class: "card", style: "margin-top:16px" },
             el("div", { class: "muted" },
               "Metrics were logged once, so there is no series to plot. " +
               "Values are shown above."),
             el("dl", { class: "kv", style: "margin-top:10px" },
-              ...Object.entries(p.data.metrics || {}).flatMap(([k, v]) => [
+              ...Object.entries(d.metrics || {}).flatMap(([k, v]) => [
                 el("dt", {}, k), el("dd", {}, fmt.metric(v))]))));
   }).catch(() => {});
 
+  if (run.mlflow_run_id) {
+    renderArtifacts(artifactPanel, id, "");
+    renderModelInfo(modelPanel, id);
+  }
+
   mount(body, ...sections);
+}
+
+/* ------------------------------------------------------------------ */
+/* MLflow panels on the run detail page                                */
+/* ------------------------------------------------------------------ */
+
+// Tags MLflow sets itself. Shown as named fields rather than raw keys.
+const PROVENANCE_FIELDS = [
+  ["mlflow.runName", "Run name"],
+  ["mlflow.user", "User"],
+  ["mlflow.source.name", "Source"],
+  ["mlflow.source.type", "Source type"],
+  ["mlflow.source.git.commit", "Git commit"],
+  ["mlflow.source.git.branch", "Git branch"],
+];
+
+function provenanceCard(d) {
+  const tags = d.tags || {};
+  const info = d.info || {};
+  const rows = [];
+
+  for (const [key, label] of PROVENANCE_FIELDS) {
+    const v = tags[key];
+    if (!v) continue;
+    rows.push(el("dt", {}, label));
+    rows.push(el("dd", { class: key.endsWith("commit") ? "mono" : "" }, v));
+  }
+  if (info.experiment_id != null) {
+    rows.push(el("dt", {}, "Experiment"));
+    rows.push(el("dd", {},
+      el("a", { href: `/experiments/${encodeURIComponent(info.experiment_id)}` },
+        `#${info.experiment_id}`)));
+  }
+  if (info.artifact_uri) {
+    rows.push(el("dt", {}, "Artifact URI"));
+    rows.push(el("dd", { class: "mono" }, info.artifact_uri));
+  }
+
+  // Tags the user set themselves, which is where domain meaning lives.
+  const custom = Object.entries(tags).filter(([k]) => !k.startsWith("mlflow."));
+  for (const [k, v] of custom) {
+    rows.push(el("dt", {}, k));
+    rows.push(el("dd", {}, v));
+  }
+
+  return el("div", { class: "card" },
+    el("div", { class: "chart-title" }, "Provenance"),
+    rows.length
+      ? el("dl", { class: "kv" }, ...rows)
+      : el("div", { class: "muted" }, "No tags recorded for this run."));
+}
+
+const IMAGE_RE = /\.(png|jpe?g|gif|svg|webp)$/i;
+const TEXT_RE = /\.(txt|json|ya?ml|csv|md|log|cfg|ini|requirements)$/i;
+
+// Renders one directory of a run's artifacts, and recurses on click. Kept
+// as an explicit re-render rather than a tree widget: the API is already
+// per-directory, so this matches what the server can answer in one call.
+function renderArtifacts(host, runId, path) {
+  host.replaceChildren(el("h3", {}, "Artifacts"),
+    el("div", { class: "card muted" }, "Loading…"));
+
+  api(`/training-runs/${runId}/artifacts?path=${encodeURIComponent(path)}`).then((p) => {
+    if (!p.available) {
+      host.replaceChildren(el("h3", {}, "Artifacts"), banner(p.reason, "warn"));
+      return;
+    }
+    const entries = p.data.entries || [];
+    const crumbs = el("div", { class: "breadcrumb" },
+      el("a", { href: "#", onclick: "return false" }, "artifacts"));
+    crumbs.firstChild.addEventListener("click", () => renderArtifacts(host, runId, ""));
+    let acc = "";
+    for (const part of (path ? path.split("/") : [])) {
+      acc = acc ? `${acc}/${part}` : part;
+      const here = acc;
+      crumbs.appendChild(document.createTextNode(" / "));
+      const link = el("a", { href: "#" }, part);
+      link.addEventListener("click", (e) => { e.preventDefault(); renderArtifacts(host, runId, here); });
+      crumbs.appendChild(link);
+    }
+
+    const rawUrl = (p2) =>
+      `${API}/training-runs/${runId}/artifacts/raw?path=${encodeURIComponent(p2)}`;
+
+    const list = el("div", { class: "table-wrap" },
+      el("table", {},
+        el("thead", {}, el("tr", {},
+          el("th", {}, "Name"), el("th", {}, "Size"), el("th", {}, ""))),
+        el("tbody", {}, ...(entries.length ? entries.map((e) => {
+          const nameCell = el("td", {});
+          if (e.is_dir) {
+            const a = el("a", { href: "#" }, `${e.name}/`);
+            a.addEventListener("click", (ev) => {
+              ev.preventDefault();
+              renderArtifacts(host, runId, e.path);
+            });
+            nameCell.appendChild(a);
+          } else {
+            nameCell.appendChild(el("span", { class: "mono" }, e.name));
+          }
+          return el("tr", {},
+            nameCell,
+            el("td", { class: "num" }, e.is_dir ? "—" : fmt.bytes(e.file_size)),
+            el("td", {}, e.is_dir ? "" :
+              el("a", { href: rawUrl(e.path), target: "_blank", rel: "noopener" }, "open")));
+        }) : [emptyRow(3, "No artifacts in this directory.")]))));
+
+    // Inline previews for the things people actually came to look at:
+    // the confusion matrix and the pinned dependency list.
+    const previews = [];
+    for (const e of entries) {
+      if (e.is_dir) continue;
+      if (IMAGE_RE.test(e.name)) {
+        previews.push(el("div", { class: "card" },
+          el("div", { class: "chart-title" }, e.name),
+          el("img", {
+            src: rawUrl(e.path), alt: e.name, loading: "lazy",
+            style: "max-width:100%;height:auto;display:block;border-radius:4px",
+          })));
+      } else if (TEXT_RE.test(e.name) && (e.file_size || 0) <= 64 * 1024) {
+        const pre = el("pre", { class: "log" }, "Loading…");
+        fetch(rawUrl(e.path))
+          .then((r) => r.text())
+          .then((t) => { pre.textContent = t; })
+          .catch(() => { pre.textContent = "Could not load."; });
+        previews.push(el("div", { class: "card" },
+          el("div", { class: "chart-title" }, e.name), pre));
+      }
+    }
+
+    host.replaceChildren(
+      el("h3", {}, "Artifacts"),
+      crumbs,
+      list,
+      previews.length
+        ? el("div", { class: "grid-2", style: "margin-top:16px" }, ...previews)
+        : null);
+  }).catch(() => {});
+}
+
+function renderModelInfo(host, runId) {
+  api(`/training-runs/${runId}/model-info`).then((p) => {
+    if (!p.available) {
+      host.replaceChildren(el("h3", {}, "Model"), banner(p.reason, "warn"));
+      return;
+    }
+    const d = p.data;
+    if (!d.found) {
+      host.replaceChildren(el("h3", {}, "Model"), banner(d.note || "No model logged."));
+      return;
+    }
+
+    const sigTable = (title, specs) => {
+      if (!Array.isArray(specs) || !specs.length) return null;
+      return el("div", {},
+        el("div", { class: "chart-title", style: "margin:12px 0 6px" }, title),
+        el("div", { class: "table-wrap" },
+          el("table", {},
+            el("thead", {}, el("tr", {},
+              el("th", {}, "Name"), el("th", {}, "Type"), el("th", {}, "Shape"))),
+            el("tbody", {}, ...specs.map((s) => {
+              const spec = s["tensor-spec"] || {};
+              return el("tr", {},
+                el("td", { class: "mono" }, s.name != null ? String(s.name) : "—"),
+                el("td", { class: "mono" }, spec.dtype || s.type || "—"),
+                el("td", { class: "mono" },
+                  spec.shape ? `[${spec.shape.join(", ")}]` : "—"));
+            })))));
+    };
+
+    const sig = d.signature || {};
+    const env = [];
+    for (const [flavor, detail] of Object.entries(d.flavor_detail || {})) {
+      for (const [k, v] of Object.entries(detail || {})) {
+        env.push(el("dt", {}, `${flavor}.${k}`));
+        env.push(el("dd", { class: "mono" }, String(v)));
+      }
+    }
+
+    host.replaceChildren(
+      el("h3", {}, "Model"),
+      el("div", { class: "grid-2" },
+        el("div", { class: "card" },
+          el("div", { class: "chart-title" }, "Flavors and environment"),
+          el("dl", { class: "kv" },
+            el("dt", {}, "Flavors"),
+            el("dd", {}, (d.flavors || []).join(", ") || "—"),
+            el("dt", {}, "MLflow version"),
+            el("dd", {}, d.mlflow_version || "—"),
+            el("dt", {}, "Logged at"),
+            el("dd", {}, d.utc_time_created || "—"),
+            el("dt", {}, "Layout"),
+            el("dd", { class: "faint" },
+              d.layout === "logged-model"
+                ? "MLflow 3 logged model"
+                : "run artifact (MLflow 2)"),
+            ...env)),
+        el("div", { class: "card" },
+          el("div", { class: "chart-title" }, "Signature"),
+          sigTable("Inputs", sig.inputs) || el("div", { class: "muted" }, "No input schema."),
+          sigTable("Outputs", sig.outputs))));
+  }).catch(() => {});
 }
 
 async function initRunsCompare() {
@@ -949,4 +1173,153 @@ async function initLineage() {
   } catch (e) {
     setError(out, e);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Experiments (MLflow)                                                */
+/* ------------------------------------------------------------------ */
+
+async function initExperiments() {
+  const out = document.getElementById("experiments-out");
+  let p;
+  try {
+    p = await api("/mlflow/experiments");
+  } catch (e) {
+    setError(out, e);
+    return;
+  }
+  if (!p.available) {
+    out.replaceChildren(banner(p.reason, "warn"));
+    return;
+  }
+
+  // Deleted experiments stay in MLflow's store; showing them alongside the
+  // live ones would misrepresent what is actually being tracked.
+  const rows = (p.data.experiments || []).filter((e) => e.lifecycle_stage === "active");
+  const table = el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}));
+  out.replaceChildren(el("div", { class: "table-wrap" }, table));
+
+  makeSortable(table, rows,
+    [
+      { label: "Experiment", sort: (e) => e.name },
+      { label: "ID", sort: (e) => e.experiment_id },
+      { label: "Artifact location" },
+      { label: "Created", sort: (e) => e.creation_time },
+    ],
+    (e) => el("tr", {},
+      el("td", {}, el("a", { href: `/experiments/${encodeURIComponent(e.experiment_id)}` }, e.name)),
+      el("td", { class: "mono" }, e.experiment_id),
+      el("td", { class: "mono faint truncate", title: e.artifact_location || "" },
+        e.artifact_location || "—"),
+      el("td", { class: "muted nowrap" }, fmt.ago(e.creation_time))));
+}
+
+async function initExperimentDetail(experimentId) {
+  const head = document.getElementById("exp-head");
+  const body = document.getElementById("exp-body");
+  const rankBy = document.getElementById("rank-by");
+  const rankDir = document.getElementById("rank-dir");
+  const filterInput = document.getElementById("filter-string");
+
+  mount(head,
+    el("div", { class: "breadcrumb" },
+      el("a", { href: "/experiments" }, "Experiments"), " / ", experimentId),
+    el("h2", {}, `Experiment ${experimentId}`),
+    el("p", { class: "subtitle" },
+      "Runs ranked server-side by MLflow. Runs this framework started link back to their training run."));
+
+  // Framework runs carry the MLflow run id, so a leaderboard row can point
+  // back at the run that produced it.
+  let byMlflowId = new Map();
+  try {
+    const runs = await api("/training-runs?limit=500");
+    byMlflowId = new Map(runs.filter((r) => r.mlflow_run_id).map((r) => [r.mlflow_run_id, r.id]));
+  } catch { /* the cross-link is a bonus, not a requirement */ }
+
+  let metricsSeen = null;
+
+  async function load() {
+    body.replaceChildren(el("div", { class: "card muted" }, "Loading…"));
+    const params = new URLSearchParams({ limit: "100", direction: rankDir.value });
+    if (rankBy.value) params.set("order_by", rankBy.value);
+    if (filterInput.value.trim()) params.set("filter_string", filterInput.value.trim());
+
+    let p;
+    try {
+      p = await api(`/mlflow/experiments/${encodeURIComponent(experimentId)}/runs?${params}`);
+    } catch (e) {
+      setError(body, e);
+      return;
+    }
+    if (!p.available) {
+      body.replaceChildren(banner(p.reason, "warn"));
+      return;
+    }
+
+    const runs = p.data.runs || [];
+    const metricKeys = [...new Set(runs.flatMap((r) => Object.keys(r.metrics || {})))].sort();
+
+    // Populate the rank-by choices once, from what the runs actually have.
+    if (metricsSeen === null && metricKeys.length) {
+      metricsSeen = metricKeys;
+      rankBy.replaceChildren(
+        el("option", { value: "" }, "start time"),
+        ...metricKeys.map((k) => el("option", { value: k }, k)));
+      const preferred = METRIC_PRIORITY.find((m) => metricKeys.includes(m));
+      if (preferred) {
+        rankBy.value = preferred;
+        load();
+        return;
+      }
+    }
+
+    const shown = metricKeys.filter((k) => METRIC_PRIORITY.includes(k) || k === rankBy.value);
+    const best = {};
+    for (const k of shown) {
+      best[k] = Math.max(...runs.map((r) => (r.metrics || {})[k] ?? -Infinity));
+    }
+
+    const table = el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "#"), el("th", {}, "Run"), el("th", {}, "Status"),
+        ...shown.map((k) => el("th", {}, k)),
+        el("th", {}, "Training run"), el("th", {}, "Started"))),
+      el("tbody", {}, ...(runs.length ? runs.map((r, i) => {
+        const fwId = byMlflowId.get(r.run_id);
+        return el("tr", {},
+          el("td", { class: "num" }, String(i + 1)),
+          el("td", {}, el("span", { class: "mono", title: r.run_id },
+            r.run_name || r.run_id.slice(0, 8))),
+          el("td", {}, statusBadge(r.status)),
+          ...shown.map((k) => {
+            const v = (r.metrics || {})[k];
+            const isBest = typeof v === "number" && v === best[k] && runs.length > 1;
+            return el("td", { class: "num" },
+              isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v)) : fmt.metric(v));
+          }),
+          el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
+                            : el("span", { class: "faint" }, "—")),
+          el("td", { class: "muted nowrap" }, fmt.ago(r.start_time)));
+      }) : [emptyRow(shown.length + 5, "No runs matched.")])));
+
+    const headline = rankBy.value || METRIC_PRIORITY.find((m) => shown.includes(m));
+    const chart = headline && runs.length > 1
+      ? barChart(`${headline} by run`, runs.slice(0, 12).map((r) => ({
+          label: r.run_name || r.run_id.slice(0, 6),
+          value: (r.metrics || {})[headline] ?? 0,
+        })))
+      : null;
+
+    mount(body,
+      el("p", { class: "muted", style: "margin:0 0 10px" },
+        `${runs.length} run${runs.length === 1 ? "" : "s"} · ordered by ${p.data.order_by}`),
+      el("div", { class: "table-wrap" }, table),
+      chart ? el("div", { style: "margin-top:16px;max-width:560px" }, chart) : null);
+  }
+
+  document.getElementById("apply-rank").addEventListener("click", load);
+  rankBy.addEventListener("change", load);
+  rankDir.addEventListener("change", load);
+  filterInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+  await load();
 }

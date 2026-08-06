@@ -32,6 +32,21 @@ class ApiModel(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ExternalPanel(BaseModel):
+    """A panel the UI renders only when the backing system answered.
+
+    Every view that reaches outside the framework's own database — MLflow,
+    Airflow — returns this shape. ``available`` false plus ``reason`` lets
+    the page say *why* a panel is empty ("no MLflow configured") instead of
+    rendering a blank box that looks like a bug, and it keeps a tracking
+    server being down from failing the whole page.
+    """
+
+    available: bool
+    reason: Optional[str] = None
+    data: Any = None
+
+
 # ---------------------------------------------------------------------- #
 # Datasets
 # ---------------------------------------------------------------------- #

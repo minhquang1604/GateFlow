@@ -1,0 +1,14 @@
+    <div id="exp-head"></div>
+    <div class="toolbar">
+      <label class="faint" for="rank-by">Rank by</label>
+      <select id="rank-by" aria-label="Metric to rank by"></select>
+      <select id="rank-dir" aria-label="Sort direction">
+        <option value="DESC">highest first</option>
+        <option value="ASC">lowest first</option>
+      </select>
+      <input type="search" id="filter-string" size="34"
+             placeholder="MLflow filter, e.g. params.max_depth = '6'">
+      <button id="apply-rank" class="btn">Apply</button>
+    </div>
+    <div id="exp-body"></div>
+<script>initExperimentDetail(decodeURIComponent(location.pathname.split('/').pop()));</script>

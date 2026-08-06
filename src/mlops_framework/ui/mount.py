@@ -73,6 +73,10 @@ _ICONS: dict[str, str] = {
         '<circle cx="3.5" cy="4" r="2"/><circle cx="3.5" cy="14" r="2"/>'
         '<circle cx="14.5" cy="9" r="2"/><path d="M5.5 4.8l7 3.4M5.5 13.2l7-3.4"/>'
     ),
+    "experiments": (
+        '<path d="M7 2v4.6L2.8 13.6A1.6 1.6 0 0 0 4.2 16h9.6a1.6 1.6 0 0 0 '
+        '1.4-2.4L11 6.6V2"/><path d="M5.8 2h6.4M5.4 10.5h7.2"/>'
+    ),
 }
 
 # (section label, [(nav key, href, label)]). The nav key is what a route
@@ -89,6 +93,11 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     ),
     ("Models", [("models", "/models", "Model registry")]),
     ("Governance", [("lineage", "/lineage", "Lineage")]),
+    # Kept apart from "Training runs" on purpose: a TrainingRun is a row in
+    # this framework's Postgres, an MLflow run is the tracking server's own
+    # record. They are two identity spaces, and folding them into one menu
+    # entry invites the reader to confuse the ids.
+    ("MLflow", [("experiments", "/experiments", "Experiments")]),
 ]
 
 
@@ -152,6 +161,21 @@ def mount_ui(
     @app.get("/lineage", response_class=HTMLResponse)
     def lineage() -> str:
         return _page(pages, "lineage.html", "Lineage", "lineage")
+
+    @app.get("/experiments", response_class=HTMLResponse)
+    def experiments() -> str:
+        return _page(pages, "experiments.html", "Experiments", "experiments")
+
+    # The id is a string, not an int: MLflow experiment ids are opaque and
+    # are not the framework's own integer primary keys.
+    @app.get("/experiments/{experiment_id}", response_class=HTMLResponse)
+    def experiment_detail(experiment_id: str) -> str:
+        return _page(
+            pages,
+            "experiment_detail.html",
+            f"Experiment {experiment_id}",
+            "experiments",
+        )
 
 
 # ---------------------------------------------------------------------- #
