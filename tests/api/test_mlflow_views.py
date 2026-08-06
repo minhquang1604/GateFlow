@@ -75,6 +75,19 @@ class _FakeMlflowClient:
             )
         ]
 
+    def get_run(self, run_id):
+        """A plain run with no parent — tests that care override this."""
+        return SimpleNamespace(
+            info=SimpleNamespace(
+                run_id=run_id,
+                run_name="standalone",
+                status="FINISHED",
+                start_time=1_700_000_000_000,
+                experiment_id="7",
+            ),
+            data=SimpleNamespace(metrics={}, params={}, tags={}),
+        )
+
     # -- artifacts ------------------------------------------------------ #
 
     def list_artifacts(self, run_id, path=None):
@@ -336,3 +349,184 @@ class TestModelInfo:
         data = client.get(f"/api/training-runs/{run_with_mlflow}/model-info").json()["data"]
         assert data["found"] is False
         assert "log_model" in data["note"]
+
+
+# ---------------------------------------------------------------------- #
+# Model registry reconciliation
+# ---------------------------------------------------------------------- #
+
+
+class _FakeModelVersion:
+    def __init__(self, name, version, run_id, stage="None", status="READY"):
+        self.name = name
+        self.version = version
+        self.run_id = run_id
+        self.current_stage = stage
+        self.status = status
+
+
+class _FakeRegisteredModel:
+    def __init__(self, name, aliases):
+        self.name = name
+        self.aliases = aliases
+
+
+def _with_registry(fake, versions, aliases):
+    """Attach a fake registry to the shared fake client."""
+    fake.search_model_versions = lambda f="": [
+        v
+        for v in versions
+        if (f"name='{v.name}'" == f or f"run_id='{v.run_id}'" == f or not f)
+    ]
+    fake.get_registered_model = lambda name: _FakeRegisteredModel(name, aliases)
+    return fake
+
+
+def _seed_model(session_factory, states_and_runs):
+    """Create a Model with versions in the given states/MLflow run ids."""
+    from mlops_framework.database.models.dataset import Dataset
+    from mlops_framework.database.models.dataset_version import DatasetVersion
+    from mlops_framework.database.models.model import Model as ModelRow
+    from mlops_framework.database.models.model_version import ModelVersion
+
+    s = session_factory()
+    try:
+        ds = Dataset(name="d-model")
+        s.add(ds)
+        s.flush()
+        dv = DatasetVersion(
+            dataset_id=ds.id, version_number=1, storage_uri="s3://x",
+            checksum="a" * 64, schema_hash="b" * 64, row_count=10,
+        )
+        s.add(dv)
+        s.flush()
+        model = ModelRow(name="fraud-xgboost")
+        s.add(model)
+        s.flush()
+        for i, (state, run_id) in enumerate(states_and_runs, start=1):
+            s.add(
+                ModelVersion(
+                    model_id=model.id, dataset_version_id=dv.id,
+                    version_number=i, state=state, mlflow_run_id=run_id,
+                )
+            )
+        s.commit()
+        return model.id
+    finally:
+        s.close()
+
+
+class TestRegistryReconciliation:
+    def test_agreement_reports_no_drift(self, client, fake_mlflow, session_factory):
+        model_id = _seed_model(session_factory, [("PRODUCTION", "run-a")])
+        _with_registry(
+            fake_mlflow,
+            [_FakeModelVersion("fraud-xgboost", "1", "run-a")],
+            {"champion": "1"},
+        )
+        d = client.get(f"/api/models/{model_id}/registry-reconciliation").json()["data"]
+        assert d["drift_count"] == 0
+        assert d["versions"][0]["mlflow_aliases"] == ["champion"]
+
+    def test_production_without_alias_is_drift(
+        self, client, fake_mlflow, session_factory
+    ):
+        """The case the panel exists for: promoted here, unblessed there."""
+        model_id = _seed_model(session_factory, [("PRODUCTION", "run-a")])
+        _with_registry(
+            fake_mlflow, [_FakeModelVersion("fraud-xgboost", "1", "run-a")], {}
+        )
+        d = client.get(f"/api/models/{model_id}/registry-reconciliation").json()["data"]
+        assert d["drift_count"] == 1
+        assert "no production stage or alias" in d["versions"][0]["drift_reason"]
+
+    def test_production_missing_from_registry_is_drift(
+        self, client, fake_mlflow, session_factory
+    ):
+        model_id = _seed_model(session_factory, [("PRODUCTION", "run-missing")])
+        _with_registry(fake_mlflow, [], {})
+        d = client.get(f"/api/models/{model_id}/registry-reconciliation").json()["data"]
+        assert d["drift_count"] == 1
+        assert d["versions"][0]["in_mlflow_registry"] is False
+
+    def test_rejected_version_absent_from_registry_is_not_drift(
+        self, client, fake_mlflow, session_factory
+    ):
+        """A CANDIDATE or REJECTED version was never meant to be registered."""
+        model_id = _seed_model(session_factory, [("REJECTED", "run-b")])
+        _with_registry(fake_mlflow, [], {})
+        d = client.get(f"/api/models/{model_id}/registry-reconciliation").json()["data"]
+        assert d["drift_count"] == 0
+
+    def test_legacy_production_stage_counts_as_serving(
+        self, client, fake_mlflow, session_factory
+    ):
+        """MLflow 2.x used stages; a stage of Production still means served."""
+        model_id = _seed_model(session_factory, [("PRODUCTION", "run-a")])
+        _with_registry(
+            fake_mlflow,
+            [_FakeModelVersion("fraud-xgboost", "1", "run-a", stage="Production")],
+            {},
+        )
+        d = client.get(f"/api/models/{model_id}/registry-reconciliation").json()["data"]
+        assert d["drift_count"] == 0
+
+    def test_unknown_model_is_404(self, client, fake_mlflow):
+        assert (
+            client.get("/api/models/9999/registry-reconciliation").status_code == 404
+        )
+
+
+# ---------------------------------------------------------------------- #
+# Nested runs
+# ---------------------------------------------------------------------- #
+
+
+class TestNestedRuns:
+    def _fake_run(self, run_id, parent=None, name="r"):
+        return SimpleNamespace(
+            info=SimpleNamespace(
+                run_id=run_id, run_name=name, status="FINISHED",
+                start_time=1, experiment_id="7",
+            ),
+            data=SimpleNamespace(
+                metrics={"accuracy": 0.9}, params={"max_depth": "5"},
+                tags={"mlflow.parentRunId": parent} if parent else {},
+            ),
+        )
+
+    def test_child_reports_parent_and_siblings(
+        self, client, fake_mlflow, run_with_mlflow, monkeypatch
+    ):
+        parent_id = "parent-1"
+        runs = {
+            MLFLOW_RUN_ID: self._fake_run(MLFLOW_RUN_ID, parent_id, "child-a"),
+            parent_id: self._fake_run(parent_id, None, "sweep-parent"),
+        }
+        monkeypatch.setattr(fake_mlflow, "get_run", lambda rid: runs[rid])
+        monkeypatch.setattr(
+            fake_mlflow,
+            "search_runs",
+            lambda **kw: [
+                self._fake_run(MLFLOW_RUN_ID, parent_id, "child-a"),
+                self._fake_run("sib", parent_id, "child-b"),
+            ],
+        )
+        d = client.get(f"/api/training-runs/{run_with_mlflow}/nested").json()["data"]
+        assert d["is_child"] is True
+        assert d["parent"]["run_name"] == "sweep-parent"
+        assert [c["run_name"] for c in d["children"]] == ["child-a", "child-b"]
+        assert [c["is_self"] for c in d["children"]] == [True, False]
+
+    def test_standalone_run_has_no_tree(
+        self, client, fake_mlflow, run_with_mlflow, monkeypatch
+    ):
+        monkeypatch.setattr(
+            fake_mlflow, "get_run", lambda rid: self._fake_run(MLFLOW_RUN_ID)
+        )
+        monkeypatch.setattr(fake_mlflow, "search_runs", lambda **kw: [])
+        d = client.get(f"/api/training-runs/{run_with_mlflow}/nested").json()["data"]
+        assert d["is_child"] is False
+        assert d["is_parent"] is False
+        assert d["parent"] is None
+        assert d["children"] == []

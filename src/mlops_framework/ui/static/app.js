@@ -694,9 +694,10 @@ async function initRunDetail(id) {
   // panel is appended in place so a slow or missing tracking server never
   // holds up the rest of the page.
   const mlPanel = el("div", {});
+  const nestedPanel = el("div", {});
   const artifactPanel = el("div", {});
   const modelPanel = el("div", {});
-  sections.push(mlPanel, artifactPanel, modelPanel);
+  sections.push(mlPanel, nestedPanel, artifactPanel, modelPanel);
 
   api(`/training-runs/${id}/mlflow`).then((p) => {
     if (!p.available) {
@@ -716,12 +717,19 @@ async function initRunDetail(id) {
     const expId = d.info?.experiment_id;
     const deepLink = `${d.tracking_uri}/#/experiments/${expId}/runs/${d.mlflow_run_id}`;
 
-    mlPanel.replaceChildren(
+    // Resource usage is a different question from model quality, so it
+    // gets its own row rather than being mixed into the training charts.
+    const sysCharts = Object.entries(d.system_history || {})
+      .filter(([, series]) => series.length > 1)
+      .map(([name, series]) => lineChart(name.replace(/^system\//, ""), series));
+
+    mount(mlPanel,
       el("div", { class: "section-head" },
         el("h3", {}, "MLflow"),
         el("a", { class: "faint", href: deepLink, target: "_blank", rel: "noopener" },
           "open in MLflow ↗")),
       provenanceCard(d),
+      datasetInputsCard(d.dataset_inputs, run),
       charts.length
         ? el("div", { class: "grid-3", style: "margin-top:16px" }, ...charts)
         : el("div", { class: "card", style: "margin-top:16px" },
@@ -730,10 +738,17 @@ async function initRunDetail(id) {
               "Values are shown above."),
             el("dl", { class: "kv", style: "margin-top:10px" },
               ...Object.entries(d.metrics || {}).flatMap(([k, v]) => [
-                el("dt", {}, k), el("dd", {}, fmt.metric(v))]))));
+                el("dt", {}, k), el("dd", {}, fmt.metric(v))]))),
+      sysCharts.length
+        ? el("div", {},
+            el("div", { class: "chart-title", style: "margin:20px 0 8px" },
+              "System resources during the run"),
+            el("div", { class: "grid-3" }, ...sysCharts))
+        : null);
   }).catch(() => {});
 
   if (run.mlflow_run_id) {
+    renderNestedRuns(nestedPanel, id);
     renderArtifacts(artifactPanel, id, "");
     renderModelInfo(modelPanel, id);
   }
@@ -772,6 +787,27 @@ function provenanceCard(d) {
       el("a", { href: `/experiments/${encodeURIComponent(info.experiment_id)}` },
         `#${info.experiment_id}`)));
   }
+  // MLflow's own view of the run, which can disagree with the framework's
+  // row — a run the framework recorded as SUCCESS may be FAILED here if the
+  // process died after the framework wrote its status.
+  for (const [key, label] of [
+    ["status", "MLflow status"],
+    ["lifecycle_stage", "Lifecycle"],
+    ["user_id", "Logged by"],
+  ]) {
+    if (info[key]) {
+      rows.push(el("dt", {}, label));
+      rows.push(el("dd", {}, String(info[key])));
+    }
+  }
+  if (info.start_time) {
+    rows.push(el("dt", {}, "MLflow start"));
+    rows.push(el("dd", {}, fmt.time(info.start_time)));
+  }
+  if (info.end_time) {
+    rows.push(el("dt", {}, "MLflow end"));
+    rows.push(el("dd", {}, fmt.time(info.end_time)));
+  }
   if (info.artifact_uri) {
     rows.push(el("dt", {}, "Artifact URI"));
     rows.push(el("dd", { class: "mono" }, info.artifact_uri));
@@ -789,6 +825,85 @@ function provenanceCard(d) {
     rows.length
       ? el("dl", { class: "kv" }, ...rows)
       : el("div", { class: "muted" }, "No tags recorded for this run."));
+}
+
+// What a run declared it trained on, per mlflow.log_input. The digest is
+// content-derived, so it is the field worth holding against the framework's
+// own dataset-version checksum.
+function datasetInputsCard(inputs, run) {
+  if (!inputs || !inputs.length) return null;
+  return el("div", { class: "card", style: "margin-top:16px" },
+    el("div", { class: "chart-title" }, "Dataset inputs (MLflow)"),
+    el("div", { class: "table-wrap", style: "box-shadow:none;border:none" },
+      el("table", {},
+        el("thead", {}, el("tr", {},
+          el("th", {}, "Name"), el("th", {}, "Digest"), el("th", {}, "Source"),
+          el("th", {}, "Context"))),
+        el("tbody", {}, ...inputs.map((i) =>
+          el("tr", {},
+            el("td", { class: "mono" }, i.name || "—"),
+            el("td", { class: "mono" }, i.digest || "—"),
+            el("td", { class: "mono truncate", title: i.source || "" },
+              `${i.source_type || "?"}${i.source ? " · " + i.source : ""}`),
+            el("td", { class: "muted" },
+              (i.tags || {})["mlflow.data.context"] || "—")))))),
+    run && run.dataset_version_id
+      ? el("p", { class: "faint", style: "margin:10px 0 0;font-size:12.5px" },
+          "Framework lineage records dataset version ",
+          el("a", { href: `/lineage?kind=dataset-version&id=${run.dataset_version_id}` },
+            `#${run.dataset_version_id}`),
+          ". Compare the digest above against that version's checksum to " +
+          "confirm the run trained on what the lineage claims.")
+      : null);
+}
+
+function renderNestedRuns(host, runId) {
+  api(`/training-runs/${runId}/nested`).then((p) => {
+    if (!p.available) return;  // the MLflow panel above already said why
+    const d = p.data;
+    if (!d.parent && !(d.children || []).length) return;  // a standalone run
+
+    const metricKeys = [...new Set((d.children || [])
+      .flatMap((c) => Object.keys(c.metrics || {})))]
+      .filter((k) => !k.startsWith("system/"))
+      .sort();
+    const best = {};
+    for (const k of metricKeys) {
+      best[k] = Math.max(...d.children.map((c) => (c.metrics || {})[k] ?? -Infinity));
+    }
+    const paramKeys = [...new Set((d.children || [])
+      .flatMap((c) => Object.keys(c.params || {})))].sort();
+
+    host.replaceChildren(
+      el("div", { class: "section-head" },
+        el("h3", {}, "Sweep"),
+        el("span", { class: "faint" },
+          d.is_child
+            ? `this run is one trial of ${d.parent?.run_name || "a parent run"}`
+            : "this run is the parent of the trials below")),
+      el("div", { class: "table-wrap" },
+        el("table", {},
+          el("thead", {}, el("tr", {},
+            el("th", {}, "Trial"),
+            ...paramKeys.map((k) => el("th", {}, k)),
+            ...metricKeys.map((k) => el("th", {}, k)),
+            el("th", {}, "Started"))),
+          el("tbody", {}, ...d.children.map((c) =>
+            el("tr", { style: c.is_self ? "background:var(--accent-soft)" : null },
+              el("td", {},
+                el("span", { class: "mono", title: c.run_id },
+                  c.run_name || c.run_id.slice(0, 8)),
+                c.is_self ? el("span", { class: "faint" }, "  ← this run") : null),
+              ...paramKeys.map((k) => el("td", { class: "mono" }, (c.params || {})[k] ?? "—")),
+              ...metricKeys.map((k) => {
+                const v = (c.metrics || {})[k];
+                const isBest = typeof v === "number" && v === best[k] && d.children.length > 1;
+                return el("td", { class: "num" },
+                  isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v))
+                         : fmt.metric(v));
+              }),
+              el("td", { class: "muted nowrap" }, fmt.ago(c.start_time))))))));
+  }).catch(() => {});
 }
 
 const IMAGE_RE = /\.(png|jpe?g|gif|svg|webp)$/i;
@@ -869,7 +984,7 @@ function renderArtifacts(host, runId, path) {
       }
     }
 
-    host.replaceChildren(
+    mount(host,
       el("h3", {}, "Artifacts"),
       crumbs,
       list,
@@ -1072,6 +1187,7 @@ async function initModelDetail(id) {
       el("p", { class: "subtitle" }, model.description || "No description",
         model.task ? el("span", { class: "faint" }, `  ·  ${model.task}`) : null));
 
+    const reconcilePanel = el("div", {});
     const ordered = versions.slice().reverse();
     const metricKeys = [...new Set(versions.flatMap((v) => Object.keys(v.metrics || {})))]
       .filter((k) => METRIC_PRIORITY.includes(k))
@@ -1122,7 +1238,10 @@ async function initModelDetail(id) {
       el("div", { class: "table-wrap" }, table),
       chart ? el("div", { style: "margin-top:16px;max-width:520px" }, chart) : null,
       prod ? el("p", { style: "margin-top:16px" },
-        el("a", { class: "btn", href: `/lineage?kind=model-version&id=${prod.id}` }, "View lineage")) : null);
+        el("a", { class: "btn", href: `/lineage?kind=model-version&id=${prod.id}` }, "View lineage")) : null,
+      reconcilePanel);
+
+    renderRegistryReconciliation(reconcilePanel, id);
   } catch (e) {
     setError(body, e);
   }
@@ -1322,4 +1441,85 @@ async function initExperimentDetail(experimentId) {
   rankDir.addEventListener("change", load);
   filterInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
   await load();
+}
+
+/* ------------------------------------------------------------------ */
+/* MLflow model registry reconciliation                                */
+/* ------------------------------------------------------------------ */
+
+// The framework promotes versions in its own table; MLflow keeps a registry
+// of its own; nothing reconciles them. A version marked PRODUCTION here
+// with no alias in MLflow means one of the two sides never blessed what is
+// actually being served — this panel is the only place that surfaces it.
+function renderRegistryReconciliation(host, modelId) {
+  api(`/models/${modelId}/registry-reconciliation`).then((p) => {
+    if (!p.available) {
+      host.replaceChildren(
+        el("h3", {}, "MLflow registry"), banner(p.reason, "warn"));
+      return;
+    }
+    const d = p.data;
+    const rows = d.versions || [];
+
+    const table = el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Version"),
+        el("th", {}, "Framework state"),
+        el("th", {}, "In MLflow registry"),
+        el("th", {}, "MLflow version"),
+        el("th", {}, "Stage"),
+        el("th", {}, "Aliases"),
+        el("th", {}, ""))),
+      el("tbody", {}, ...(rows.length ? rows.map((v) =>
+        el("tr", {},
+          el("td", {}, el("strong", {}, `v${v.framework_version_number}`)),
+          el("td", {}, statusBadge(v.framework_state)),
+          el("td", {}, v.in_mlflow_registry
+            ? el("span", { class: "badge success" }, "yes")
+            : el("span", { class: "faint" }, "no")),
+          el("td", { class: "mono" }, v.mlflow_version || "—"),
+          // MLflow 3 deprecated stages, so "None" here is normal and only
+          // meaningful next to the alias column.
+          el("td", { class: "mono faint" }, v.mlflow_stage || "—"),
+          el("td", { class: "mono" },
+            (v.mlflow_aliases || []).length ? v.mlflow_aliases.join(", ")
+                                            : el("span", { class: "faint" }, "—")),
+          el("td", {}, v.drift
+            ? el("span", { class: "badge failed", title: v.drift_reason || "" }, "drift")
+            : el("span", { class: "faint" }, "ok")))
+      ) : [emptyRow(7, "No versions to reconcile.")])));
+
+    const drifted = rows.filter((v) => v.drift);
+    mount(host,
+      el("div", { class: "section-head" },
+        el("h3", {}, "MLflow registry"),
+        el("span", { class: "faint" },
+          d.registry_names?.length
+            ? `registered as ${d.registry_names.join(", ")}`
+            : "no matching registered model")),
+      d.drift_count
+        ? banner(
+            `${d.drift_count} version${d.drift_count > 1 ? "s" : ""} disagree ` +
+            `between this framework and MLflow: ` +
+            drifted.map((v) => `v${v.framework_version_number} — ${v.drift_reason}`).join("; "),
+            "err")
+        : banner("Framework state and MLflow registry agree on every version."),
+      el("div", { class: "table-wrap" }, table),
+      (d.mlflow_only || []).length
+        ? el("div", { style: "margin-top:16px" },
+            el("div", { class: "chart-title", style: "margin-bottom:8px" },
+              "Registered in MLflow but unknown to this framework"),
+            el("div", { class: "table-wrap" },
+              el("table", {},
+                el("thead", {}, el("tr", {},
+                  el("th", {}, "Name"), el("th", {}, "Version"),
+                  el("th", {}, "Run"), el("th", {}, "Aliases"))),
+                el("tbody", {}, ...d.mlflow_only.map((m) =>
+                  el("tr", {},
+                    el("td", { class: "mono" }, m.mlflow_name),
+                    el("td", { class: "mono" }, m.mlflow_version),
+                    el("td", { class: "mono truncate", title: m.run_id }, m.run_id),
+                    el("td", { class: "mono" }, (m.aliases || []).join(", ") || "—")))))))
+        : null);
+  }).catch(() => {});
 }

@@ -24,14 +24,23 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import get_db
 from mlops_framework.api.mlflow_gateway import client_or_reason, panel
 from mlops_framework.api.schemas import ExternalPanel
+from mlops_framework.database.models.model import Model as ModelRow
+from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
 
 router = APIRouter()
+
+# Aliases that mean "this is the version being served". MLflow 3 deprecated
+# stages in favour of aliases, and an alias is just a name someone chose, so
+# there is no authoritative list — these are the conventional ones. Anything
+# outside the set is still reported, just not read as "production".
+PRODUCTION_ALIASES = {"champion", "production", "prod"}
 
 # Artifacts are proxied through this process because the store (S3 in the
 # deployed stack) is not reachable from the browser. That makes size a
@@ -381,6 +390,260 @@ def get_run_model_info(
             "model_uuid": spec.get("model_uuid"),
             "mlflow_version": spec.get("mlflow_version"),
             "utc_time_created": spec.get("utc_time_created"),
+        }
+
+    return panel(query)
+
+
+# ---------------------------------------------------------------------- #
+# Model registry reconciliation
+# ---------------------------------------------------------------------- #
+
+
+def _alias_map(client: Any, name: str) -> dict[str, list[str]]:
+    """Return ``{version: [alias, ...]}`` for a registered model.
+
+    MLflow 3 hangs aliases off the *registered model* as a
+    ``{alias: version}`` map, and leaves ``ModelVersion.aliases`` empty, so
+    reading a version's aliases means inverting that map rather than asking
+    the version.
+    """
+    out: dict[str, list[str]] = {}
+    try:
+        registered = client.get_registered_model(name)
+    except Exception:  # noqa: BLE001 - a missing model is not an error here
+        return out
+    for alias, version in (getattr(registered, "aliases", None) or {}).items():
+        out.setdefault(str(version), []).append(str(alias))
+    return out
+
+
+def _mlflow_says_production(stage: str, aliases: list[str]) -> bool:
+    """Whether MLflow considers a version the one being served."""
+    if str(stage).strip().lower() == "production":
+        return True
+    return any(a.lower() in PRODUCTION_ALIASES for a in aliases)
+
+
+@router.get("/mlflow/registered-models", response_model=ExternalPanel)
+def list_registered_models() -> ExternalPanel:
+    """List the tracking server's registered models and their aliases."""
+
+    def query(client: Any) -> dict[str, Any]:
+        models = []
+        for m in client.search_registered_models():
+            aliases = getattr(m, "aliases", None) or {}
+            models.append(
+                {
+                    "name": m.name,
+                    "description": m.description or "",
+                    "tags": dict(getattr(m, "tags", None) or {}),
+                    "aliases": {str(k): str(v) for k, v in aliases.items()},
+                    "latest_versions": [
+                        {"version": str(v.version), "stage": str(v.current_stage)}
+                        for v in (getattr(m, "latest_versions", None) or [])
+                    ],
+                }
+            )
+        return {"models": models}
+
+    return panel(query)
+
+
+@router.get("/models/{model_id}/registry-reconciliation", response_model=ExternalPanel)
+def reconcile_model_registry(
+    model_id: int,
+    db: Session = Depends(get_db),
+) -> ExternalPanel:
+    """Compare this framework's model registry against MLflow's.
+
+    The framework promotes versions in its own Postgres table; MLflow keeps
+    a registry of its own. Nothing reconciles them, so the two can disagree
+    silently — a version marked PRODUCTION here with no alias in MLflow
+    means whatever is actually being served was never blessed on one of the
+    two sides. This endpoint puts both columns next to each other and
+    flags the rows where they differ.
+
+    The join key is the MLflow run id, which both sides record:
+    ``ModelVersion.mlflow_run_id`` here, ``ModelVersion.run_id`` there.
+    """
+    model = db.get(ModelRow, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail=f"Model {model_id} not found")
+
+    rows = list(
+        db.execute(
+            select(ModelVersion)
+            .where(ModelVersion.model_id == model_id)
+            .order_by(ModelVersion.version_number)
+        )
+        .scalars()
+        .all()
+    )
+
+    def query(client: Any) -> dict[str, Any]:
+        # Look the registry up by name first — that is the intended
+        # correspondence — but fall back to whatever the versions' run ids
+        # resolve to, so a differently-named registered model still gets
+        # reconciled instead of silently reading as "absent".
+        mlflow_versions: dict[str, Any] = {}
+        registry_names: set[str] = set()
+        try:
+            for mv in client.search_model_versions(f"name='{model.name}'"):
+                if mv.run_id:
+                    mlflow_versions[mv.run_id] = mv
+                    registry_names.add(mv.name)
+        except Exception:  # noqa: BLE001 - no such registered model
+            pass
+        for row in rows:
+            if row.mlflow_run_id and row.mlflow_run_id not in mlflow_versions:
+                try:
+                    found = client.search_model_versions(f"run_id='{row.mlflow_run_id}'")
+                except Exception:  # noqa: BLE001
+                    continue
+                for mv in found:
+                    mlflow_versions[mv.run_id] = mv
+                    registry_names.add(mv.name)
+
+        aliases_by_name = {n: _alias_map(client, n) for n in registry_names}
+
+        compared = []
+        drift_count = 0
+        for row in rows:
+            mv = mlflow_versions.get(row.mlflow_run_id or "")
+            fw_production = row.state == ModelState.PRODUCTION.value
+            entry: dict[str, Any] = {
+                "framework_version_id": row.id,
+                "framework_version_number": row.version_number,
+                "framework_state": row.state,
+                "mlflow_run_id": row.mlflow_run_id,
+                "in_mlflow_registry": mv is not None,
+                "mlflow_name": None,
+                "mlflow_version": None,
+                "mlflow_stage": None,
+                "mlflow_aliases": [],
+                "mlflow_status": None,
+            }
+            if mv is None:
+                # Only a promoted version that MLflow has never heard of is
+                # worth flagging; a CANDIDATE that was never registered is
+                # the expected state, not a discrepancy.
+                entry["drift"] = fw_production
+                entry["drift_reason"] = (
+                    "framework has this version in PRODUCTION but MLflow's "
+                    "registry has no entry for its run"
+                    if fw_production
+                    else None
+                )
+            else:
+                aliases = aliases_by_name.get(mv.name, {}).get(str(mv.version), [])
+                ml_production = _mlflow_says_production(mv.current_stage, aliases)
+                entry.update(
+                    {
+                        "mlflow_name": mv.name,
+                        "mlflow_version": str(mv.version),
+                        "mlflow_stage": str(mv.current_stage),
+                        "mlflow_aliases": aliases,
+                        "mlflow_status": str(getattr(mv, "status", "")),
+                    }
+                )
+                entry["drift"] = fw_production != ml_production
+                if entry["drift"]:
+                    entry["drift_reason"] = (
+                        "framework says PRODUCTION, MLflow has no production "
+                        "stage or alias"
+                        if fw_production
+                        else "MLflow marks this version as serving, the "
+                        "framework does not"
+                    )
+                else:
+                    entry["drift_reason"] = None
+            drift_count += 1 if entry["drift"] else 0
+            compared.append(entry)
+
+        known_runs = {r.mlflow_run_id for r in rows if r.mlflow_run_id}
+        orphans = [
+            {
+                "mlflow_name": mv.name,
+                "mlflow_version": str(mv.version),
+                "run_id": mv.run_id,
+                "stage": str(mv.current_stage),
+                "aliases": aliases_by_name.get(mv.name, {}).get(str(mv.version), []),
+            }
+            for run_id, mv in mlflow_versions.items()
+            if run_id not in known_runs
+        ]
+
+        return {
+            "model_name": model.name,
+            "registry_names": sorted(registry_names),
+            "versions": compared,
+            "drift_count": drift_count,
+            "mlflow_only": orphans,
+        }
+
+    return panel(query)
+
+
+# ---------------------------------------------------------------------- #
+# Nested runs
+# ---------------------------------------------------------------------- #
+
+
+@router.get("/training-runs/{run_id}/nested", response_model=ExternalPanel)
+def get_nested_runs(
+    run_id: int,
+    db: Session = Depends(get_db),
+) -> ExternalPanel:
+    """Return this run's place in an MLflow parent/child sweep.
+
+    A hyperparameter sweep logs one parent run and a child per trial, tied
+    together by the ``mlflow.parentRunId`` tag. Without reading that tag the
+    console shows a sweep as a flat list of unrelated runs.
+    """
+    mlflow_run_id = _mlflow_run_id(db, run_id)
+
+    def query(client: Any) -> dict[str, Any]:
+        this = client.get_run(mlflow_run_id)
+        experiment_id = this.info.experiment_id
+        parent_id = (this.data.tags or {}).get("mlflow.parentRunId")
+
+        def summarise(run: Any) -> dict[str, Any]:
+            return {
+                "run_id": run.info.run_id,
+                "run_name": run.info.run_name,
+                "status": run.info.status,
+                "start_time": run.info.start_time,
+                "metrics": dict(run.data.metrics),
+                "params": dict(run.data.params),
+                "is_self": run.info.run_id == mlflow_run_id,
+            }
+
+        # Children of whichever run heads this tree: the parent if this run
+        # has one, otherwise this run itself.
+        root_id = parent_id or mlflow_run_id
+        children = client.search_runs(
+            experiment_ids=[experiment_id],
+            filter_string=f"tags.mlflow.parentRunId = '{root_id}'",
+            order_by=["attributes.start_time ASC"],
+            max_results=200,
+        )
+
+        parent = None
+        if parent_id:
+            try:
+                parent = summarise(client.get_run(parent_id))
+            except Exception:  # noqa: BLE001 - parent may have been deleted
+                parent = {"run_id": parent_id, "run_name": None, "status": "UNKNOWN"}
+        elif children:
+            parent = summarise(this)
+
+        return {
+            "is_child": parent_id is not None,
+            "is_parent": parent_id is None and bool(children),
+            "root_run_id": root_id,
+            "parent": parent,
+            "children": [summarise(r) for r in children],
         }
 
     return panel(query)

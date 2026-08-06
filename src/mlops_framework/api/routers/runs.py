@@ -66,6 +66,48 @@ def get_run(
 # ---------------------------------------------------------------------- #
 
 
+# MLflow's system-metrics collector prefixes everything it records with
+# this; see mlflow.system_metrics.
+SYSTEM_METRIC_PREFIX = "system/"
+
+
+def _dataset_inputs(mlflow_run: Any) -> list[dict[str, Any]]:
+    """Summarise the datasets a run declared it trained on.
+
+    MLflow records these through ``mlflow.log_input``. The digest is the
+    interesting field: it is content-derived, so it can be held against the
+    framework's own dataset-version checksum to catch a run that trained on
+    something other than what the lineage claims.
+
+    Returns an empty list when the run logged no inputs, which is the
+    common case — the framework does not call ``log_input`` today.
+    """
+    inputs = getattr(mlflow_run, "inputs", None)
+    entries = getattr(inputs, "dataset_inputs", None) or []
+    out: list[dict[str, Any]] = []
+    for entry in entries:
+        dataset = getattr(entry, "dataset", None)
+        if dataset is None:
+            continue
+        schema = getattr(dataset, "schema", None)
+        out.append(
+            {
+                "name": getattr(dataset, "name", None),
+                "digest": getattr(dataset, "digest", None),
+                "source_type": getattr(dataset, "source_type", None),
+                "source": getattr(dataset, "source", None),
+                # Left as the raw JSON string MLflow stores. Its shape
+                # varies by dataset flavour (tensorspec vs colspec), and
+                # guessing wrong would be worse than showing it verbatim.
+                "schema": schema,
+                "tags": {
+                    t.key: t.value for t in (getattr(entry, "tags", None) or [])
+                },
+            }
+        )
+    return out
+
+
 def _run_or_404(db: Session, run_id: int) -> TrainingRun:
     run = db.get(TrainingRun, run_id)
     if run is None:
@@ -143,13 +185,26 @@ def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
             ]
             for key in mlflow_run.data.metrics
         }
+        # MLflow's own resource collector namespaces what it records under
+        # "system/". Those series answer a different question from the
+        # model's metrics — how hard the box was working, not how well the
+        # model did — so they are split out here rather than left to mix
+        # into the training charts.
+        system = {k: v for k, v in series.items() if k.startswith(SYSTEM_METRIC_PREFIX)}
+        model_series = {k: v for k, v in series.items() if k not in system}
         info = mlflow_run.info
         return {
             "mlflow_run_id": mlflow_run_id,
             "tracking_uri": tracking_uri(),
             "params": dict(mlflow_run.data.params),
-            "metrics": dict(mlflow_run.data.metrics),
-            "history": series,
+            "metrics": {
+                k: v
+                for k, v in mlflow_run.data.metrics.items()
+                if not k.startswith(SYSTEM_METRIC_PREFIX)
+            },
+            "history": model_series,
+            "system_history": system,
+            "dataset_inputs": _dataset_inputs(mlflow_run),
             "tags": dict(mlflow_run.data.tags or {}),
             "info": {
                 # experiment_id is what makes the "open in MLflow" deep link
