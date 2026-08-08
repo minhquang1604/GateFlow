@@ -1308,6 +1308,55 @@ async function initModelDetail(id) {
 /* Lineage                                                             */
 /* ------------------------------------------------------------------ */
 
+async function renderLineagePicker(out) {
+  // The nav's "Lineage" link (and any deep-link with no ?kind=&id=) used
+  // to land here with nothing but instructions — technically correct
+  // (a graph needs a root to walk from) but useless the moment someone
+  // actually wants to see a lineage, since every other page reaches this
+  // one only via a link that already carries a node. Listing the current
+  // production model versions and latest dataset versions turns this
+  // into a real landing page instead of a dead end.
+  let models, datasets;
+  try {
+    [models, datasets] = await Promise.all([api("/models"), api("/datasets")]);
+  } catch (e) {
+    setError(out, e);
+    return;
+  }
+
+  const modelRows = models
+    .filter((m) => m.production_version)
+    .map((m) => el("tr", {},
+      el("td", {},
+        el("a", { href: `/lineage?kind=model-version&id=${m.production_version.id}` },
+          `${m.name} — production v${m.production_version.version_number}`)),
+      el("td", { class: "muted" }, "ModelVersion")));
+
+  const datasetRows = datasets
+    .filter((d) => d.latest_version)
+    .map((d) => el("tr", {},
+      el("td", {},
+        el("a", { href: `/lineage?kind=dataset-version&id=${d.latest_version.id}` },
+          `${d.name} — v${d.latest_version.version_number}`)),
+      el("td", { class: "muted" }, "DatasetVersion")));
+
+  const rows = [...modelRows, ...datasetRows];
+  if (rows.length === 0) {
+    out.replaceChildren(banner(
+      "Nothing to trace yet — lineage starts once a dataset has a version "
+      + "and a model has a production version. Register a dataset and run "
+      + "a training pipeline, then come back here."));
+    return;
+  }
+
+  out.replaceChildren(
+    el("p", { class: "muted" }, "Pick a starting point to walk its lineage:"),
+    el("div", { class: "table-wrap" },
+      el("table", {},
+        el("thead", {}, el("tr", {}, el("th", {}, "Start from"), el("th", {}, "Type"))),
+        el("tbody", {}, ...rows))));
+}
+
 async function initLineage() {
   const params = new URLSearchParams(location.search);
   const kind = params.get("kind");
@@ -1315,8 +1364,7 @@ async function initLineage() {
   const out = document.getElementById("lineage-out");
 
   if (!kind || !id) {
-    out.replaceChildren(banner(
-      "Open a lineage view from a model or dataset page — the link carries the node to walk from."));
+    await renderLineagePicker(out);
     return;
   }
   try {
