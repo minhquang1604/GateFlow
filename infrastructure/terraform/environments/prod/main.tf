@@ -182,6 +182,38 @@ module "compute" {
   }
 }
 
+# Shared by both Airflow services below. Local task-instance logs are
+# nearly useless in this deployment: LocalExecutor runs each task as a
+# subprocess of whichever scheduler container happened to be alive at
+# the time, and the webserver's built-in log serving fetches straight
+# from that container's hostname — which is gone after the next
+# redeploy. Confirmed against the real deployment before wiring this
+# up: `GET .../logs/1` on an old run came back 200 with Airflow's own
+# "Could not read served logs ... Failed to resolve '<container-id>'"
+# in the body, and the bucket this points at already existed
+# (s3_airflow_logs_bucket) without anything ever writing to it.
+#
+# No explicit AWS credentials: ecs_task_role already grants S3 access
+# to every bucket this stack owns (see module.iam's s3_bucket_arns,
+# which is `values(module.s3.bucket_arns)` — all of them, not a
+# per-service list), the same role mlflow and the scheduler's own
+# training tasks already use for S3 with zero connection
+# configuration. AIRFLOW_CONN_AWS_DEFAULT defines the connection
+# `aws_default` purely from this env var — Airflow's `db migrate`
+# (unlike the older `db init`) seeds no default connections, confirmed
+# by querying the live deployment's /api/v1/connections and getting
+# back none — and an empty `aws://` URI carries no key/secret, so the
+# Amazon provider's boto3 session falls through to the container's own
+# credential chain, i.e. the task role.
+locals {
+  airflow_remote_logging_env = {
+    AIRFLOW__LOGGING__REMOTE_LOGGING         = "True"
+    AIRFLOW__LOGGING__REMOTE_LOG_CONN_ID     = "aws_default"
+    AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER = "s3://${module.s3.bucket_names_by_key["airflow-logs"]}/logs"
+    AIRFLOW_CONN_AWS_DEFAULT                 = "aws://"
+  }
+}
+
 # ---------------------------------------------------------------------- #
 # ecs — cluster, capacity provider, task definitions, services.          #
 # ---------------------------------------------------------------------- #
@@ -274,7 +306,7 @@ module "ecs" {
       memory  = 768
       cpu     = 512
       command = ["webserver"]
-      environment = {
+      environment = merge(local.airflow_remote_logging_env, {
         POSTGRES_HOST                     = module.rds.address
         POSTGRES_PORT                     = tostring(module.rds.port)
         POSTGRES_USER                     = var.db_username
@@ -301,7 +333,7 @@ module "ecs" {
         # Gunicorn workers were being recycled every 30s by default,
         # re-importing the whole Flask/FAB stack each time.
         AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL = "1800"
-      }
+      })
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
         AIRFLOW__CORE__FERNET_KEY      = module.ssm.parameter_arns["airflow/fernet-key"]
@@ -341,7 +373,7 @@ module "ecs" {
       memory  = 1280
       cpu     = 512
       command = ["scheduler"]
-      environment = {
+      environment = merge(local.airflow_remote_logging_env, {
         POSTGRES_HOST                = module.rds.address
         POSTGRES_PORT                = tostring(module.rds.port)
         POSTGRES_USER                = var.db_username
@@ -376,7 +408,7 @@ module "ecs" {
         # unset region surfaces as a bucket-region error mid-task rather
         # than as a missing configuration.
         AWS_DEFAULT_REGION = var.aws_region
-      }
+      })
       secrets = {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
         AIRFLOW__CORE__FERNET_KEY      = module.ssm.parameter_arns["airflow/fernet-key"]

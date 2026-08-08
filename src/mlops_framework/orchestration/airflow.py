@@ -38,19 +38,29 @@ which Airflow does not serve — was invisible because the fake answered
 Task logs and remote logging
 -----------------------------
 
-:meth:`get_task_log` proxies Airflow's own log-fetch endpoint, which in
-this deployment can only serve a task attempt's log while the container
-that ran it is still alive: ``AIRFLOW__LOGGING__REMOTE_LOGGING`` is not
-configured, even though an S3 bucket for it (``s3_airflow_logs_bucket``
-in the Terraform outputs) already exists. Airflow's webserver then tries
-to fetch the log directly from the worker's hostname, which is a
-short-lived ECS container identity — for any run whose worker has since
-been redeployed, that lookup fails DNS resolution. Airflow reports this
-as a 200 response with the error embedded in the log body, not as an
-HTTP error, and this adapter passes that text through unchanged rather
-than intercepting it. Wiring remote logging to the existing bucket would
-fix this; it is a Terraform/Airflow-config change, not something this
-adapter can paper over.
+:meth:`get_task_log` proxies Airflow's own log-fetch endpoint. As of
+2026-08-08 the deployment logs to S3
+(``AIRFLOW__LOGGING__REMOTE_LOGGING=True``, wired in
+``infrastructure/terraform/environments/prod/main.tf``'s
+``local.airflow_remote_logging_env``, applied to both
+airflow-webserver and airflow-scheduler), so a task's log survives its
+container being redeployed. Verified end-to-end against the live
+deployment: put+get+delete through the same ``S3Hook``/``aws_default``
+connection Airflow's own ``S3TaskHandler`` uses, over the task role —
+no explicit AWS credentials anywhere in this config, the same pattern
+mlflow and the training tasks already relied on for S3 access.
+
+Before that date this deployment had no remote logging configured
+despite the bucket already existing, and this method could only serve
+a task's log while the container that ran it was still alive —
+Airflow's webserver tried to fetch it directly from the worker's
+short-lived ECS hostname and failed DNS resolution for anything
+redeployed since. That failure mode is why this method treats a 200
+response as no guarantee of a real log body: Airflow reports a fetch
+failure that way, embedded in the text, not as an HTTP error, and this
+adapter still passes it through unchanged rather than intercepting it
+— it remains the accurate answer for logs written before remote
+logging existed, or for a deployment that later loses it again.
 """
 
 from __future__ import annotations
@@ -420,7 +430,9 @@ class AirflowOrchestrator(Orchestrator):
         rather than detected and rewritten: it is Airflow's own accurate
         account of what went wrong, and paraphrasing it would risk hiding
         the real reason (see the module docstring's note on remote
-        logging not being configured in this deployment).
+        logging — configured since 2026-08-08, but still the fallback
+        path for anything logged before that, or if it is ever
+        unconfigured again).
         """
         dag_id, dag_run_id = self._split_execution_id(execution_id)
         url = (
