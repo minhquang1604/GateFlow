@@ -38,8 +38,7 @@ which Airflow does not serve — was invisible because the fake answered
 Task logs and remote logging
 -----------------------------
 
-:meth:`get_task_log` proxies Airflow's own log-fetch endpoint. As of
-2026-08-08 the deployment logs to S3
+As of 2026-08-08 the deployment logs to S3
 (``AIRFLOW__LOGGING__REMOTE_LOGGING=True``, wired in
 ``infrastructure/terraform/environments/prod/main.tf``'s
 ``local.airflow_remote_logging_env``, applied to both
@@ -55,12 +54,29 @@ despite the bucket already existing, and this method could only serve
 a task's log while the container that ran it was still alive —
 Airflow's webserver tried to fetch it directly from the worker's
 short-lived ECS hostname and failed DNS resolution for anything
-redeployed since. That failure mode is why this method treats a 200
-response as no guarantee of a real log body: Airflow reports a fetch
-failure that way, embedded in the text, not as an HTTP error, and this
-adapter still passes it through unchanged rather than intercepting it
-— it remains the accurate answer for logs written before remote
-logging existed, or for a deployment that later loses it again.
+redeployed since.
+
+That fixed the write side, but running the fraud-detection case study
+end to end the same day (2026-08-08) surfaced a second, independent
+gap on the read side: fetching a log through Airflow's own REST
+endpoint makes the webserver build a fresh ``S3Hook`` for that one
+request, and on this deployment's 768 MiB webserver task that reliably
+SIGKILLs the gunicorn worker handling it — confirmed from the
+container's own logs, "Worker was sent SIGKILL! Perhaps out of
+memory?" firing every time a request reached the hook's "Retrieving
+connection 'aws_default'" line, not just under load. So
+:meth:`get_task_log` now reads the object straight out of S3 itself
+(:func:`_read_task_log_from_s3`) when ``Settings.airflow_remote_log_base``
+is configured, using the exact key layout Airflow's ``S3TaskHandler``
+writes, and only falls back to the REST endpoint — which is what a 200
+response with no guaranteed real log body below still describes — when
+the object isn't there yet (still buffered locally) or remote logging
+isn't configured. The app's task role already has S3 access to this
+bucket (the same shared ``ecs_task_role`` mlflow and the scheduler
+use), so this needed no new IAM permissions — only ``boto3`` as an
+explicit dependency and ``AWS_DEFAULT_REGION``/``AIRFLOW_REMOTE_LOG_BASE``
+on the app service's own environment, since it had never talked to AWS
+directly before.
 """
 
 from __future__ import annotations
@@ -70,7 +86,9 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import quote
 
+import boto3
 import httpx
+from botocore.exceptions import ClientError
 
 from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import (
@@ -101,6 +119,48 @@ def _parse_airflow_state(state: str) -> ExecutionState:
     if state == "skipped":
         return ExecutionState.CANCELLED
     return ExecutionState.UNKNOWN
+
+
+def _read_task_log_from_s3(
+    remote_base: str, dag_id: str, dag_run_id: str, task_id: str, try_number: int
+) -> Optional[str]:
+    """Read one task attempt's log straight from S3.
+
+    ``remote_base`` is ``Settings.airflow_remote_log_base`` (e.g.
+    ``"s3://bucket/logs"`` — the same value Airflow's own
+    ``AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER`` is set to). The key
+    layout below matches what Airflow's ``S3TaskHandler`` writes; see
+    the module docstring for why this exists instead of always going
+    through Airflow's REST log endpoint.
+
+    Returns None (never raises for a routine miss) when the URI can't
+    be parsed or the object doesn't exist yet — the caller falls back
+    to the REST endpoint in both cases.
+    """
+    if not remote_base.startswith("s3://"):
+        return None
+    bucket, _, prefix = remote_base[len("s3://"):].partition("/")
+    if not bucket:
+        return None
+    key = "/".join(
+        part
+        for part in (
+            prefix.rstrip("/"),
+            f"dag_id={dag_id}",
+            f"run_id={dag_run_id}",
+            f"task_id={task_id}",
+            f"attempt={try_number}.log",
+        )
+        if part
+    )
+    try:
+        response = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+        return response["Body"].read().decode("utf-8", errors="replace")
+    except ClientError as exc:
+        code = exc.response.get("Error", {}).get("Code", "")
+        if code in ("NoSuchKey", "404"):
+            return None
+        raise
 
 
 def _parse_iso(value: Optional[str]) -> Optional[datetime]:
@@ -433,8 +493,24 @@ class AirflowOrchestrator(Orchestrator):
         logging — configured since 2026-08-08, but still the fallback
         path for anything logged before that, or if it is ever
         unconfigured again).
+
+        Tried first, before any of the above: a direct S3 read (see
+        :func:`_read_task_log_from_s3` and the module docstring) when
+        ``Settings.airflow_remote_log_base`` is set. That bypasses the
+        webserver's REST endpoint entirely, which matters here because
+        that endpoint is what SIGKILLs the webserver's own worker on
+        this deployment.
         """
         dag_id, dag_run_id = self._split_execution_id(execution_id)
+
+        remote_base = get_settings().airflow_remote_log_base
+        if remote_base:
+            s3_log = _read_task_log_from_s3(
+                remote_base, dag_id, dag_run_id, task_id, try_number
+            )
+            if s3_log is not None:
+                return s3_log
+
         url = (
             f"/api/v1/dags/{quote(dag_id, safe='')}/dagRuns/{quote(dag_run_id, safe='')}"
             f"/taskInstances/{quote(task_id, safe='')}/logs/{try_number}"

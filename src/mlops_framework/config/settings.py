@@ -72,6 +72,17 @@ class Settings(BaseSettings):
         default="airflow",
         description="Password for the Airflow REST API.",
     )
+    airflow_remote_log_base: Optional[str] = Field(
+        default=None,
+        description=(
+            "s3://bucket/prefix that Airflow's own remote task logging "
+            "writes under (same value as its AIRFLOW__LOGGING__REMOTE_"
+            "BASE_LOG_FOLDER). When set, AirflowOrchestrator.get_task_log "
+            "reads the object directly from S3 instead of proxying "
+            "through the Airflow webserver's REST endpoint — see "
+            "mlops_framework.orchestration.airflow's module docstring."
+        ),
+    )
 
     # FastAPI ServingBridge (used by the HTTP event publisher)
     serving_bridge_url: Optional[str] = Field(

@@ -449,6 +449,15 @@ module "ecs" {
         AIRFLOW_BASE_URL       = "http://airflow-webserver:8080"
         AIRFLOW_USERNAME       = "admin"
         SERVING_BRIDGE_URL     = "http://serving:8001"
+        # Lets the app read task logs straight from S3 instead of
+        # through the Airflow webserver's REST endpoint, which SIGKILLs
+        # its own gunicorn worker under its 768 MiB reservation when
+        # asked to fetch a remote log (see mlops_framework.orchestration
+        # .airflow's module docstring). Region is needed because this
+        # is the app's first direct AWS API call — everything else so
+        # far went through mlflow's or Airflow's own SDKs.
+        AIRFLOW_REMOTE_LOG_BASE = local.airflow_remote_logging_env["AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER"]
+        AWS_DEFAULT_REGION      = var.aws_region
       }
       secrets = {
         POSTGRES_PASSWORD = module.ssm.parameter_arns["db/password"]

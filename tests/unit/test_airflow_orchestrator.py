@@ -467,6 +467,73 @@ class TestGetTaskLog:
         with pytest.raises(ExecutionNotFoundError):
             orch.get_task_log(f"{DAG_ID}/run-1", "train", try_number=9)
 
+    def test_reads_from_s3_when_configured_and_skips_rest(self, monkeypatch):
+        """When ``airflow_remote_log_base`` is set and the object exists,
+        no REST call happens at all — the fake client has zero routes
+        registered, so a REST fallback would 404 and raise."""
+        import mlops_framework.orchestration.airflow as airflow_mod
+
+        class _FakeBody:
+            def read(self):
+                return b"real log bytes from s3"
+
+        class _FakeS3Client:
+            def get_object(self, Bucket, Key):
+                assert Bucket == "logs-bucket"
+                assert Key == (
+                    f"logs/dag_id={DAG_ID}/run_id=run-1/task_id=train/attempt=1.log"
+                )
+                return {"Body": _FakeBody()}
+
+        class _FakeBoto3:
+            @staticmethod
+            def client(service):
+                assert service == "s3"
+                return _FakeS3Client()
+
+        class _FakeSettings:
+            airflow_remote_log_base = "s3://logs-bucket/logs"
+
+        orch, client = _make()  # no REST routes registered
+        monkeypatch.setattr(airflow_mod, "boto3", _FakeBoto3)
+        monkeypatch.setattr(airflow_mod, "get_settings", lambda: _FakeSettings())
+        text = orch.get_task_log(f"{DAG_ID}/run-1", "train", try_number=1)
+        assert text == "real log bytes from s3"
+        assert client.calls == []
+
+    def test_falls_back_to_rest_when_s3_object_missing(self, monkeypatch):
+        import mlops_framework.orchestration.airflow as airflow_mod
+        from botocore.exceptions import ClientError
+
+        class _FakeS3Client:
+            def get_object(self, Bucket, Key):
+                raise ClientError(
+                    {"Error": {"Code": "NoSuchKey", "Message": "not found"}},
+                    "GetObject",
+                )
+
+        class _FakeBoto3:
+            @staticmethod
+            def client(service):
+                return _FakeS3Client()
+
+        class _FakeSettings:
+            airflow_remote_log_base = "s3://logs-bucket/logs"
+
+        orch, client = _make({
+            (
+                "GET",
+                f"/api/v1/dags/{DAG_ID}/dagRuns/run-1/taskInstances/train/logs/1"
+                "?full_content=true",
+            ): _resp({}, status=200),
+        })
+        monkeypatch.setattr(airflow_mod, "boto3", _FakeBoto3)
+        monkeypatch.setattr(airflow_mod, "get_settings", lambda: _FakeSettings())
+
+        text = orch.get_task_log(f"{DAG_ID}/run-1", "train", try_number=1)
+        assert text is not None
+        assert len(client.calls) == 1
+
 
 class TestImportErrorsHealthPools:
     def test_import_errors(self):
