@@ -1706,35 +1706,163 @@ async function initPipelines() {
       el("td", { class: "muted" }, (d.tags || []).join(", ") || "—")));
 }
 
-// Returns task_ids in chain order if `tasks` form a single unbranched
-// path (every task has at most one upstream and one downstream), else
-// null. This framework's own DAG is exactly this shape, and a chain
-// reads far better than a bare table when it applies; a branching DAG
-// falls back to the table alone rather than a misleading straight line.
-function linearTaskChain(tasks) {
-  const downstreamCount = new Map(tasks.map((t) => [t.task_id, (t.downstream_task_ids || []).length]));
-  const upstreamCount = new Map(tasks.map((t) => [t.task_id, 0]));
+// Layers `tasks` into columns for a general DAG graph view: level(root)
+// = 0, level(n) = 1 + max(level(upstream)) over every incoming edge —
+// Kahn's topological order, so a node is only placed once every one of
+// its upstreams already has a level (a plain BFS-from-roots would
+// under-place a join node fed by branches of different lengths).
+// A single unbranched chain is just the special case where every
+// column holds exactly one task, so this replaces the old
+// linear-only chain renderer rather than sitting beside it.
+//
+// Returns an array of columns (each an array of task_id), or null if
+// an edge points at an unknown task_id or a cycle leaves some node
+// unplaceable — either means the structure can't be trusted enough to
+// draw, and the caller falls back to the plain task table.
+function dagLevels(tasks) {
+  const byId = new Map(tasks.map((t) => [t.task_id, t]));
+  const indegree = new Map(tasks.map((t) => [t.task_id, 0]));
   for (const t of tasks) {
     for (const d of t.downstream_task_ids || []) {
-      upstreamCount.set(d, (upstreamCount.get(d) || 0) + 1);
+      if (!byId.has(d)) return null;
+      indegree.set(d, (indegree.get(d) || 0) + 1);
     }
   }
-  if ([...downstreamCount.values()].some((c) => c > 1)) return null;
-  if ([...upstreamCount.values()].some((c) => c > 1)) return null;
-  const roots = tasks.filter((t) => (upstreamCount.get(t.task_id) || 0) === 0);
-  if (roots.length !== 1) return null;
 
-  const byId = new Map(tasks.map((t) => [t.task_id, t]));
-  const order = [];
-  const seen = new Set();
-  let cur = roots[0];
-  while (cur && !seen.has(cur.task_id)) {
-    seen.add(cur.task_id);
-    order.push(cur.task_id);
-    const nextId = (cur.downstream_task_ids || [])[0];
-    cur = nextId ? byId.get(nextId) : null;
+  const level = new Map();
+  const remaining = new Map(indegree);
+  const placed = new Set();
+  let frontier = tasks.filter((t) => (indegree.get(t.task_id) || 0) === 0).map((t) => t.task_id);
+  if (frontier.length === 0 && tasks.length > 0) return null;
+  frontier.forEach((id) => { level.set(id, 0); placed.add(id); });
+
+  while (frontier.length) {
+    const next = [];
+    for (const id of frontier) {
+      for (const d of byId.get(id).downstream_task_ids || []) {
+        level.set(d, Math.max(level.get(d) || 0, level.get(id) + 1));
+        remaining.set(d, remaining.get(d) - 1);
+        if (remaining.get(d) === 0 && !placed.has(d)) {
+          placed.add(d);
+          next.push(d);
+        }
+      }
+    }
+    frontier = next;
   }
-  return order.length === tasks.length ? order : null;
+  if (placed.size !== tasks.length) return null;
+
+  const columns = [];
+  for (const t of tasks) {
+    const lvl = level.get(t.task_id) || 0;
+    (columns[lvl] || (columns[lvl] = [])).push(t.task_id);
+  }
+  return columns;
+}
+
+// Renders `tasks` as a layered graph: node positions come straight from
+// (column, row) on a fixed grid — computed directly rather than
+// measured from the DOM after paint, the same approach lineChart/
+// barChart already use below — with a single SVG overlay drawing one
+// curve per downstream edge between those same computed points, so
+// edges can never drift out of sync with the nodes they connect.
+// `stateByTaskId` (task_id -> Airflow state string) is optional; when
+// given, nodes are coloured by it (the console passes the latest run's
+// states), otherwise nodes render neutral.
+function renderDagGraph(tasks, levels, stateByTaskId) {
+  const COL_W = 210, ROW_H = 72, NODE_W = 180, NODE_H = 44, PAD = 16;
+  const byId = new Map(tasks.map((t) => [t.task_id, t]));
+  const pos = new Map();
+  levels.forEach((col, ci) => {
+    col.forEach((tid, ri) => pos.set(tid, { x: PAD + ci * COL_W, y: PAD + ri * ROW_H }));
+  });
+  const maxRows = Math.max(1, ...levels.map((c) => c.length));
+  const width = PAD * 2 + (levels.length - 1) * COL_W + NODE_W;
+  const height = PAD * 2 + (maxRows - 1) * ROW_H + NODE_H;
+
+  const svg = svgEl("svg", {
+    style: `position:absolute;inset:0;width:${width}px;height:${height}px`,
+    viewBox: `0 0 ${width} ${height}`,
+  });
+  for (const t of tasks) {
+    const from = pos.get(t.task_id);
+    for (const d of t.downstream_task_ids || []) {
+      const to = pos.get(d);
+      if (!from || !to) continue;
+      const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+      const x2 = to.x, y2 = to.y + NODE_H / 2;
+      const midX = (x1 + x2) / 2;
+      svg.appendChild(svgEl("path", {
+        class: "dag-edge",
+        d: `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`,
+        fill: "none",
+      }));
+    }
+  }
+
+  const nodes = tasks.map((t) => {
+    const p = pos.get(t.task_id);
+    const state = stateByTaskId && stateByTaskId.get(t.task_id);
+    const kind = state ? statusKind(state) : "";
+    return el("div", {
+      class: `lineage-node Task${kind ? ` state-${kind}` : ""}`,
+      style: `position:absolute;left:${p.x}px;top:${p.y}px;width:${NODE_W}px`,
+      title: state ? `${t.task_id} — ${state}` : t.task_id,
+    },
+      el("div", { class: "type" }, t.operator_name || "task"),
+      el("div", { class: "label" }, t.task_id));
+  });
+
+  return el("div",
+    { class: "dag-graph", style: `position:relative;width:${width}px;height:${height}px` },
+    svg, ...nodes);
+}
+
+// Airflow-Tree-View-style grid: one row per task (declaration order),
+// one column per run (newest first, matching the "Recent runs" table
+// below it). Cells come from the task-instance data `/airflow/dags/
+// {id}` already expanded server-side (`grid_cells`) — no per-cell
+// request. A cell only links to the framework's own run page when
+// `byExecutionId` resolves one; a scheduler-triggered run has no
+// framework-side row to link to, same distinction "Recent runs" draws.
+function renderTaskHistoryGrid(tasks, gridRunIds, gridCells, byExecutionId, dagId) {
+  if (!gridRunIds.length) {
+    return banner("No run history yet for this DAG.");
+  }
+  const byTaskThenRun = new Map();
+  for (const c of gridCells) {
+    if (!byTaskThenRun.has(c.task_id)) byTaskThenRun.set(c.task_id, new Map());
+    byTaskThenRun.get(c.task_id).set(c.dag_run_id, c);
+  }
+
+  const header = el("tr", {},
+    el("th", {}, "Task"),
+    ...gridRunIds.map((rid) => el("th", { class: "mono" }, rid.replace(/^mlops-/, ""))));
+
+  const rows = (tasks.length ? tasks : [...byTaskThenRun.keys()].map((task_id) => ({ task_id })))
+    .map((t) => {
+      const byRun = byTaskThenRun.get(t.task_id) || new Map();
+      return el("tr", {},
+        el("td", { class: "mono" }, t.task_id),
+        ...gridRunIds.map((rid) => {
+          const cell = byRun.get(rid);
+          if (!cell) return el("td", {}, el("span", { class: "tree-cell" }));
+          const kind = statusKind(cell.state);
+          const fwId = byExecutionId.get(`${dagId}/${rid}`);
+          const title = `${cell.state}`
+            + (cell.duration != null ? ` · ${cell.duration.toFixed(1)}s` : "")
+            + ` · ${rid}`;
+          const swatch = el("span", { class: `tree-cell ${kind}`, title });
+          return el("td", {}, fwId
+            ? el("a", { class: "tree-cell-link", href: `/runs/${fwId}`, "aria-label": title }, swatch)
+            : swatch);
+        }));
+    });
+
+  return el("div", { class: "table-wrap" },
+    el("table", { class: "tree-grid" },
+      el("thead", {}, header),
+      el("tbody", {}, ...rows)));
 }
 
 async function initPipelineDetail(dagId) {
@@ -1770,18 +1898,19 @@ async function initPipelineDetail(dagId) {
 
   const tasks = p.data.tasks || [];
   const dagRuns = p.data.dag_runs || [];
-  const byTaskId = new Map(tasks.map((t) => [t.task_id, t]));
-  const chain = linearTaskChain(tasks);
+  const gridRunIds = p.data.grid_run_ids || [];
+  const gridCells = p.data.grid_cells || [];
 
-  const chainView = chain
-    ? el("div", { class: "lineage-chain" },
-        ...chain.flatMap((tid, i) => {
-          const node = el("div", { class: "lineage-node Task" },
-            el("div", { class: "type" }, byTaskId.get(tid).operator_name || "task"),
-            el("div", { class: "label" }, tid));
-          return i ? [el("div", { class: "lineage-arrow" }, "→"), node] : [node];
-        }))
-    : null;
+  // Colour the graph by the newest run in the grid — "no data yet" for
+  // a DAG that has never run renders every node neutral.
+  const latestStateByTask = new Map();
+  if (gridRunIds.length) {
+    for (const c of gridCells) {
+      if (c.dag_run_id === gridRunIds[0]) latestStateByTask.set(c.task_id, c.state);
+    }
+  }
+  const levels = tasks.length ? dagLevels(tasks) : null;
+  const graphView = levels ? renderDagGraph(tasks, levels, latestStateByTask) : null;
 
   const taskTable = el("table", {},
     el("thead", {}, el("tr", {},
@@ -1814,9 +1943,13 @@ async function initPipelineDetail(dagId) {
   mount(body,
     el("h3", {}, "Tasks"),
     el("div", { class: "card", style: "margin-bottom:16px" },
-      chainView,
-      chain ? el("div", { style: "margin-top:16px" }, el("div", { class: "table-wrap" }, taskTable))
-            : el("div", { class: "table-wrap" }, taskTable)),
+      graphView ? el("div", { class: "table-wrap", style: "margin-bottom:16px" }, graphView) : null,
+      el("div", { class: "table-wrap" }, taskTable)),
+    el("h3", {}, "Task history"),
+    el("p", { class: "muted", style: "margin:0 0 10px" },
+      `Most recent ${gridRunIds.length || 0} run${gridRunIds.length === 1 ? "" : "s"}, newest first.`),
+    el("div", { class: "card", style: "margin-bottom:16px" },
+      renderTaskHistoryGrid(tasks, gridRunIds, gridCells, byExecutionId, dagId)),
     el("h3", {}, "Recent runs"),
     el("p", { class: "muted", style: "margin:0 0 10px" },
       "Includes runs the scheduler triggered on its own, not only ones started from this console."),

@@ -949,6 +949,40 @@ details[open] > summary:before { transform: rotate(90deg); }
   font-size: 18px;
 }
 
+/* Task nodes coloured by a run's state (Pipeline detail's Graph View) —
+   same state vocabulary statusKind() maps everything else in the
+   console to, so a node's colour always means the same thing a badge
+   elsewhere on the page does. */
+.lineage-node.Task.state-success  { border-left-color: var(--ok); }
+.lineage-node.Task.state-failed   { border-left-color: var(--err); }
+.lineage-node.Task.state-running  { border-left-color: var(--run); }
+.lineage-node.Task.state-pending  { border-left-color: var(--warn); }
+.lineage-node.Task.state-cancelled{ border-left-color: var(--idle); }
+
+/* DAG graph (Pipeline detail): nodes are .lineage-node.Task positioned
+   absolutely by app.js; this is just the positioning context and the
+   edge-line style for the SVG overlay drawn over them. */
+.dag-graph { min-width: 100%; }
+.dag-edge { stroke: var(--border-strong); stroke-width: 1.5; }
+
+/* Task history grid (Pipeline detail): Airflow-Tree-View-style swatches,
+   one row per task, one column per run. */
+.tree-grid th, .tree-grid td { text-align: center; white-space: nowrap; }
+.tree-grid th:first-child, .tree-grid td:first-child { text-align: left; }
+.tree-cell {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--idle);
+}
+.tree-cell.success  { background: var(--ok); }
+.tree-cell.failed   { background: var(--err); }
+.tree-cell.running  { background: var(--run); }
+.tree-cell.pending  { background: var(--warn); }
+.tree-cell.cancelled{ background: var(--idle); opacity: .5; }
+.tree-cell-link { display: inline-flex; }
+
 /* ================================================================== */
 /* 13. Misc                                                            */
 /* ================================================================== */
