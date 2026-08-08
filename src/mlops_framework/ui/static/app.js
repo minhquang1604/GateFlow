@@ -123,6 +123,16 @@ function statusKind(status) {
   return "";
 }
 
+// A table cell with a primary value and a muted mono identifier
+// underneath it (e.g. a pipeline id over the execution id it actually
+// ran as). `sub` is optional — a row with nothing to add underneath
+// (no execution id yet, PENDING runs) just renders the primary line.
+function cellWithSub(primary, sub) {
+  return el("div", {},
+    el("div", {}, primary),
+    sub ? el("div", { class: "cell-sub" }, sub) : null);
+}
+
 function statusBadge(status) {
   if (status == null || status === "") return el("span", { class: "faint" }, "—");
   return el("span", { class: `badge ${statusKind(status)}` }, String(status));
@@ -331,32 +341,77 @@ function makeSortable(table, rows, columns, render) {
 
 async function initDashboard() {
   const grid = document.getElementById("kpi-grid");
+  const inventory = document.getElementById("inventory-stats");
+  const outcomes = document.getElementById("outcomes-chart");
+  let d;
   try {
-    const d = await api("/dashboard");
-    const items = [
-      { label: "Datasets", value: d.datasets },
-      { label: "Dataset versions", value: d.dataset_versions },
-      { label: "Total runs", value: d.total_runs },
-      { label: "Active runs", value: d.active_runs, kind: d.active_runs > 0 ? "warn" : "" },
-      { label: "Successful", value: d.success_runs, kind: "ok" },
-      { label: "Failed", value: d.failed_runs, kind: d.failed_runs > 0 ? "err" : "" },
-      { label: "Models", value: d.models },
-      { label: "In production", value: d.production_models, kind: "ok" },
-      {
-        label: "Success rate",
-        value: fmt.pct(d.success_rate),
-        kind: d.success_rate >= 0.8 ? "ok" : d.success_rate >= 0.5 ? "warn" : "err",
-      },
-    ];
-    grid.replaceChildren(
-      ...items.map((i) =>
-        el("div", { class: `kpi ${i.kind || ""}` },
-          el("div", { class: "label" }, i.label),
-          el("div", { class: "value" }, i.value == null ? "—" : String(i.value))))
-    );
+    d = await api("/dashboard");
   } catch (e) {
     setError(grid, e);
     return;
+  }
+
+  // Hero tiles: only the signals that call for a decision right now —
+  // is anything running, is anything failing, is anything actually
+  // live, is the platform healthy overall. Everything else below is
+  // inventory (how much exists), which matters less moment-to-moment
+  // and reads better small than as an equally-weighted KPI tile next
+  // to these — the previous version gave all nine the same visual
+  // weight, which is exactly what made the section feel like a wall
+  // of boxes.
+  const rateKind = d.success_rate >= 0.8 ? "ok" : d.success_rate >= 0.5 ? "warn" : "err";
+  const heroItems = [
+    {
+      label: "Active runs", value: d.active_runs,
+      kind: d.active_runs > 0 ? "warn" : "",
+      caption: d.active_runs > 0 ? `${d.active_runs} running now` : "Idle",
+    },
+    {
+      label: "Failed", value: d.failed_runs,
+      kind: d.failed_runs > 0 ? "err" : "",
+      caption: d.failed_runs > 0 ? "Investigate now" : "None in range",
+    },
+    {
+      label: "In production", value: d.production_models, kind: "ok",
+      caption: `${d.production_models} model${d.production_models === 1 ? "" : "s"} live`,
+    },
+    {
+      label: "Success rate",
+      value: fmt.pct(d.success_rate),
+      kind: rateKind,
+      caption: rateKind === "ok" ? "Trending up" : rateKind === "warn" ? "Watch closely" : "Needs attention",
+    },
+  ];
+  grid.replaceChildren(
+    ...heroItems.map((i) =>
+      el("div", { class: `kpi ${i.kind || ""}` },
+        el("div", { class: "label" }, i.label),
+        el("div", { class: "value" }, i.value == null ? "—" : String(i.value)),
+        i.caption ? el("div", { class: "caption" }, i.caption) : null))
+  );
+
+  // Inventory: raw counts, de-emphasised (the existing .kv key-value
+  // list run-detail already uses) rather than four more equal-weight
+  // tiles.
+  if (inventory) {
+    inventory.replaceChildren(
+      el("dt", {}, "Datasets"), el("dd", {}, String(d.datasets)),
+      el("dt", {}, "Dataset versions"), el("dd", {}, String(d.dataset_versions)),
+      el("dt", {}, "Total runs"), el("dd", {}, String(d.total_runs)),
+      el("dt", {}, "Models"), el("dd", {}, String(d.models)));
+  }
+
+  // Outcomes: the same success/failed/active counts as above, as a
+  // chart instead of a sentence — reuses barChart() rather than a new
+  // chart type, and needs no data beyond what /dashboard already
+  // returns.
+  if (outcomes) {
+    outcomes.replaceChildren(
+      barChart("Run outcomes", [
+        { label: "Successful", value: d.success_runs, kind: "ok" },
+        { label: "Failed", value: d.failed_runs, kind: "err" },
+        { label: "Active", value: d.active_runs, kind: "warn" },
+      ]));
   }
 
   // Recent activity — the Airflow-style run strip plus the latest rows.
@@ -570,7 +625,11 @@ async function initRuns() {
           el("td", { class: "checkbox-cell" }, cb),
           el("td", {}, el("a", { href: `/runs/${r.id}` }, `#${r.id}`)),
           el("td", {}, statusBadge(r.status)),
-          el("td", { class: "mono truncate", title: r.pipeline_id || "" }, r.pipeline_id || "—"),
+          el("td", {},
+            cellWithSub(
+              el("span", { class: "mono truncate", style: "display:block", title: r.pipeline_id || "" },
+                r.pipeline_id || "—"),
+              r.execution_id)),
           el("td", { class: "muted" }, r.orchestrator || "—"),
           el("td", { class: "muted" }, r.trigger_type || "—"),
           el("td", {},
