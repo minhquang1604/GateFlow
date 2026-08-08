@@ -47,7 +47,7 @@ class TestFullAppBoot:
         # UI
         for path in (
             "/", "/dashboard", "/datasets", "/runs", "/models", "/lineage",
-            "/experiments",
+            "/experiments", "/pipelines",
         ):
             assert client.get(path).status_code == 200
         # Static assets

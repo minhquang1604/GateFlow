@@ -606,6 +606,26 @@ function bestMetric(run) {
   return first ? { name: first[0], value: first[1] } : null;
 }
 
+// Fetches one task attempt's log and renders it as plain text below the
+// task grid. Not an api()-wrapped call: the endpoint answers with the log
+// body directly (mirroring how mlflow_views.get_run_artifact serves raw
+// bytes), including a 200 whose *body* is Airflow's own error message
+// when it could not reach where the log actually lives — that text is
+// shown as-is, since it is the accurate answer, not a failure to hide.
+function showTaskLog(host, runId, taskId, tryNumber) {
+  host.replaceChildren(
+    el("div", { class: "section-head", style: "margin-top:12px" },
+      el("div", { class: "chart-title" }, `Log — ${taskId} (attempt ${tryNumber})`)),
+    el("pre", { class: "log" }, "Loading…"));
+  const pre = host.querySelector("pre");
+  fetch(`${API}/training-runs/${runId}/tasks/${encodeURIComponent(taskId)}/log?try_number=${tryNumber}`)
+    .then((r) => r.text().then((text) => ({ ok: r.ok, status: r.status, text })))
+    .then(({ ok, status, text }) => {
+      pre.textContent = ok ? (text || "(empty log)") : `${status}: ${text || "could not load log"}`;
+    })
+    .catch(() => { pre.textContent = "Could not load log."; });
+}
+
 async function initRunDetail(id) {
   const head = document.getElementById("run-head");
   const body = document.getElementById("run-body");
@@ -666,28 +686,65 @@ async function initRunDetail(id) {
             el("div", { class: "val" }, fmt.metric(v)))))));
   }
 
-  // Airflow task grid — only rendered when the run actually ran there.
+  // Airflow: the DAG run's own state/dates/conf, plus a full task grid —
+  // only rendered when the run actually ran there. Each task cell opens
+  // its log on click; run.execution_id is already shown in the Run card
+  // above, so this panel does not repeat it.
   const tasksPanel = el("div", {});
   sections.push(tasksPanel);
   api(`/training-runs/${id}/tasks`).then((p) => {
     if (!p.available) {
       if (run.orchestrator === "AirflowOrchestrator") {
-        tasksPanel.replaceChildren(el("h3", {}, "Airflow tasks"), banner(p.reason, "warn"));
+        tasksPanel.replaceChildren(el("h3", {}, "Airflow"), banner(p.reason, "warn"));
       }
       return;
     }
-    const tasks = Object.entries(p.data.tasks || {});
+    const dagRun = p.data.dag_run || {};
+    const tasks = p.data.tasks || [];
+    const logHost = el("div", {});
+
+    const cells = tasks.map((t) => {
+      const isRetry = t.try_number != null && t.try_number > 1;
+      const cell = el("div", {
+        class: `task-cell ${statusKind(t.state)}`,
+        role: "button",
+        tabindex: "0",
+        title: "View log",
+      },
+        el("span", { class: "dot" }),
+        el("div", {},
+          el("div", {}, t.task_id,
+            isRetry ? el("span", { class: "retry-badge" },
+              `retry ${t.try_number}${t.max_tries ? `/${t.max_tries + 1}` : ""}`) : null),
+          el("div", { class: "state" }, [
+            t.state,
+            t.duration != null ? fmt.dur(t.duration) : null,
+            t.hostname || null,
+          ].filter(Boolean).join(" · "))));
+      const open = () => showTaskLog(logHost, id, t.task_id, t.try_number || 1);
+      cell.addEventListener("click", open);
+      cell.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); } });
+      return cell;
+    });
+
+    const confEntries = Object.entries(dagRun.conf || {});
     tasksPanel.replaceChildren(
-      el("h3", {}, "Airflow tasks"),
+      el("h3", {}, "Airflow"),
       el("div", { class: "card" },
-        el("div", { class: "mono faint", style: "margin-bottom:8px" }, p.data.execution_id),
+        el("dl", { class: "kv", style: "margin-bottom:14px" },
+          el("dt", {}, "DAG run"), el("dd", {}, statusBadge(dagRun.state)),
+          el("dt", {}, "Started"), el("dd", {}, fmt.time(dagRun.started_at)),
+          el("dt", {}, "Finished"), el("dd", {}, fmt.time(dagRun.finished_at))),
+        confEntries.length
+          ? el("details", { style: "margin-bottom:14px" },
+              el("summary", { class: "faint" }, "Run conf"),
+              el("pre", { class: "log", style: "margin-top:8px" },
+                JSON.stringify(dagRun.conf, null, 2)))
+          : null,
         tasks.length
-          ? el("div", { class: "task-grid" },
-              ...tasks.map(([tid, state]) =>
-                el("div", { class: `task-cell ${statusKind(state)}` },
-                  el("span", { class: "dot" }), tid,
-                  el("span", { class: "state" }, state))))
-          : el("div", { class: "muted" }, "No task instances — the DAG has not been scheduled.")));
+          ? el("div", { class: "task-grid" }, ...cells)
+          : el("div", { class: "muted" }, "No task instances — the DAG has not been scheduled."),
+        logHost));
   }).catch(() => {});
 
   // MLflow: provenance, training curves, artifacts, model signature. Each
@@ -1522,4 +1579,198 @@ function renderRegistryReconciliation(host, modelId) {
                     el("td", { class: "mono" }, (m.aliases || []).join(", ") || "—")))))))
         : null);
   }).catch(() => {});
+}
+
+/* ------------------------------------------------------------------ */
+/* Pipelines (Airflow)                                                 */
+/* ------------------------------------------------------------------ */
+
+function airflowHealthCard(data) {
+  const health = data.health || {};
+  const importErrors = data.import_errors || [];
+  const pools = data.pools || [];
+
+  const components = Object.entries(health).map(([name, info]) => {
+    const status = (info && info.status) || null;
+    const kind = status === "healthy" ? "ok" : status ? "err" : "";
+    return el("div", { class: `kpi ${kind}` },
+      el("div", { class: "label" }, name.replace(/_/g, " ")),
+      el("div", { class: "value" }, status || "n/a"));
+  });
+
+  const poolRows = pools.map((p) =>
+    el("div", { class: "kpi" },
+      el("div", { class: "label" }, p.name),
+      el("div", { class: "value" }, `${p.running_slots}/${p.slots}`)));
+
+  return el("div", {},
+    components.length || poolRows.length
+      ? el("div", { class: "kpi-grid", style: "margin-bottom:12px" }, ...components, ...poolRows)
+      : null,
+    importErrors.length
+      ? el("div", { class: "banner err", style: "margin-bottom:12px" },
+          el("strong", {}, `${importErrors.length} DAG file${importErrors.length > 1 ? "s" : ""} failed to parse: `),
+          importErrors.map((e) => e.filename).join(", "))
+      : null);
+}
+
+async function initPipelines() {
+  const healthHost = document.getElementById("pipelines-health");
+  const out = document.getElementById("pipelines-out");
+
+  api("/airflow/health").then((p) => {
+    if (!p.available) { healthHost.replaceChildren(banner(p.reason, "warn")); return; }
+    healthHost.replaceChildren(airflowHealthCard(p.data));
+  }).catch(() => {});
+
+  let p;
+  try {
+    p = await api("/airflow/dags");
+  } catch (e) {
+    setError(out, e);
+    return;
+  }
+  if (!p.available) {
+    out.replaceChildren(banner(p.reason, "warn"));
+    return;
+  }
+
+  const dags = p.data.dags || [];
+  const table = el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}));
+  out.replaceChildren(el("div", { class: "table-wrap" }, table));
+
+  makeSortable(table, dags,
+    [
+      { label: "DAG", sort: (d) => d.dag_id },
+      { label: "Status" },
+      { label: "Schedule" },
+      { label: "Next run", sort: (d) => d.next_dagrun },
+      { label: "Owners" },
+      { label: "Tags" },
+    ],
+    (d) => el("tr", {},
+      el("td", {}, el("a", { href: `/pipelines/${encodeURIComponent(d.dag_id)}` }, d.dag_id)),
+      el("td", {}, el("span", { class: `badge ${d.is_paused ? "cancelled" : "success"}` },
+        d.is_paused ? "Paused" : "Active")),
+      el("td", { class: "mono faint" }, d.schedule_interval || "manual / external only"),
+      el("td", { class: "muted nowrap" }, d.next_dagrun ? fmt.time(d.next_dagrun) : "—"),
+      el("td", { class: "muted" }, (d.owners || []).join(", ") || "—"),
+      el("td", { class: "muted" }, (d.tags || []).join(", ") || "—")));
+}
+
+// Returns task_ids in chain order if `tasks` form a single unbranched
+// path (every task has at most one upstream and one downstream), else
+// null. This framework's own DAG is exactly this shape, and a chain
+// reads far better than a bare table when it applies; a branching DAG
+// falls back to the table alone rather than a misleading straight line.
+function linearTaskChain(tasks) {
+  const downstreamCount = new Map(tasks.map((t) => [t.task_id, (t.downstream_task_ids || []).length]));
+  const upstreamCount = new Map(tasks.map((t) => [t.task_id, 0]));
+  for (const t of tasks) {
+    for (const d of t.downstream_task_ids || []) {
+      upstreamCount.set(d, (upstreamCount.get(d) || 0) + 1);
+    }
+  }
+  if ([...downstreamCount.values()].some((c) => c > 1)) return null;
+  if ([...upstreamCount.values()].some((c) => c > 1)) return null;
+  const roots = tasks.filter((t) => (upstreamCount.get(t.task_id) || 0) === 0);
+  if (roots.length !== 1) return null;
+
+  const byId = new Map(tasks.map((t) => [t.task_id, t]));
+  const order = [];
+  const seen = new Set();
+  let cur = roots[0];
+  while (cur && !seen.has(cur.task_id)) {
+    seen.add(cur.task_id);
+    order.push(cur.task_id);
+    const nextId = (cur.downstream_task_ids || [])[0];
+    cur = nextId ? byId.get(nextId) : null;
+  }
+  return order.length === tasks.length ? order : null;
+}
+
+async function initPipelineDetail(dagId) {
+  const head = document.getElementById("pipeline-head");
+  const body = document.getElementById("pipeline-body");
+
+  mount(head,
+    el("div", { class: "breadcrumb" }, el("a", { href: "/pipelines" }, "Pipelines"), " / ", dagId),
+    el("h2", { class: "mono" }, dagId));
+
+  // Runs this framework itself started carry the composite execution id
+  // "dag_id/dag_run_id" — cross-linking back to them is what tells "a
+  // scheduler-triggered run" and "a run this console already knows about"
+  // apart in the history table below.
+  let byExecutionId = new Map();
+  try {
+    const runs = await api("/training-runs?limit=500");
+    byExecutionId = new Map(
+      runs.filter((r) => r.execution_id).map((r) => [r.execution_id, r.id]));
+  } catch { /* the cross-link is a bonus, not a requirement */ }
+
+  let p;
+  try {
+    p = await api(`/airflow/dags/${encodeURIComponent(dagId)}`);
+  } catch (e) {
+    setError(body, e);
+    return;
+  }
+  if (!p.available) {
+    body.replaceChildren(banner(p.reason, "warn"));
+    return;
+  }
+
+  const tasks = p.data.tasks || [];
+  const dagRuns = p.data.dag_runs || [];
+  const byTaskId = new Map(tasks.map((t) => [t.task_id, t]));
+  const chain = linearTaskChain(tasks);
+
+  const chainView = chain
+    ? el("div", { class: "lineage-chain" },
+        ...chain.flatMap((tid, i) => {
+          const node = el("div", { class: "lineage-node Task" },
+            el("div", { class: "type" }, byTaskId.get(tid).operator_name || "task"),
+            el("div", { class: "label" }, tid));
+          return i ? [el("div", { class: "lineage-arrow" }, "→"), node] : [node];
+        }))
+    : null;
+
+  const taskTable = el("table", {},
+    el("thead", {}, el("tr", {},
+      el("th", {}, "Task"), el("th", {}, "Operator"),
+      el("th", {}, "Trigger rule"), el("th", {}, "Downstream"))),
+    el("tbody", {}, ...(tasks.length ? tasks.map((t) =>
+      el("tr", {},
+        el("td", { class: "mono" }, t.task_id),
+        el("td", { class: "muted" }, t.operator_name || "—"),
+        el("td", { class: "muted" }, t.trigger_rule || "—"),
+        el("td", {}, (t.downstream_task_ids || []).join(", ") || "—")))
+      : [emptyRow(4, "No tasks — the DAG may have failed to parse.")])));
+
+  const runsTable = el("table", {},
+    el("thead", {}, el("tr", {},
+      el("th", {}, "Run"), el("th", {}, "Status"), el("th", {}, "Type"),
+      el("th", {}, "Training run"), el("th", {}, "Started"), el("th", {}, "Ended"))),
+    el("tbody", {}, ...(dagRuns.length ? dagRuns.map((r) => {
+      const fwId = byExecutionId.get(`${dagId}/${r.dag_run_id}`);
+      return el("tr", {},
+        el("td", { class: "mono" }, r.dag_run_id),
+        el("td", {}, statusBadge(r.state)),
+        el("td", { class: "muted" }, r.run_type || "—"),
+        el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
+                          : el("span", { class: "faint" }, "scheduler")),
+        el("td", { class: "muted nowrap" }, fmt.ago(r.start_date || r.execution_date)),
+        el("td", { class: "muted nowrap" }, fmt.time(r.end_date)));
+    }) : [emptyRow(6, "No runs yet.")])));
+
+  mount(body,
+    el("h3", {}, "Tasks"),
+    el("div", { class: "card", style: "margin-bottom:16px" },
+      chainView,
+      chain ? el("div", { style: "margin-top:16px" }, el("div", { class: "table-wrap" }, taskTable))
+            : el("div", { class: "table-wrap" }, taskTable)),
+    el("h3", {}, "Recent runs"),
+    el("p", { class: "muted", style: "margin:0 0 10px" },
+      "Includes runs the scheduler triggered on its own, not only ones started from this console."),
+    el("div", { class: "table-wrap" }, runsTable));
 }

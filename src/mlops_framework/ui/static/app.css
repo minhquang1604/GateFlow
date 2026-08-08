@@ -826,7 +826,10 @@ button.primary:disabled, .btn.primary:disabled {
   border: 1px solid var(--border);
   background: var(--surface-2);
   font-size: 13px;
+  cursor: pointer;
 }
+
+.task-cell:hover, .task-cell:focus-visible { border-color: var(--accent); outline: none; }
 
 .task-cell .dot { width: 9px; height: 9px; border-radius: 2px; background: var(--idle); flex: none; }
 .task-cell.success .dot { background: var(--ok); }
@@ -834,6 +837,28 @@ button.primary:disabled, .btn.primary:disabled {
 .task-cell.running .dot { background: var(--run); }
 .task-cell.queued .dot, .task-cell.scheduled .dot { background: var(--warn); }
 .task-cell .state { color: var(--text-muted); font-size: 12px; }
+
+.retry-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+
+details > summary { cursor: pointer; user-select: none; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary:before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform .15s ease;
+}
+details[open] > summary:before { transform: rotate(90deg); }
 
 .bar-track {
   height: 6px;
@@ -914,6 +939,7 @@ button.primary:disabled, .btn.primary:disabled {
 .lineage-node.TrainingRun { border-left: 3px solid var(--warn); }
 .lineage-node.Model, .lineage-node.ModelVersion { border-left: 3px solid var(--violet); }
 .lineage-node.ServingInstance { border-left: 3px solid var(--ok); }
+.lineage-node.Task { border-left: 3px solid var(--text-muted); }
 
 .lineage-arrow {
   display: flex;

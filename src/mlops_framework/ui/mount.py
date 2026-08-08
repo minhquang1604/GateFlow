@@ -77,6 +77,11 @@ _ICONS: dict[str, str] = {
         '<path d="M7 2v4.6L2.8 13.6A1.6 1.6 0 0 0 4.2 16h9.6a1.6 1.6 0 0 0 '
         '1.4-2.4L11 6.6V2"/><path d="M5.8 2h6.4M5.4 10.5h7.2"/>'
     ),
+    "pipelines": (
+        '<circle cx="3.2" cy="3.2" r="1.7"/><circle cx="14.8" cy="3.2" r="1.7"/>'
+        '<circle cx="9" cy="14.8" r="1.7"/>'
+        '<path d="M4.7 4.3L8 13.4M13.3 4.3L10 13.4M4.9 3.2h9.2"/>'
+    ),
 }
 
 # (section label, [(nav key, href, label)]). The nav key is what a route
@@ -98,6 +103,9 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     # record. They are two identity spaces, and folding them into one menu
     # entry invites the reader to confuse the ids.
     ("MLflow", [("experiments", "/experiments", "Experiments")]),
+    # Same reasoning as the MLflow section above: a DAG run is Airflow's
+    # own record, addressed by its own id scheme, not a TrainingRun.
+    ("Airflow", [("pipelines", "/pipelines", "Pipelines")]),
 ]
 
 
@@ -176,6 +184,16 @@ def mount_ui(
             f"Experiment {experiment_id}",
             "experiments",
         )
+
+    @app.get("/pipelines", response_class=HTMLResponse)
+    def pipelines() -> str:
+        return _page(pages, "pipelines.html", "Pipelines", "pipelines")
+
+    # A dag_id is an Airflow-restricted string ([A-Za-z0-9_.-]), not this
+    # framework's integer id scheme — same reasoning as experiment_id above.
+    @app.get("/pipelines/{dag_id}", response_class=HTMLResponse)
+    def pipeline_detail(dag_id: str) -> str:
+        return _page(pages, "pipeline_detail.html", f"Pipeline {dag_id}", "pipelines")
 
 
 # ---------------------------------------------------------------------- #

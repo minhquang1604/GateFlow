@@ -1,0 +1,17 @@
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Pipelines</span>
+    </nav>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Pipelines</h1>
+        <p class="page-desc">DAGs on the Airflow deployment &mdash; what is scheduled to run, not what already has.</p>
+      </div>
+      <div class="page-actions">
+        <button class="btn" data-action="reload">Refresh</button>
+      </div>
+    </div>
+
+    <div id="pipelines-health"></div>
+    <div id="pipelines-out"></div>
+<script>initPipelines();</script>
