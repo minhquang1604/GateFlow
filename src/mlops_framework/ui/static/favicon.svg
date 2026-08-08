@@ -1,19 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <!-- Gateflow favicon.
-       A fixed navy tile rather than a transparent mark: contrast then
-       does not depend on whether the viewer's browser chrome is light or
-       dark. The paths are the master mark from docs/gateflow-logo.svg,
-       scaled out of its 890-unit space into the tile with even padding.
-       The door handle is dropped — at 16px it is a quarter of a pixel
-       wide and only muddies the antialiasing.
+       White tile, both strokes of the mark in the brand's own two blues
+       (light ring, deep gate) — matches the redesign's white-canvas
+       system instead of the earlier reversed-navy tile. A hairline
+       border keeps the tile visible against a white browser chrome,
+       where a borderless white square would otherwise vanish.
+       The paths are the master mark from docs/gateflow-logo.svg, scaled
+       out of its 890-unit space into the tile with even padding. The
+       door handle is dropped — at 16px it is a quarter of a pixel wide
+       and only muddies the antialiasing.
 
        favicon.png is the 32x32 fallback for Safari < 16.4, rendered from
        this file; regenerate it with scripts/render_favicon.py. -->
-  <rect width="512" height="512" rx="110" fill="#23528D"/>
-  <g transform="translate(48.3 43.3) scale(0.4706)">
-    <path fill="#4F9EE8"
+  <rect x="4" y="4" width="504" height="504" rx="110" fill="#FFFFFF" stroke="#E5E7EB" stroke-width="8"/>
+  <g transform="translate(1.2 -4.8) scale(0.577)">
+    <path fill="#2E7DD1"
           d="M708.8 204A357 357 0 1 0 525 801.5V688A247 247 0 1 1 629.7 280.4Z"/>
-    <path fill="#FFFFFF"
+    <path fill="#23528D"
           d="M450 424H788V610A400 400 0 0 1 612 800V616L533 536L612 566V524H450Z"/>
   </g>
 </svg>

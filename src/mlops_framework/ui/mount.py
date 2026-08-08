@@ -31,6 +31,7 @@ The static folder (CSS + JS) is mounted at ``/static``.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import Optional
 
@@ -42,6 +43,23 @@ from fastapi.staticfiles import StaticFiles
 _PKG_UI = Path(__file__).parent
 
 BRAND = "Gateflow"
+
+
+def _asset_version(path: Path) -> str:
+    """Short content hash for a cache-busting ``?v=`` query string.
+
+    Browsers cache a *favicon* far more stubbornly than they cache a
+    normal `<link rel="stylesheet">` — editing favicon.svg/.png in place
+    at the same URL was invisible in an already-open tab (and often a
+    fresh one) with no way for the server to tell the browser otherwise,
+    since there is no build step handing out a new filename per change.
+    Hashing the file once at import time and appending it to the href
+    does that job: the URL itself changes whenever the artwork does.
+    """
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:8] if path.exists() else "0"
+
+
+_FAVICON_VERSION = _asset_version(_PKG_UI / "static" / "favicon.svg")
 
 # Inline 16px stroke icons. Inlined rather than linked so the console has
 # no external asset to fetch and renders identically offline.
@@ -86,26 +104,33 @@ _ICONS: dict[str, str] = {
 
 # (section label, [(nav key, href, label)]). The nav key is what a route
 # passes as ``active``, so a page and its menu entry cannot drift apart.
+#
+# Two groups, not seven: "Core domains" is everything that is this
+# framework's own record (dataset -> run -> model -> lineage), and
+# "Orchestration" is everything that is another system's record reached
+# read-only (an MLflow run, an Airflow DAG run — see the module
+# docstrings on mlflow_gateway.py / airflow_gateway.py for why those stay
+# distinct identity spaces from a TrainingRun even though they sit one
+# eyebrow apart here).
 _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
-    ("Overview", [("dashboard", "/dashboard", "Dashboard")]),
-    ("Data", [("datasets", "/datasets", "Datasets")]),
     (
-        "Training",
+        "Core domains",
         [
+            ("dashboard", "/dashboard", "Dashboard"),
+            ("datasets", "/datasets", "Datasets"),
             ("runs", "/runs", "Training runs"),
             ("compare", "/runs/compare", "Compare runs"),
+            ("models", "/models", "Model registry"),
+            ("lineage", "/lineage", "Lineage"),
         ],
     ),
-    ("Models", [("models", "/models", "Model registry")]),
-    ("Governance", [("lineage", "/lineage", "Lineage")]),
-    # Kept apart from "Training runs" on purpose: a TrainingRun is a row in
-    # this framework's Postgres, an MLflow run is the tracking server's own
-    # record. They are two identity spaces, and folding them into one menu
-    # entry invites the reader to confuse the ids.
-    ("MLflow", [("experiments", "/experiments", "Experiments")]),
-    # Same reasoning as the MLflow section above: a DAG run is Airflow's
-    # own record, addressed by its own id scheme, not a TrainingRun.
-    ("Airflow", [("pipelines", "/pipelines", "Pipelines")]),
+    (
+        "Orchestration",
+        [
+            ("experiments", "/experiments", "Experiments"),
+            ("pipelines", "/pipelines", "Pipelines"),
+        ],
+    ),
 ]
 
 
@@ -243,7 +268,12 @@ def _nav_link(key: str, href: str, label: str, active: str) -> str:
 
 
 def _sidebar(active: str) -> str:
-    """Render the contextual left navigation for the active page."""
+    """Render the contextual left navigation for the active page.
+
+    No trailing "External / API reference" section: the topnav's own
+    "API" link already covers it, and duplicating it here just repeated
+    the same link twice on every page for no second purpose.
+    """
     blocks: list[str] = []
     for section, items in _NAV:
         links = "".join(
@@ -253,14 +283,6 @@ def _sidebar(active: str) -> str:
             f'<div class="nav-section">'
             f'<div class="nav-section-title">{section}</div>{links}</div>'
         )
-    blocks.append(
-        '<div class="nav-section nav-external">'
-        '<div class="nav-section-title">External</div>'
-        '<a class="nav-item" href="/docs" target="_blank" rel="noopener">'
-        '<span class="nav-icon-dot"></span><span>API reference</span>'
-        '<span class="ext">&#8599;</span></a>'
-        "</div>"
-    )
     return "".join(blocks)
 
 
@@ -279,9 +301,10 @@ def _document(title: str, active: str, fragment: str) -> str:
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title} &middot; {BRAND}</title>
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-<link rel="alternate icon" href="/static/favicon.png" sizes="32x32">
+<link rel="icon" href="/static/favicon.svg?v={_FAVICON_VERSION}" type="image/svg+xml">
+<link rel="alternate icon" href="/static/favicon.png?v={_FAVICON_VERSION}" sizes="32x32">
 <link rel="stylesheet" href="/static/app.css">
+<link rel="preload" href="/static/fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <script>
   // Applied before first paint so a dark-theme reload does not flash white.
   try {{

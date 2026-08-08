@@ -4,14 +4,49 @@
  * every page fetches JSON and renders with app.js, and everything below
  * is plain CSS with custom properties.
  *
- * The visual language follows an AWS-Console-style management surface:
- * a dark navy top navigation, a light contextual side navigation that
- * scrolls on its own, and a neutral content canvas built from white
- * "containers" (header + body) rather than free-floating boxes.
+ * Visual language: a premium, white-canvas enterprise SaaS surface in
+ * the Linear/Vercel/Stripe/Datadog family — flat, high-whitespace, deep
+ * electric-blue accent, no gradients. The top navigation, side
+ * navigation and content all read as the *same* white surface now
+ * (distinguished by hairline borders, not colour blocks); only the
+ * structural layout — sticky top nav + independently-scrolling side
+ * nav + a neutral canvas of "containers" — still follows the
+ * AWS-Console arrangement this shell started from.
  *
  * Theme: follows the operating system by default; the top-nav toggle
- * writes data-theme on <html> and wins over the system preference.
+ * writes data-theme on <html> and wins over the system preference. The
+ * redesign above is the *light* theme only — dark mode keeps its own
+ * colour identity (below), just inheriting the shared structural
+ * tokens (radius, shadow, font) so both themes read as one system.
  */
+
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/Inter-Variable.woff2") format("woff2");
+}
+
+/* Display face for headings only (.page-title/h1, container h2) — see
+ * the design-system comment above the --font-display token below. Not
+ * used anywhere text is actually read at length: its low x-height
+ * costs legibility below display sizes, which is the opposite of the
+ * contrast problem this stylesheet is otherwise fixing. */
+@font-face {
+  font-family: "Clash Display";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/ClashDisplay-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Clash Display";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/ClashDisplay-700.woff2") format("woff2");
+}
 
 :root {
   color-scheme: light dark;
@@ -21,28 +56,25 @@
   --sidenav-w: 248px;
   --content-max: 1440px;
 
-  /* Content surfaces */
-  --bg: #f2f3f3;
+  /* Content surfaces — cards float on the same white canvas as the
+   * page, distinguished only by a hairline border + soft shadow. */
+  --bg: #ffffff;
   --surface: #ffffff;
-  --surface-2: #fbfbfb;
-  --surface-3: #f4f4f4;
-  --border: #e9ebed;
-  --border-strong: #b6bec9;
-  --text: #0f141a;
-  --text-muted: #424650;
-  --text-faint: #656871;
+  --surface-2: #f8fafc;
+  --surface-3: #f1f5f9;
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #0f172a;
+  --text-muted: #475569;
+  /* ~3.9:1 against --bg — passes AA for large/label text. Anything a
+   * user actually needs to read at body size uses --text-muted
+   * instead; this is reserved for decorative/tertiary marks. */
+  --text-faint: #7c8798;
 
-  /* Top navigation (dark navy — the console chrome) */
-  --nav-bg: #172b45;
-  --nav-bg-hover: #24405f;
-  --nav-text: #d6dde6;
-  --nav-text-strong: #ffffff;
-  --nav-border: rgba(255, 255, 255, .14);
-
-  --accent: #0972d3;
-  --accent-hover: #033160;
-  --accent-soft: #f0f7ff;
-  --accent-border: #b8dcff;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-border: #bfdbfe;
 
   /* Brand mark. These are the artwork's own colours, correct on a light
    * surface — the reversed (white) variant belongs to the dark contexts
@@ -59,19 +91,20 @@
   --err-bg: #fdf0f0;
   --warn: #8d6605;
   --warn-bg: #fdf6e4;
-  --run: #0972d3;
-  --run-bg: #f0f7ff;
+  --run: #2563eb;
+  --run-bg: #eff6ff;
   --idle: #5f6672;
   --idle-bg: #f0f1f2;
   --violet: #6f42c1;
   --violet-bg: #f4f0fe;
 
-  --radius: 8px;
-  --radius-sm: 6px;
+  --radius: 12px;
+  --radius-sm: 10px;
   --radius-pill: 20px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --shadow: 0 1px 1px rgba(0, 7, 22, .05), 0 1px 8px rgba(0, 7, 22, .06);
+  --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Clash Display", var(--sans);
+  --shadow: 0 1px 2px rgba(15, 23, 42, .04), 0 8px 20px rgba(15, 23, 42, .06);
   --shadow-nav: 0 2px 5px rgba(0, 7, 22, .12);
 }
 
@@ -90,12 +123,6 @@
     --text: #d1d5db;
     --text-muted: #b4b4bb;
     --text-faint: #8d99a8;
-
-    --nav-bg: #0b1929;
-    --nav-bg-hover: #1c3049;
-    --nav-text: #b6c2d0;
-    --nav-text-strong: #ffffff;
-    --nav-border: rgba(255, 255, 255, .1);
 
     --accent: #42b4ff;
     --accent-hover: #89bdee;
@@ -119,7 +146,7 @@
     --violet: #b39bf5;
     --violet-bg: #221d38;
 
-    --shadow: 0 1px 1px rgba(0, 0, 0, .35), 0 1px 8px rgba(0, 0, 0, .3);
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 20px rgba(0, 0, 0, .35);
     --shadow-nav: 0 2px 5px rgba(0, 0, 0, .45);
   }
 }
@@ -134,12 +161,6 @@
   --text: #d1d5db;
   --text-muted: #b4b4bb;
   --text-faint: #8d99a8;
-
-  --nav-bg: #0b1929;
-  --nav-bg-hover: #1c3049;
-  --nav-text: #b6c2d0;
-  --nav-text-strong: #ffffff;
-  --nav-border: rgba(255, 255, 255, .1);
 
   --accent: #42b4ff;
   --accent-hover: #89bdee;
@@ -163,7 +184,7 @@
   --violet: #b39bf5;
   --violet-bg: #221d38;
 
-  --shadow: 0 1px 1px rgba(0, 0, 0, .35), 0 1px 8px rgba(0, 0, 0, .3);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 20px rgba(0, 0, 0, .35);
   --shadow-nav: 0 2px 5px rgba(0, 0, 0, .45);
 }
 
@@ -212,13 +233,13 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   gap: 12px;
   height: var(--topnav-h);
   padding: 0 16px;
-  background: var(--nav-bg);
-  color: var(--nav-text);
-  box-shadow: var(--shadow-nav);
+  background: var(--surface);
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
 }
 
-.topnav a { color: var(--nav-text); }
-.topnav a:hover { color: var(--nav-text-strong); text-decoration: none; }
+.topnav a { color: var(--text-muted); }
+.topnav a:hover { color: var(--text); text-decoration: none; }
 
 .nav-toggle {
   display: inline-flex;
@@ -230,10 +251,10 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--nav-text);
+  color: var(--text-muted);
   cursor: pointer;
 }
-.nav-toggle:hover { background: var(--nav-bg-hover); color: var(--nav-text-strong); }
+.nav-toggle:hover { background: var(--surface-3); color: var(--text); }
 
 .nav-toggle .bars {
   display: flex;
@@ -246,17 +267,6 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   height: 2px;
   border-radius: 1px;
   background: currentColor;
-}
-
-/* The reversed lockup. This override lives on the *surface* rather than
- * on .brand, because it is the dark chrome — not the mark — that makes
- * white the right colour here. The top navigation is navy under both
- * themes, so it reverses under both; a .brand placed on a page surface
- * keeps the :root colours and stays legible there instead of turning
- * white on white. */
-.topnav {
-  --logo-accent: #3d95ea;
-  --logo-deep: #ffffff;
 }
 
 /* Brand lockup. The mark is the word's "G" — an open ring cut on the
@@ -318,11 +328,11 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--nav-text);
+  color: var(--text-muted);
   cursor: pointer;
 }
 .topnav-util a:hover,
-.topnav-btn:hover { background: var(--nav-bg-hover); color: var(--nav-text-strong); }
+.topnav-btn:hover { background: var(--surface-3); color: var(--text); }
 
 /* Sun in light mode, moon in dark — drawn with a box-shadow crescent so
  * the toggle needs no icon asset. */
@@ -376,7 +386,10 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .07em;
-  color: var(--text-faint);
+  /* --text-muted, not --text-faint: this is a group label the reader
+   * navigates by, not a decorative mark, and at 11px it needs body-text
+   * contrast — --text-faint here read as washed-out. */
+  color: var(--text-muted);
 }
 
 .nav-item {
@@ -478,13 +491,20 @@ body.nav-collapsed .sidenav { display: none; }
   margin-bottom: 20px;
 }
 
+/* Clash Display only goes on .page-title/h1 (26px). Every actual <h2> in
+ * this app renders through .container-header at 17px (below), and this
+ * font's hinting breaks word-spacing at that size — confirmed by
+ * rendering it in isolation: "Service summary" collapsed to
+ * "Servicesummary" at 17px while the same text was fine at 26px. h2
+ * shares the *size/weight* rule below but not the font-family. */
 .page-title,
 h2 {
-  font-size: 22px;
+  font-size: 26px;
   font-weight: 700;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
   margin: 0 0 4px;
 }
+.page-title, h1 { font-family: var(--font-display); }
 
 .page-desc,
 .subtitle {
@@ -556,7 +576,6 @@ h3 {
 /* "flush" hands the full container width to its child — used where the
  * child already draws its own separators (the KPI grid). */
 .container-body.flush { padding: 0; }
-.container-body.flush > .kpi-grid { border: none; border-radius: 0; }
 
 /* A table inside a container already has the container's frame. */
 .container > .table-wrap {
@@ -572,28 +591,35 @@ h3 {
 /* 5. KPI tiles                                                        */
 /* ================================================================== */
 
+/* Each tile is its own card with a gap between them, not one shared
+ * strip with internal divider lines — a tile is a distinct signal
+ * (active runs vs. failed vs. success rate), and framing them
+ * separately reads that way at a glance. */
 .kpi-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  /* auto-fit, not auto-fill: fill reserves a track for every column
+   * that *could* fit at the minimum width, even past the last real
+   * tile — with only 4 tiles in a wide container that left three empty
+   * tracks eating the row's width and bunched the real cards on the
+   * left instead of spreading them across it. auto-fit collapses the
+   * empty tracks so however many tiles exist actually share the row. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
 }
 
-/* Separators are drawn by each tile rather than by a gap painted in the
- * border colour: with a gap, an incomplete last row shows the gap colour
- * as a large grey block. Casting the shadow up and left means it lands on
- * the previously-painted neighbour (so it stays visible), and the first
- * row and column cast theirs outside the grid, where overflow clips them. */
 .kpi {
-  padding: 14px 16px;
-  box-shadow: -1px 0 0 var(--border), 0 -1px 0 var(--border);
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
 }
 
 .kpi .label {
-  font-size: 12.5px;
-  font-weight: 500;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
   color: var(--text-muted);
 }
 
@@ -601,13 +627,36 @@ h3 {
   font-size: 26px;
   font-weight: 700;
   letter-spacing: -0.02em;
-  margin-top: 0;
+  margin-top: 2px;
   font-variant-numeric: tabular-nums;
 }
 
 .kpi.ok .value { color: var(--ok); }
 .kpi.err .value { color: var(--err); }
 .kpi.warn .value { color: var(--warn); }
+
+/* Optional per-tile caption: a status dot + a short, derived-from-data
+ * note (see initDashboard()) — not every tile gets one; inventing a
+ * caption for a KPI with nothing to say is noise, not signal. */
+.kpi .caption {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.kpi .caption::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--idle);
+  flex: none;
+}
+.kpi.ok .caption::before { background: var(--ok); }
+.kpi.err .caption::before { background: var(--err); }
+.kpi.warn .caption::before { background: var(--warn); }
 
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
@@ -662,6 +711,16 @@ td.truncate {
 }
 
 .checkbox-cell { width: 38px; text-align: center; }
+
+/* Two-line cell: a primary value with a muted mono identifier
+ * underneath (e.g. a pipeline id over its execution id) — see
+ * cellWithSub() in app.js. */
+.cell-sub {
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
 input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 
 /* ================================================================== */
@@ -671,30 +730,35 @@ input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
 .badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 0;
-  font-size: 13px;
-  font-weight: 500;
+  gap: 5px;
+  padding: 3px 10px 3px 8px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
   color: var(--idle);
+  background: var(--idle-bg);
   white-space: nowrap;
 }
 
 .badge::before {
   content: "";
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
   flex: none;
 }
 
-.badge.success  { color: var(--ok); }
-.badge.failed   { color: var(--err); }
-.badge.running  { color: var(--run); }
-.badge.pending  { color: var(--warn); }
-.badge.cancelled{ color: var(--idle); }
-.badge.candidate{ color: var(--warn); }
-.badge.approved { color: var(--violet); }
+.badge.success  { color: var(--ok); background: var(--ok-bg); }
+.badge.failed   { color: var(--err); background: var(--err-bg); }
+.badge.running  { color: var(--run); background: var(--run-bg); }
+.badge.pending  { color: var(--warn); background: var(--warn-bg); }
+.badge.cancelled{ color: var(--idle); background: var(--idle-bg); }
+.badge.candidate{ color: var(--warn); background: var(--warn-bg); }
+.badge.approved { color: var(--violet); background: var(--violet-bg); }
+.badge.plain { padding: 3px 10px; text-transform: none; letter-spacing: normal; }
 .badge.plain::before { display: none; }
 
 .badge.running::before { animation: pulse 1.4s ease-in-out infinite; }
@@ -723,15 +787,20 @@ select, input[type="search"], input[type="text"] {
 }
 select:focus, input:focus { border-color: var(--accent); }
 
+/* Secondary (default) + primary pair, à la Stripe/Linear: a quiet
+ * neutral button for most actions, a solid-fill accent button for the
+ * one action a page actually wants you to take. Rounded-rect, not the
+ * pill this shell started with — a pill reads as "chip", a 10px
+ * corner reads as "button". */
 button, .btn {
   font: inherit;
   font-size: 14px;
-  font-weight: 700;
-  padding: 5px 18px;
-  border: 2px solid var(--accent);
-  border-radius: var(--radius-pill);
-  background: transparent;
-  color: var(--accent);
+  font-weight: 500;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -740,17 +809,17 @@ button, .btn {
 }
 
 button:hover, .btn:hover {
-  background: var(--accent-soft);
-  color: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: var(--surface-3);
+  border-color: var(--border-strong);
+  color: var(--text);
   text-decoration: none;
 }
 
 button:disabled, .btn:disabled {
-  opacity: .4;
+  opacity: .5;
   cursor: not-allowed;
-  background: transparent;
-  border-color: var(--border-strong);
+  background: var(--surface-2);
+  border-color: var(--border);
   color: var(--text-faint);
 }
 
@@ -758,6 +827,7 @@ button.primary, .btn.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+  font-weight: 600;
 }
 button.primary:hover, .btn.primary:hover {
   background: var(--accent-hover);
@@ -929,7 +999,9 @@ details[open] > summary:before { transform: rotate(90deg); }
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: .07em;
-  color: var(--text-faint);
+  /* Same reasoning as .nav-section-title: a type label the reader
+   * relies on to read the graph, not decoration. */
+  color: var(--text-muted);
   font-weight: 700;
 }
 
