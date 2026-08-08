@@ -318,7 +318,15 @@ def _mlmodel_spec(client: Any, mlflow_run_id: str) -> tuple[dict[str, Any], str,
         return {}, "", "none"
 
     experiment_id = client.get_run(mlflow_run_id).info.experiment_id
-    for model in search(experiment_ids=[experiment_id]):
+    try:
+        results = list(search(experiment_ids=[experiment_id]))
+    except Exception:  # noqa: BLE001 - a 2.x server 404s this 3.x-only
+        # endpoint outright rather than answering "zero results"; either
+        # way there is no logged-model entity to describe, same as the
+        # run-artifact branch above finding nothing.
+        return {}, "", "none"
+
+    for model in results:
         if getattr(model, "source_run_id", None) != mlflow_run_id:
             continue
         # Not model.model_uri: that is a `models:/...` URI which resolves

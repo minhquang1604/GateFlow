@@ -350,6 +350,25 @@ class TestModelInfo:
         assert data["found"] is False
         assert "log_model" in data["note"]
 
+    def test_logged_models_endpoint_404_is_not_an_error(
+        self, client, fake_mlflow, run_with_mlflow, monkeypatch
+    ):
+        """A 2.x tracking server has no ``logged-models`` REST endpoint at
+        all — the 3.x client raises calling it, same as genuinely finding
+        zero results. Either way there is no MLmodel to describe."""
+
+        def search_logged_models(experiment_ids):
+            raise Exception("RestException: 404 Not Found")
+
+        monkeypatch.setattr(
+            fake_mlflow, "search_logged_models", search_logged_models, raising=False
+        )
+
+        r = client.get(f"/api/training-runs/{run_with_mlflow}/model-info")
+        assert r.status_code == 200
+        data = r.json()["data"]
+        assert data["found"] is False
+
 
 # ---------------------------------------------------------------------- #
 # Model registry reconciliation
