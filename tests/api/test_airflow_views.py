@@ -56,6 +56,9 @@ class _FakeOrchestrator:
         assert dag_id == "mlops_training_pipeline"
         return [{"dag_run_id": "mlops-abc123", "state": "success", "conf": {"max_depth": 6}}]
 
+    def make_execution_id(self, dag_id, dag_run_id):
+        return f"{dag_id}/{dag_run_id}"
+
     def get_task_instances(self, execution_id):
         assert execution_id == EXECUTION_ID
         return [{"task_id": "train", "state": "success", "try_number": 1}]
@@ -215,6 +218,23 @@ class TestDags:
         data = client.get("/api/airflow/dags/mlops_training_pipeline").json()["data"]
         assert data["tasks"][0]["downstream_task_ids"] == ["promote"]
         assert data["dag_runs"][0]["conf"] == {"max_depth": 6}
+
+    def test_detail_expands_recent_runs_into_a_task_grid(self, client, fake_airflow):
+        """Default grid_runs expands every returned dag_run into its full
+        per-task states, using the same execution id the per-run task view
+        already resolves — no new orchestrator method involved."""
+        data = client.get("/api/airflow/dags/mlops_training_pipeline").json()["data"]
+        assert data["grid_run_ids"] == ["mlops-abc123"]
+        assert data["grid_cells"] == [
+            {"dag_run_id": "mlops-abc123", "task_id": "train", "state": "success", "try_number": 1}
+        ]
+
+    def test_grid_runs_zero_skips_the_grid_entirely(self, client, fake_airflow):
+        data = client.get(
+            "/api/airflow/dags/mlops_training_pipeline", params={"grid_runs": 0}
+        ).json()["data"]
+        assert data["grid_run_ids"] == []
+        assert data["grid_cells"] == []
 
 
 # ---------------------------------------------------------------------- #

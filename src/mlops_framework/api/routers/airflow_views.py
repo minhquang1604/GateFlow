@@ -61,20 +61,51 @@ def list_dags() -> ExternalPanel:
 def get_dag_detail(
     dag_id: str,
     limit: int = Query(default=25, ge=1, le=200, description="Recent DAG runs to include"),
+    grid_runs: int = Query(
+        default=10,
+        ge=0,
+        le=25,
+        description=(
+            "How many of the most recent runs to expand into per-task "
+            "instance states for the console's task-history grid. Each one "
+            "costs one extra Airflow REST call, so this is capped well "
+            "below `limit` and separately overridable — 0 skips the grid "
+            "entirely for callers that don't need it."
+        ),
+    ),
 ) -> ExternalPanel:
-    """A DAG's task structure plus its recent run history.
+    """A DAG's task structure, recent run history, and a task x run grid.
 
     ``dag_runs`` includes runs the scheduler triggered on its own, not
     only ones this framework started — the framework's ``TrainingRun``
     table only ever learns about the latter, so a scheduled run otherwise
     has no representation anywhere in the console.
+
+    ``grid_run_ids``/``grid_cells`` expand the newest ``grid_runs`` of
+    those into full task-instance state, so the console can draw an
+    Airflow-Tree-View-style grid (and colour the DAG graph by the latest
+    run) without the browser making one request per run itself. This
+    reuses ``get_task_instances``/``make_execution_id`` — both already
+    used by the per-run task view — rather than adding a new
+    orchestrator method for what is just N calls to an existing one.
     """
 
     def query(orchestrator: Any) -> dict[str, Any]:
+        dag_runs = orchestrator.list_dag_runs(dag_id, limit=limit)
+        grid_run_ids = [
+            r["dag_run_id"] for r in dag_runs[:grid_runs] if r.get("dag_run_id")
+        ]
+        grid_cells: list[dict[str, Any]] = []
+        for run_id in grid_run_ids:
+            execution_id = orchestrator.make_execution_id(dag_id, run_id)
+            for task_instance in orchestrator.get_task_instances(execution_id):
+                grid_cells.append({"dag_run_id": run_id, **task_instance})
         return {
             "dag_id": dag_id,
             "tasks": orchestrator.get_dag_tasks(dag_id),
-            "dag_runs": orchestrator.list_dag_runs(dag_id, limit=limit),
+            "dag_runs": dag_runs,
+            "grid_run_ids": grid_run_ids,
+            "grid_cells": grid_cells,
         }
 
     return panel(query)
