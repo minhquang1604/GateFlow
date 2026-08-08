@@ -269,12 +269,37 @@ Each environment is fully isolated in its own state file.
 
 ## Cleanup
 
+**Don't run a plain `terraform destroy` on this stack.** It has hit
+three separate, confirmed failure modes on this exact environment in
+one run — non-empty S3 buckets Terraform refuses to delete, an
+Internet Gateway that can't detach while the EC2 fleet still holds
+public IPs, and ECS services that time out on a stale status field
+after 20 minutes even though AWS has already deleted them. None of
+these are fixable by reordering resources in the Terraform graph alone
+(the IGW-ordering fix was tried and reverted — see the network
+module's README for why it risks a boot-time race on the *next*
+apply instead) — they need to happen in a specific sequence around
+what Terraform itself can express.
+
 ```bash
 cd infrastructure/terraform/environments/prod
-terraform destroy -var-file=terraform.tfvars
+./destroy.sh
 ```
 
-This deletes every resource created by this module, including the
-RDS instance (`skip_final_snapshot = true`). The S3 buckets and ECR
-repos survive only if they were empty at destroy time — empty them
-first for a clean teardown.
+This runs, in order: (1) purge every version and delete marker from
+the data-bearing S3 buckets (`force_destroy = false` is intentional —
+a guardrail against destroying the wrong workspace — so Terraform
+will not empty them for you, and a bucket that ever had versioning
+enabled keeps old versions around even after versioning is
+suspended); (2) destroy the EC2 fleet on its own first, so instances
+release their public IPs before anything tries to detach the
+Internet Gateway; (3) destroy everything else, with a built-in
+recovery step if the ECS-service timeout pattern shows up (confirmed
+via `aws ecs list-services` returning empty — i.e. AWS is actually
+done — before removing the stuck services from state and retrying).
+
+Prompts for confirmation before touching anything. Safe to re-run if
+it stops partway through.
+
+RDS has `skip_final_snapshot = true` — there is no way to recover its
+data after this runs.

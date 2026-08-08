@@ -4,6 +4,21 @@ Creates the Free-Tier-friendly VPC, public + private subnets across N AZs,
 an internet gateway (for public subnets), route tables, and the DB subnet
 group consumed by the RDS module.
 
+**The Internet Gateway stays here, not in the environment root.** It
+was moved out and given `depends_on = [module.compute]` once, to fix a
+real `terraform destroy` failure (`DependencyViolation: ... has some
+mapped public address(es)` — the compute module's EC2 fleet was still
+running and holding public IPs when the IGW tried to detach). A live
+`terraform plan` confirmed that change was cycle-free. It was reverted
+anyway: `depends_on` orders both directions, so the same edge that
+delays the IGW's *destruction* until after the fleet also delays its
+*creation* until after the fleet on a fresh apply — and the fleet's own
+boot script needs an internet route immediately to register with ECS
+(see `modules/compute/userdata/ec2_init.sh.tftpl`). That trade wasn't
+worth making without being able to verify the create-time path on a
+real apply. See `environments/prod/destroy.sh` for how this is handled
+instead — sequencing around it operationally rather than in the graph.
+
 ## Inputs
 
 | Name | Type | Default | Description |

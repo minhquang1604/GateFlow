@@ -157,8 +157,8 @@ variable "services" {
 
 variable "force_delete_services" {
   description = <<-EOT
-    Whether `terraform destroy` deletes ECS services without waiting
-    for their tasks to drain gracefully.
+    Whether `terraform destroy` deletes ECS services without requiring
+    them to be scaled to 0 running tasks first.
 
     true here because the graceful path depends on the container
     instance's ECS agent confirming teardown. When an agent is
@@ -167,6 +167,19 @@ variable "force_delete_services" {
     arrives and every service hangs in DRAINING until Terraform
     times out after 20 minutes, leaving a half-destroyed stack that
     needs manual `aws ecs delete-service --force` calls.
+
+    This does NOT fully close that gap, confirmed on a later destroy:
+    the AWS provider still waits for the service's own status field to
+    read INACTIVE after the delete call succeeds, and that field has
+    been observed lagging `aws ecs list-services` (which only lists
+    ACTIVE/DRAINING services — an empty result means AWS already
+    considers them gone) by well over 20 minutes. `force_delete` avoids
+    one cause of the hang (an unconfirmed graceful drain); it does not
+    avoid this one (a stale status read). See
+    `environments/prod/destroy.sh`, which detects exactly this pattern
+    (list-services empty, describe-services stuck) and recovers with
+    `terraform state rm` rather than waiting on a field that may not
+    update for a long time.
 
     Set to false if you later run multi-replica services where
     letting in-flight requests finish during teardown matters.
