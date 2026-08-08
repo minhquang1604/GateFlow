@@ -20,10 +20,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from mlops_framework.api import airflow_gateway
 from mlops_framework.api.deps import get_db
 from mlops_framework.api.mlflow_gateway import panel, tracking_uri
 from mlops_framework.api.schemas import ExternalPanel, TrainingRunOut
-from mlops_framework.config.settings import get_settings
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
 
 router = APIRouter()
@@ -117,10 +117,17 @@ def _run_or_404(db: Session, run_id: int) -> TrainingRun:
 
 @router.get("/training-runs/{run_id}/tasks", response_model=ExternalPanel)
 def get_run_tasks(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
-    """Per-task state for a run that was executed on Airflow.
+    """Airflow's view of a run: the DAG run's own state plus per-task detail.
 
-    Returns ``{task_id: state}``, the same shape Airflow's grid view is
-    built on.
+    ``tasks`` is now a list of full task-instance records (state, timing,
+    retry count, operator, pool, hostname — see
+    ``AirflowOrchestrator.get_task_instances``), not the bare
+    ``{task_id: state}`` map this endpoint used to return; a task mid-retry
+    was indistinguishable from a first attempt without ``try_number``.
+    ``dag_run`` adds the run-level state/dates/**conf** from
+    ``get_execution_status`` — the same call ``sync_from_orchestrator``
+    already makes elsewhere, now surfaced here too since a run's own
+    parameters (``conf``) are worth showing next to its tasks.
     """
     run = _run_or_404(db, run_id)
     metadata = json.loads(run.metadata_json or "{}")
@@ -132,27 +139,22 @@ def get_run_tasks(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
             available=False,
             reason="run was not executed on Airflow (local orchestrator)",
         )
+    execution_id = str(execution_id)
 
-    settings = get_settings()
-    if not settings.airflow_base_url:
-        return ExternalPanel(available=False, reason="AIRFLOW_BASE_URL is not configured")
+    def query(orchestrator: Any) -> dict[str, Any]:
+        status = orchestrator.get_execution_status(execution_id)
+        return {
+            "execution_id": execution_id,
+            "dag_run": {
+                "state": status.state.value,
+                "started_at": status.started_at.isoformat() if status.started_at else None,
+                "finished_at": status.finished_at.isoformat() if status.finished_at else None,
+                "conf": (status.metadata or {}).get("conf") or {},
+            },
+            "tasks": orchestrator.get_task_instances(execution_id),
+        }
 
-    from mlops_framework.orchestration.airflow import AirflowOrchestrator
-
-    try:
-        with AirflowOrchestrator(
-            base_url=settings.airflow_base_url,
-            username=settings.airflow_username,
-            password=settings.airflow_password,
-        ) as orchestrator:
-            states = orchestrator.get_task_instance_states(str(execution_id))
-    except Exception as exc:  # noqa: BLE001 - never fail the page
-        return ExternalPanel(available=False, reason=f"Airflow unreachable: {exc}")
-
-    return ExternalPanel(
-        available=True,
-        data={"execution_id": execution_id, "tasks": states},
-    )
+    return airflow_gateway.panel(query)
 
 
 @router.get("/training-runs/{run_id}/mlflow", response_model=ExternalPanel)

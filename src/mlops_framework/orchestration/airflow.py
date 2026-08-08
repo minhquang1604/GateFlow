@@ -34,6 +34,23 @@ The fake alone is not enough: the URL bug this module carried until
 recently — DAG-run reads and cancels sent to ``/api/v1/dagRuns/{id}``,
 which Airflow does not serve — was invisible because the fake answered
 200 to any URL it did not recognise.
+
+Task logs and remote logging
+-----------------------------
+
+:meth:`get_task_log` proxies Airflow's own log-fetch endpoint, which in
+this deployment can only serve a task attempt's log while the container
+that ran it is still alive: ``AIRFLOW__LOGGING__REMOTE_LOGGING`` is not
+configured, even though an S3 bucket for it (``s3_airflow_logs_bucket``
+in the Terraform outputs) already exists. Airflow's webserver then tries
+to fetch the log directly from the worker's hostname, which is a
+short-lived ECS container identity — for any run whose worker has since
+been redeployed, that lookup fails DNS resolution. Airflow reports this
+as a 200 response with the error embedded in the log body, not as an
+HTTP error, and this adapter passes that text through unchanged rather
+than intercepting it. Wiring remote logging to the existing bucket would
+fix this; it is a Terraform/Airflow-config change, not something this
+adapter can paper over.
 """
 
 from __future__ import annotations
@@ -244,28 +261,233 @@ class AirflowOrchestrator(Orchestrator):
             )
         return self._to_status(response.json())
 
-    def get_task_instance_states(self, execution_id: str) -> dict[str, str]:
-        """Return a ``{task_id: state}`` map for a DAG run.
+    def get_task_instances(self, execution_id: str) -> list[dict[str, Any]]:
+        """Return the full task-instance list for a DAG run.
 
         Optional secondary query used by callers that want finer-grained
-        reporting than the DAG-level state. Returns ``{}`` on a 404 or
+        reporting than the DAG-level state. Returns ``[]`` on a 404 or
         any non-200 — this query is best-effort and never raises.
+
+        Each entry keeps the fields a task-level Gantt view needs beyond
+        bare state — ``start_date``/``end_date``/``duration``,
+        ``try_number``/``max_tries`` (a task mid-retry looks identical to a
+        first attempt without these), and ``operator``/``pool``/``hostname``
+        for "which task is slow and where did it run". An earlier version
+        of this method discarded everything but ``task_id``/``state`` from
+        this same response.
         """
         try:
             url = self._dag_run_url(execution_id, "/taskInstances")
             response = self._client.get(url)
         except Exception:
-            return {}
+            return []
         if response.status_code != 200:
-            return {}
+            return []
         payload = response.json()
-        out: dict[str, str] = {}
+        out: list[dict[str, Any]] = []
         for entry in payload.get("task_instances", []) or []:
             tid = entry.get("task_id")
             state = entry.get("state")
-            if tid is not None and state is not None:
-                out[str(tid)] = str(state)
+            if tid is None or state is None:
+                continue
+            out.append(
+                {
+                    "task_id": str(tid),
+                    "state": str(state),
+                    "start_date": entry.get("start_date"),
+                    "end_date": entry.get("end_date"),
+                    "duration": entry.get("duration"),
+                    "try_number": entry.get("try_number"),
+                    "max_tries": entry.get("max_tries"),
+                    "operator": entry.get("operator"),
+                    "pool": entry.get("pool"),
+                    "queue": entry.get("queue"),
+                    "hostname": entry.get("hostname"),
+                }
+            )
         return out
+
+    def list_dags(self, limit: int = 100) -> list[dict[str, Any]]:
+        """List DAGs known to the Airflow deployment.
+
+        Paginates until every DAG is fetched or ``limit`` is reached,
+        whichever comes first — a single Airflow response page tops out
+        at 100 by default, and this framework's own DAG count is small,
+        but a hardcoded single-page fetch would silently truncate a
+        larger deployment.
+        """
+        dags: list[dict[str, Any]] = []
+        offset = 0
+        page_size = 100
+        while len(dags) < limit:
+            response = self._client.get(
+                f"/api/v1/dags?limit={page_size}&offset={offset}"
+            )
+            if response.status_code != 200:
+                break
+            payload = response.json()
+            page = payload.get("dags", []) or []
+            for d in page:
+                dags.append(
+                    {
+                        "dag_id": d.get("dag_id"),
+                        "description": d.get("description"),
+                        "is_paused": d.get("is_paused"),
+                        "is_active": d.get("is_active"),
+                        "schedule_interval": d.get("schedule_interval"),
+                        "next_dagrun": d.get("next_dagrun"),
+                        "owners": d.get("owners") or [],
+                        "tags": [t.get("name") for t in (d.get("tags") or []) if t.get("name")],
+                        "has_import_errors": d.get("has_import_errors"),
+                        "max_active_runs": d.get("max_active_runs"),
+                    }
+                )
+            offset += page_size
+            if len(page) < page_size or offset >= payload.get("total_entries", 0):
+                break
+        return dags[:limit]
+
+    def get_dag_tasks(self, dag_id: str) -> list[dict[str, Any]]:
+        """Return a DAG's tasks with their downstream dependencies.
+
+        This is the DAG's static structure — the same for every run of it
+        — not a run's state, which is why it lives here rather than on
+        :meth:`get_task_instances`.
+        """
+        response = self._client.get(f"/api/v1/dags/{quote(dag_id, safe='')}/tasks")
+        if response.status_code == 404:
+            raise OrchestratorConfigError(f"Airflow DAG {dag_id!r} not found")
+        if response.status_code != 200:
+            raise OrchestratorConfigError(
+                f"Airflow task-list query failed: {response.status_code} {response.text}"
+            )
+        payload = response.json()
+        return [
+            {
+                "task_id": t.get("task_id"),
+                "operator_name": t.get("class_ref", {}).get("class_name"),
+                "downstream_task_ids": t.get("downstream_task_ids") or [],
+                "trigger_rule": t.get("trigger_rule"),
+            }
+            for t in payload.get("tasks", []) or []
+        ]
+
+    def list_dag_runs(self, dag_id: str, limit: int = 25) -> list[dict[str, Any]]:
+        """Return recent DAG runs, newest first — not only the ones this
+        framework triggered.
+
+        ``TrainingRun`` only ever learns about a run this framework itself
+        started; a run the Airflow scheduler kicked off on its own schedule
+        has no corresponding row and is otherwise invisible to the console.
+        """
+        response = self._client.get(
+            f"/api/v1/dags/{quote(dag_id, safe='')}/dagRuns"
+            f"?limit={limit}&order_by=-execution_date"
+        )
+        if response.status_code == 404:
+            raise OrchestratorConfigError(f"Airflow DAG {dag_id!r} not found")
+        if response.status_code != 200:
+            raise OrchestratorConfigError(
+                f"Airflow dag-run query failed: {response.status_code} {response.text}"
+            )
+        payload = response.json()
+        out = []
+        for r in payload.get("dag_runs", []) or []:
+            out.append(
+                {
+                    "dag_run_id": r.get("dag_run_id"),
+                    "state": r.get("state"),
+                    "run_type": r.get("run_type"),
+                    "execution_date": r.get("execution_date"),
+                    "start_date": r.get("start_date"),
+                    "end_date": r.get("end_date"),
+                    "external_trigger": r.get("external_trigger"),
+                    "conf": r.get("conf") or {},
+                    "note": r.get("note"),
+                }
+            )
+        return out
+
+    def get_task_log(
+        self, execution_id: str, task_id: str, try_number: int = 1
+    ) -> str:
+        """Fetch one task attempt's log as plain text.
+
+        Airflow's log endpoint answers 200 with an in-band error message
+        in the body (not an HTTP error) when it cannot reach wherever the
+        log actually lives — e.g. local log serving pointed at a worker
+        container that no longer exists. That text is returned as-is
+        rather than detected and rewritten: it is Airflow's own accurate
+        account of what went wrong, and paraphrasing it would risk hiding
+        the real reason (see the module docstring's note on remote
+        logging not being configured in this deployment).
+        """
+        dag_id, dag_run_id = self._split_execution_id(execution_id)
+        url = (
+            f"/api/v1/dags/{quote(dag_id, safe='')}/dagRuns/{quote(dag_run_id, safe='')}"
+            f"/taskInstances/{quote(task_id, safe='')}/logs/{try_number}"
+            "?full_content=true"
+        )
+        response = self._client.get(url)
+        if response.status_code == 404:
+            raise ExecutionNotFoundError(
+                f"No log for task {task_id!r} attempt {try_number} on {execution_id!r}"
+            )
+        if response.status_code != 200:
+            raise OrchestratorConfigError(
+                f"Airflow log query failed: {response.status_code} {response.text}"
+            )
+        return response.text
+
+    def get_import_errors(self) -> list[dict[str, Any]]:
+        """DAG files Airflow could not parse.
+
+        A DAG-parse failure is a common, silent reason a pipeline "does
+        nothing" — the framework can trigger it, and Airflow will 404 or
+        hang, and nothing in this framework's own tables explains why.
+        """
+        response = self._client.get("/api/v1/importErrors")
+        if response.status_code != 200:
+            return []
+        payload = response.json()
+        return [
+            {
+                "filename": e.get("filename"),
+                "stack_trace": e.get("stack_trace"),
+                "timestamp": e.get("timestamp"),
+            }
+            for e in payload.get("import_errors", []) or []
+        ]
+
+    def get_health(self) -> dict[str, Any]:
+        """Component health: scheduler heartbeat, metadatabase, triggerer.
+
+        Explains a run stuck at PENDING that a task-instance query alone
+        cannot: if the scheduler's heartbeat is stale, nothing is going to
+        pick the run up regardless of what its rows say.
+        """
+        response = self._client.get("/api/v1/health")
+        if response.status_code != 200:
+            return {}
+        return response.json()
+
+    def get_pools(self) -> list[dict[str, Any]]:
+        """Slot usage per pool — another PENDING explanation: a full pool
+        queues new task instances behind ones already running."""
+        response = self._client.get("/api/v1/pools")
+        if response.status_code != 200:
+            return []
+        payload = response.json()
+        return [
+            {
+                "name": p.get("name"),
+                "slots": p.get("slots"),
+                "running_slots": p.get("running_slots"),
+                "queued_slots": p.get("queued_slots"),
+                "open_slots": p.get("open_slots"),
+            }
+            for p in payload.get("pools", []) or []
+        ]
 
     def cancel_execution(self, execution_id: str) -> ExecutionStatus:
         """Cancel a DAG run by marking it failed.

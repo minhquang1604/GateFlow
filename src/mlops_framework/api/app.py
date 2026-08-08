@@ -12,6 +12,7 @@ from typing import Optional
 from fastapi import FastAPI
 
 from mlops_framework.api.routers import (
+    airflow_views,
     dashboard,
     datasets,
     internal,
@@ -60,6 +61,7 @@ def create_app(
     app.include_router(models.router, prefix="/api", tags=["models"])
     app.include_router(lineage.router, prefix="/api", tags=["lineage"])
     app.include_router(mlflow_views.router, prefix="/api", tags=["mlflow"])
+    app.include_router(airflow_views.router, prefix="/api", tags=["airflow"])
     app.include_router(readiness.router, prefix="/api", tags=["readiness"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
 

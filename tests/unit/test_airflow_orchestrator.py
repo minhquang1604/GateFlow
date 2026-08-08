@@ -297,35 +297,207 @@ class TestConfiguration:
         assert orch._base_url == "http://explicit:9090"
 
 
-class TestTaskInstanceStates:
-    def test_returns_state_map_on_200(self):
+class TestTaskInstances:
+    def test_returns_full_fields_on_200(self):
         body = {
             "task_instances": [
-                {"task_id": "resolve_context", "state": "success"},
+                {
+                    "task_id": "resolve_context",
+                    "state": "success",
+                    "start_date": "2026-08-05T05:07:54+00:00",
+                    "end_date": "2026-08-05T05:07:55+00:00",
+                    "duration": 0.7,
+                    "try_number": 1,
+                    "max_tries": 0,
+                    "operator": "PythonOperator",
+                    "pool": "default_pool",
+                    "queue": "default",
+                    "hostname": "worker-1",
+                },
                 {"task_id": "train", "state": "running"},
             ]
         }
         orch, _ = _make({
             ("GET", f"/api/v1/dags/{DAG_ID}/dagRuns/run-1/taskInstances"): _resp(body),
         })
-        states = orch.get_task_instance_states(f"{DAG_ID}/run-1")
-        assert states == {"resolve_context": "success", "train": "running"}
+        instances = orch.get_task_instances(f"{DAG_ID}/run-1")
+        assert instances[0]["task_id"] == "resolve_context"
+        assert instances[0]["duration"] == 0.7
+        assert instances[0]["hostname"] == "worker-1"
+        # Absent fields on a sparser record come through as None, not
+        # dropped — a caller can rely on every key existing.
+        assert instances[1] == {
+            "task_id": "train",
+            "state": "running",
+            "start_date": None,
+            "end_date": None,
+            "duration": None,
+            "try_number": None,
+            "max_tries": None,
+            "operator": None,
+            "pool": None,
+            "queue": None,
+            "hostname": None,
+        }
 
-    def test_returns_empty_dict_on_404(self):
+    def test_returns_empty_list_on_404(self):
         orch, _ = _make({
             ("GET", f"/api/v1/dags/{DAG_ID}/dagRuns/missing/taskInstances"):
                 _resp({"detail": "not found"}, status=404),
         })
-        assert orch.get_task_instance_states(f"{DAG_ID}/missing") == {}
+        assert orch.get_task_instances(f"{DAG_ID}/missing") == []
 
-    def test_returns_empty_dict_on_500(self):
+    def test_returns_empty_list_on_500(self):
         orch, _ = _make({
             ("GET", f"/api/v1/dags/{DAG_ID}/dagRuns/broken/taskInstances"):
                 _resp({}, status=500),
         })
-        assert orch.get_task_instance_states(f"{DAG_ID}/broken") == {}
+        assert orch.get_task_instances(f"{DAG_ID}/broken") == []
 
     def test_bare_id_returns_empty_rather_than_raising(self):
         """This query is documented as best-effort and never raising."""
         orch, _ = _make()
-        assert orch.get_task_instance_states("run-1") == {}
+        assert orch.get_task_instances("run-1") == []
+
+
+class TestListDags:
+    def test_single_page(self):
+        body = {
+            "dags": [
+                {
+                    "dag_id": "mlops_training_pipeline",
+                    "description": "training",
+                    "is_paused": False,
+                    "is_active": True,
+                    "schedule_interval": None,
+                    "next_dagrun": None,
+                    "owners": ["mlops-framework"],
+                    "tags": [{"name": "mlops"}, {"name": "framework"}],
+                    "has_import_errors": False,
+                    "max_active_runs": 1,
+                }
+            ],
+            "total_entries": 1,
+        }
+        orch, client = _make({
+            ("GET", "/api/v1/dags?limit=100&offset=0"): _resp(body),
+        })
+        dags = orch.list_dags()
+        assert len(dags) == 1
+        assert dags[0]["dag_id"] == "mlops_training_pipeline"
+        assert dags[0]["tags"] == ["mlops", "framework"]
+
+    def test_error_response_yields_empty_list(self):
+        orch, _ = _make()  # no routes registered -> 404
+        assert orch.list_dags() == []
+
+
+class TestGetDagTasks:
+    def test_returns_tasks_with_downstream(self):
+        body = {
+            "tasks": [
+                {
+                    "task_id": "resolve_context",
+                    "class_ref": {"class_name": "PythonOperator"},
+                    "downstream_task_ids": ["train"],
+                    "trigger_rule": "all_success",
+                },
+                {"task_id": "train", "downstream_task_ids": []},
+            ]
+        }
+        orch, _ = _make({
+            ("GET", f"/api/v1/dags/{DAG_ID}/tasks"): _resp(body),
+        })
+        tasks = orch.get_dag_tasks(DAG_ID)
+        assert tasks[0]["downstream_task_ids"] == ["train"]
+        assert tasks[0]["operator_name"] == "PythonOperator"
+
+    def test_missing_dag_raises(self):
+        orch, _ = _make({
+            ("GET", "/api/v1/dags/missing-dag/tasks"): _resp({}, status=404),
+        })
+        with pytest.raises(OrchestratorConfigError):
+            orch.get_dag_tasks("missing-dag")
+
+
+class TestListDagRuns:
+    def test_returns_recent_runs(self):
+        body = {
+            "dag_runs": [
+                {
+                    "dag_run_id": "mlops-abc123",
+                    "state": "success",
+                    "run_type": "manual",
+                    "execution_date": "2026-08-05T05:07:51+00:00",
+                    "conf": {"n_estimators": 200},
+                }
+            ]
+        }
+        orch, client = _make({
+            ("GET", f"/api/v1/dags/{DAG_ID}/dagRuns?limit=25&order_by=-execution_date"):
+                _resp(body),
+        })
+        runs = orch.list_dag_runs(DAG_ID)
+        assert runs[0]["dag_run_id"] == "mlops-abc123"
+        assert runs[0]["conf"] == {"n_estimators": 200}
+
+
+class TestGetTaskLog:
+    def test_returns_log_text(self):
+        orch, _ = _make({
+            (
+                "GET",
+                f"/api/v1/dags/{DAG_ID}/dagRuns/run-1/taskInstances/train/logs/1"
+                "?full_content=true",
+            ): _resp({}, status=200),
+        })
+        # _Response.text is JSON-serialised from the body in this fake;
+        # what matters here is that a 200 does not raise.
+        text = orch.get_task_log(f"{DAG_ID}/run-1", "train", try_number=1)
+        assert text is not None
+
+    def test_missing_log_raises_not_found(self):
+        orch, _ = _make({
+            (
+                "GET",
+                f"/api/v1/dags/{DAG_ID}/dagRuns/run-1/taskInstances/train/logs/9"
+                "?full_content=true",
+            ): _resp({}, status=404),
+        })
+        with pytest.raises(ExecutionNotFoundError):
+            orch.get_task_log(f"{DAG_ID}/run-1", "train", try_number=9)
+
+
+class TestImportErrorsHealthPools:
+    def test_import_errors(self):
+        body = {
+            "import_errors": [
+                {"filename": "bad_dag.py", "stack_trace": "SyntaxError", "timestamp": "t"}
+            ]
+        }
+        orch, _ = _make({("GET", "/api/v1/importErrors"): _resp(body)})
+        errors = orch.get_import_errors()
+        assert errors[0]["filename"] == "bad_dag.py"
+
+    def test_import_errors_empty_on_failure(self):
+        orch, _ = _make()  # 404
+        assert orch.get_import_errors() == []
+
+    def test_health(self):
+        body = {"scheduler": {"status": "healthy"}}
+        orch, _ = _make({("GET", "/api/v1/health"): _resp(body)})
+        assert orch.get_health()["scheduler"]["status"] == "healthy"
+
+    def test_health_empty_on_failure(self):
+        orch, _ = _make()
+        assert orch.get_health() == {}
+
+    def test_pools(self):
+        body = {"pools": [{"name": "default_pool", "slots": 128, "open_slots": 100}]}
+        orch, _ = _make({("GET", "/api/v1/pools"): _resp(body)})
+        pools = orch.get_pools()
+        assert pools[0]["name"] == "default_pool"
+
+    def test_pools_empty_on_failure(self):
+        orch, _ = _make()
+        assert orch.get_pools() == []
