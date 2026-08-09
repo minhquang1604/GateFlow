@@ -114,7 +114,7 @@ services:
       minio-init:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:5000/api/2.0/mlflow/experiments/search", "-o", "/dev/null", "-w", "%{http_code}"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:5000/health"]
       interval: 10s
       timeout: 5s
       retries: 30
@@ -209,10 +209,9 @@ services:
   app:
     build:
       context: .
-      dockerfile: infrastructure/airflow/Dockerfile
+      dockerfile: infrastructure/app/Dockerfile
     container_name: mlops_framework_app
     restart: unless-stopped
-    user: airflow
     command: >
       /bin/bash -c "
       cd /opt/framework;
@@ -247,10 +246,9 @@ services:
   serving:
     build:
       context: .
-      dockerfile: infrastructure/airflow/Dockerfile
+      dockerfile: infrastructure/app/Dockerfile
     container_name: mlops_framework_serving
     restart: unless-stopped
-    user: airflow
     command: >
       /bin/bash -c "
       cd /opt/framework;
@@ -272,10 +270,9 @@ services:
   demo:
     build:
       context: .
-      dockerfile: infrastructure/airflow/Dockerfile
+      dockerfile: infrastructure/app/Dockerfile
     container_name: mlops_framework_demo
     profiles: ["demo"]
-    user: airflow
     command: >
       /bin/bash -c "
       cd /opt/framework;
