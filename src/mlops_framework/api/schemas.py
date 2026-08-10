@@ -303,3 +303,38 @@ class ReadinessEvaluationOut(ApiModel):
             reasons=_maybe_load(getattr(obj, "reasons_json", None)),
             created_at=getattr(obj, "created_at", None),
         )
+
+
+class DriftEvaluationOut(ApiModel):
+    id: int
+    reference_dataset_version_id: int
+    current_dataset_version_id: int
+    method: str
+    outcome: str
+    score: Optional[float] = None
+    threshold: Optional[float] = None
+    details: Optional[Dict[str, Any]] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_orm_with_json(cls, obj) -> "DriftEvaluationOut":
+        details = None
+        raw = getattr(obj, "details_json", None)
+        if raw:
+            try:
+                details = json.loads(raw)
+            except (TypeError, ValueError):
+                details = None
+        return cls(
+            id=obj.id,
+            reference_dataset_version_id=obj.reference_dataset_version_id,
+            current_dataset_version_id=obj.current_dataset_version_id,
+            method=obj.method,
+            outcome=obj.outcome.value if hasattr(obj.outcome, "value") else obj.outcome,
+            score=obj.score,
+            threshold=obj.threshold,
+            details=details,
+            notes=obj.notes,
+            created_at=getattr(obj, "created_at", None),
+        )

@@ -144,16 +144,35 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
       AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       AIRFLOW_ADMIN_USERNAME: airflow
       AIRFLOW_ADMIN_PASSWORD: airflow
+      # The MLflow *client* (used by case_studies pipelines' log_artifact
+      # calls) talks to MinIO's S3 API directly, bypassing the mlflow
+      # server — so every container that logs an MLflow artifact needs
+      # these, not just the `mlflow` service itself. Missing them fails
+      # log_artifact with a silent AccessDenied (swallowed by the
+      # pipeline's broad except), not a crash — easy to miss.
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     command: webserver
     ports:
       - "8080:8080"
     volumes:
-      - airflow_dags:/opt/airflow/dags
+      # No /opt/airflow/dags volume here on purpose — DAGs are baked
+      # into the image (see infrastructure/airflow/Dockerfile's header
+      # comment) so local behaviour matches ECS, which has no volume
+      # mount either. A named volume here previously shadowed the
+      # image's baked-in DAG folder permanently after its first
+      # creation: every later `docker compose build` silently stopped
+      # updating the running DAG file, since Docker only seeds a named
+      # volume from the image on the volume's *first* creation, never
+      # again after. Edit the DAG, rebuild this image, recreate the
+      # container — no volume to clear in between.
       - airflow_logs:/opt/airflow/logs
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
@@ -190,10 +209,18 @@ services:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__CORE__FERNET_KEY: "GhJxaqxV4I0RqG3k2R0eL7oJ-XyY9wM1xK4Ud3oI8eg="
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+      # See airflow-webserver's comment — LocalExecutor runs tasks as
+      # scheduler subprocesses, so this is the container that actually
+      # needs these when train_xgboost calls mlflow.log_artifact().
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     command: scheduler
     volumes:
-      - airflow_dags:/opt/airflow/dags
+      # See airflow-webserver's volumes comment — no dags volume here,
+      # on purpose.
       - airflow_logs:/opt/airflow/logs
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
@@ -226,6 +253,9 @@ services:
       AIRFLOW_USERNAME: airflow
       AIRFLOW_PASSWORD: airflow
       SERVING_BRIDGE_URL: http://serving:8001
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8000:8000"
     depends_on:
@@ -256,6 +286,9 @@ services:
       "
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mlops_framework
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8001:8001"
     depends_on:
@@ -286,6 +319,9 @@ services:
       AIRFLOW_USERNAME: airflow
       AIRFLOW_PASSWORD: airflow
       SERVING_BRIDGE_URL: http://serving:8001
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
     depends_on:
       postgres:
         condition: service_healthy
@@ -301,7 +337,6 @@ services:
 volumes:
   postgres_data:
   minio_data:
-  airflow_dags:
   airflow_logs:
   airflow_plugins:
 

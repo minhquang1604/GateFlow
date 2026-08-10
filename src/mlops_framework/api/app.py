@@ -15,6 +15,7 @@ from mlops_framework.api.routers import (
     airflow_views,
     dashboard,
     datasets,
+    drift,
     internal,
     lineage,
     mlflow_views,
@@ -63,6 +64,7 @@ def create_app(
     app.include_router(mlflow_views.router, prefix="/api", tags=["mlflow"])
     app.include_router(airflow_views.router, prefix="/api", tags=["airflow"])
     app.include_router(readiness.router, prefix="/api", tags=["readiness"])
+    app.include_router(drift.router, prefix="/api", tags=["drift"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
 
     if mount_ui:

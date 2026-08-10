@@ -1,36 +1,101 @@
 # MLOps Framework
 
-A reusable MLOps Framework for managing datasets, training runs, model
+A reusable MLOps framework for managing datasets, training runs, model
 lifecycle, experiment tracking, and pipeline orchestration — agnostic to
-any specific orchestrator or experiment tracker.
+any specific orchestrator or experiment tracker. Ships with a management
+console called **Gateflow** (dashboard, datasets, runs, models, pipelines,
+lineage), a Python SDK, an HTTP API, and two runnable case studies that
+prove the abstractions hold up on real, different problems.
 
-## Overview
+```python
+from mlops_framework.sdk import MLOpsProject
 
-The framework provides clean abstractions for the full training
-lifecycle:
+project = MLOpsProject.with_defaults("fraud-detection")
+project.register_pipeline("xgboost-training", "my_pkg.pipelines:train_xgb")
+
+dataset = project.create_dataset("credit-card-transactions")
+version = dataset.create_version(storage_uri="s3://bucket/v1.parquet", row_count=284_807)
+
+run = project.train(dataset_version=version, pipeline="xgboost-training", wait=True)
+print(run.status, run.metrics)
+```
+
+## Table of contents
+
+- [Quickstart](#quickstart)
+- [What it does](#what-it-does)
+- [Architecture](#architecture)
+- [Installation (local, SQLite)](#installation-local-sqlite)
+- [Using the SDK](#using-the-sdk)
+- [Using the framework directly](#using-the-framework-directly)
+- [Governance: readiness, drift, eligibility, promotion](#governance-readiness-drift-eligibility-promotion)
+- [Gateflow — the management console](#gateflow--the-management-console)
+- [Real end-to-end demos](#real-end-to-end-demos)
+- [Case studies — reusability proof](#case-studies--reusability-proof)
+- [Configuration](#configuration)
+- [Database migrations](#database-migrations)
+- [Project structure](#project-structure)
+- [Database schema](#database-schema)
+- [Testing](#testing)
+- [Known limitations](#known-limitations)
+- [License](#license)
+
+## Quickstart
+
+The fastest way to see everything work together — real Postgres, real
+MinIO, real MLflow, real Airflow, real XGBoost:
+
+```bash
+git clone <this-repo> && cd Framework
+cp .env.example .env.docker
+
+docker compose --env-file .env.docker up -d
+docker compose --env-file .env.docker run --rm app alembic upgrade head
+
+# Full governance chain on a synthetic dataset, driven entirely by the
+# framework (dataset → readiness → eligibility → real Airflow DAG →
+# promotion → serving reload → lineage):
+docker compose --env-file .env.docker --profile demo run --rm demo
+```
+
+Then open:
+
+| URL | What you'll see |
+|---|---|
+| http://localhost:8000 | **Gateflow** — dashboard, the promoted model, its metrics, its lineage graph |
+| http://localhost:5000 | MLflow — the real training run: params, metrics, logged artifact |
+| http://localhost:8080 | Airflow — the DAG run that actually executed the training (`airflow`/`airflow`) |
+| http://localhost:9001 | MinIO console — the uploaded model artifact (`minioadmin`/`minioadmin`) |
+
+No Docker? `pip install -e ".[dev]"` and jump to [Installation](#installation-local-sqlite) for a
+SQLite-only path with no external services.
+
+## What it does
 
 - **Dataset Management** — logical datasets with immutable versioning
-- **Dataset Versioning** — checksums, schema hashes, row counts, lineage
+- **Dataset Versioning** — checksums, schema hashes, row counts, content-hash pinning
 - **Training Run Lifecycle** — strict state machine (PENDING → RUNNING → SUCCESS / FAILED / CANCELLED)
 - **Orchestration** — pluggable orchestrators (local subprocess, Airflow, …)
 - **Experiment Tracking** — pluggable trackers (MLflow, in-memory, …)
-- **Model Registry** — `Model` and `ModelVersion` with promotion lifecycle
+- **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle
 - **Lineage** — full chain: Dataset → DatasetVersion → TrainingRun → ModelVersion → ServingInstance
-- **Dataset Readiness** (Week 3) — explainable READY/BLOCKED decisions, persisted
-- **Training Eligibility** (Week 3) — separates "data is ready" from "training should happen"
-- **Drift Detection** (Week 3) — pluggable `DriftDetector` ABC, scipy-backed reference
-- **Promotion Policy** (Week 3) — explicit, explainable APPROVED/REJECTED
-- **Automated Retraining** (Week 3) — framework-controlled end-to-end workflow
-- **Model Promotion Events** (Week 3) — `EventPublisher` ABC with HTTP and in-memory adapters
-- **Serving Bridge** (Week 3) — FastAPI app that atomically reloads a promoted model
+- **Dataset Readiness** — explainable READY/BLOCKED decisions, persisted
+- **Training Eligibility** — separates "data is ready" from "training should happen now"
+- **Drift Detection** — pluggable `DriftDetector` ABC, scipy KS-test / chi-square reference implementation
+- **Promotion Policy** — explicit, explainable APPROVED/REJECTED, configurable per call
+- **Automated Retraining** — one framework-controlled workflow chaining readiness → drift → eligibility → training → promotion
+- **Model Promotion Events** — `EventPublisher` ABC with HTTP and in-memory adapters
+- **Serving Bridge** — FastAPI app that atomically reloads a promoted model
+- **Gateflow** — a server-rendered management console (no build step) over all of the above
+- **Python SDK** — `MLOpsProject`, so application code never imports a manager directly
 
 ## Architecture
 
 ```
-        Application / Case Study
+        Application / Case Study / SDK
                   │
                   ▼
-        RetrainingWorkflow         ◄── Week 3: chains all governance
+        RetrainingWorkflow         ◄── chains all governance in one call
                   │
    ┌──────────────┼──────────────────────────────┐
    │              │              │               │
@@ -41,7 +106,7 @@ ReadinessEngine  Eligibility  PromotionPolicy  EventPublisher ─▶ ServingBrid
    │              │           ModelManager          │
    │              │              │                  │
    │              │              ▼                  │
-   │              │      TrainingService            │
+   │              │      TrainingService             │
    │              │              │                  │
    │              │   ┌──────────┼──────────┐       │
    │              │   ▼          ▼          ▼       │
@@ -50,21 +115,27 @@ ReadinessEngine  Eligibility  PromotionPolicy  EventPublisher ─▶ ServingBrid
    │              │               │              │
    │              │   ┌───────────┼────┐    ┌────┴─────┐
    │              │   ▼           ▼    ▼    ▼          ▼
-   │              │ LocalDocker  Air  ...  MLflow  InMemory
-   │              │              (REST)        (lazy)  (test)
+   │              │ LocalDocker  Airflow ...  MLflow  InMemory
+   │              │ (subprocess) (REST)        (lazy)  (test)
    │              │
    │              ▼
    │          DriftService ─▶ DriftDetector (scipy-backed)
    ▼
 LineageManager  ◀── walks the full chain (Dataset → TrainingRun → Model → Serving)
+                     surfaced by the Gateflow API + console
 ```
 
 ### Dependency direction
 
 The framework depends only on its own abstractions (`Orchestrator`,
-`ExperimentTracker`). Airflow and MLflow live in adapter modules and
-are imported lazily — the framework remains importable (and testable)
-without them installed.
+`ExperimentTracker`). Airflow and MLflow live in adapter modules and are
+imported lazily — the framework stays importable (and testable) without
+them installed. The Airflow image itself never imports `mlops_framework`
+either (see [Real end-to-end demos](#real-end-to-end-demos)) — Airflow
+2.10.4 pins `SQLAlchemy==1.4.x` internally, incompatible with the
+framework's own `Mapped`/`mapped_column` models (SQLAlchemy 2.0+), so
+the DAG talks to the framework over HTTP
+(`mlops_framework.api.routers.internal`) instead.
 
 ### Module layout
 
@@ -73,91 +144,125 @@ src/mlops_framework/
 ├── config/           # Pydantic settings (.env loader)
 ├── database/         # SQLAlchemy Base, session, ORM models
 │   └── models/
-│       ├── dataset.py
-│       ├── dataset_version.py
+│       ├── dataset.py / dataset_version.py
 │       ├── training_run.py
-│       ├── model.py
-│       ├── model_version.py
-│       ├── readiness_evaluation.py   # Week 3
-│       ├── drift_evaluation.py       # Week 3
-│       ├── model_promotion_event.py  # Week 3
-│       └── serving_instance.py       # Week 3
+│       ├── model.py / model_version.py
+│       ├── readiness_evaluation.py
+│       ├── drift_evaluation.py
+│       ├── model_promotion_event.py
+│       └── serving_instance.py
 ├── dataset/          # DatasetManager, checksums, schema hashing
 ├── training/         # TrainingManager, TrainingService, lifecycle state machine
 ├── orchestration/    # Orchestrator ABC + adapters
 │   ├── base.py       # Orchestrator, ExecutionState, ExecutionStatus
-│   ├── local.py      # LocalDockerOrchestrator (subprocess)
+│   ├── local.py      # LocalDockerOrchestrator (a real local subprocess, not Docker)
 │   └── airflow.py    # AirflowOrchestrator (httpx REST API)
 ├── tracking/         # ExperimentTracker ABC + adapters
 │   ├── base.py       # ExperimentTracker
 │   ├── mlflow.py     # MLflowTracker (lazy import)
 │   └── in_memory.py  # InMemoryTracker
 ├── model/            # ModelManager, lifecycle state machine
-├── readiness/        # ReadinessEngine + TrainingPolicy  (Week 3, Day 15)
-├── drift/            # DriftDetector ABC + ScipyDriftDetector (Week 3, Day 17)
-├── governance/       # TrainingEligibilityPolicy + ModelPromotionPolicy (Day 16/18)
-├── workflow/         # RetrainingWorkflow (Week 3, Day 19)
-├── events/           # EventPublisher + ModelPromotedEvent (Week 3, Day 20)
-├── serving/          # FastAPI ServingBridge (Week 3, Day 20)
-└── lineage/          # LineageManager (Week 3, Day 21)
+├── readiness/        # ReadinessEngine + TrainingPolicy
+├── drift/            # DriftDetector ABC + ScipyDriftDetector
+├── governance/       # TrainingEligibilityPolicy + ModelPromotionPolicy
+├── workflow/         # RetrainingWorkflow — chains all of the above
+├── events/           # EventPublisher + ModelPromotedEvent
+├── serving/          # FastAPI ServingBridge
+├── lineage/          # LineageManager
+├── sdk/              # MLOpsProject — the recommended entry point for applications
+├── api/              # FastAPI Management API (routers/, schemas.py, app.py)
+└── ui/               # Gateflow — server-rendered console (templates/, static/app.js)
 ```
 
-## Installation
+## Installation (local, SQLite)
+
+For exploring the framework without Docker or Postgres:
 
 ```bash
-# Create and activate a virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install in development mode (runtime + dev deps)
-pip install -e ".[dev]"
+pip install -e ".[dev]"        # runtime + dev deps (pytest, ruff, httpx)
+pip install mlflow              # optional — only needed for MLflowTracker
 
-# Optional: install MLflow for the MLflowTracker adapter
-pip install mlflow
-```
-
-## Database Setup
-
-### Using Docker Compose (PostgreSQL — recommended)
-
-```bash
-cp .env.example .env
-docker compose up -d
+echo 'DATABASE_URL=sqlite:///./mlops.db' >> .env
 alembic upgrade head
 ```
 
-The `.env` file is loaded by both `pydantic-settings` and Alembic — no
-credentials live in `alembic.ini` or any Python file.
-
-### Using SQLite (testing / local exploration)
-
-Set `DATABASE_URL=sqlite:///./mlops.db` in `.env`. The integration test
-suite uses an in-memory SQLite (`:memory:`) via a `StaticPool` — no
-setup required.
-
-## Database Migrations
+Start Gateflow + the API:
 
 ```bash
-alembic upgrade head      # apply all migrations
-alembic current           # show current revision
-alembic history           # show full migration history
-alembic revision -m "..." # create a new empty migration
-alembic downgrade -1      # roll back one revision
+uvicorn mlops_framework.api.app:create_app --factory --reload
 ```
 
-Current migration chain:
+- `http://localhost:8000/` — Gateflow
+- `http://localhost:8000/docs` — interactive OpenAPI docs
+- `http://localhost:8000/api/dashboard` — JSON KPIs
 
-| Revision | Description |
-|----------|-------------|
-| `001_initial` | `datasets`, `dataset_versions`, `training_runs` |
-| `002_training_run_lifecycle` | Adds `pipeline_id`, `mlflow_run_id`, `error_message` to `training_runs` |
-| `003_models` | `models`, `model_versions` tables, `model_state_enum` |
-| `004_week3_governance` | `readiness_evaluations`, `drift_evaluations`, `model_promotion_events`, `serving_instances` |
+### Using Postgres instead
 
-## Usage
+```bash
+cp .env.example .env
+docker compose up -d postgres
+alembic upgrade head
+```
 
-All examples use SQLite for brevity; the same code runs against
-PostgreSQL by changing `DATABASE_URL`.
+`.env` is loaded by both `pydantic-settings` and Alembic — no credentials
+live in `alembic.ini` or any Python file.
+
+## Using the SDK
+
+`MLOpsProject` is the entry point application code should use — it never
+touches a manager, a database model, or an orchestrator directly. Two
+[case studies](#case-studies--reusability-proof) in this repo prove the
+boundary holds via a static AST test.
+
+```python
+from mlops_framework.sdk import MLOpsProject
+
+project = MLOpsProject.with_defaults("fraud-detection")
+project.register_pipeline(
+    "xgboost-training",
+    "my_pkg.pipelines:train_xgb",
+    description="XGBoost trainer for tabular data",
+)
+
+# Datasets
+dataset = project.create_dataset("credit-card-transactions")
+version = dataset.create_version(
+    storage_uri="s3://bucket/transactions-v1.parquet",
+    row_count=284_807,
+    metadata={"columns": [...]},
+)
+
+# Training (returns when done; raises TrainingError on failure)
+run = project.train(
+    dataset_version=version,
+    pipeline="xgboost-training",
+    parameters={"max_depth": 6},
+    wait=True,
+)
+print(run.status, run.metrics)
+
+# Models
+model = project.get_model("fraud-xgboost")
+for mv in model.versions:
+    print(mv.version_number, mv.state, mv.metrics)
+
+# Lineage
+graph = project.lineage.for_dataset_version(version.id)
+# graph["nodes"] / graph["edges"] — ready for any visualisation lib
+```
+
+`MLOpsProject.with_defaults(name)` wires `LocalDockerOrchestrator` +
+`InMemoryTracker` for quick starts; pass `orchestrator=`/`tracker=`
+explicitly to point at real Airflow/MLflow (see
+[Real end-to-end demos](#real-end-to-end-demos) for a full example).
+
+## Using the framework directly
+
+For framework contributors, or application code that needs governance
+primitives the SDK doesn't expose yet.
 
 ### Datasets and versions
 
@@ -167,101 +272,82 @@ from sqlalchemy.orm import sessionmaker
 from mlops_framework import DatasetManager
 
 engine = create_engine("sqlite:///./mlops.db")
-Session = sessionmaker(bind=engine)
-session = Session()
+session = sessionmaker(bind=engine)()
 
 dm = DatasetManager(session)
 dataset = dm.create_dataset(name="fraud-detection", description="Credit card fraud data")
-
 version = dm.create_version(
     dataset_id=dataset.id,
     storage_uri="s3://bucket/data/v1.csv",
     row_count=100_000,
-    metadata={"columns": [
-        {"name": "transaction_id", "dtype": "int64"},
-        {"name": "amount",          "dtype": "float64"},
-        {"name": "is_fraud",        "dtype": "int64"},
-    ]},
+    metadata={"columns": [{"name": "amount", "dtype": "float64"}]},
 )
 session.commit()
 ```
 
 ### Training runs — strict lifecycle
 
-The framework owns the lifecycle. Orchestrators and trackers go
-through `TrainingManager`; they must not mutate the row directly.
+Orchestrators and trackers go through `TrainingManager`; nothing mutates
+the row directly.
 
 ```python
 from mlops_framework import TrainingManager
 from mlops_framework.exceptions import InvalidStatusTransitionError
 
 tm = TrainingManager(session, dm)
-run = tm.create_run(
-    dataset_version_id=version.id,
-    pipeline_id="fraud-training-pipeline",
-    metadata={"model_type": "xgboost"},
-)
+run = tm.create_run(dataset_version_id=version.id, pipeline_id="fraud-training-pipeline")
 
-tm.start_run(run.id)                             # PENDING -> RUNNING
-tm.complete_run(run.id)                          # RUNNING  -> SUCCESS
+tm.start_run(run.id)      # PENDING -> RUNNING
+tm.complete_run(run.id)   # RUNNING  -> SUCCESS
 
 try:
-    tm.start_run(run.id)                         # raises — terminal
+    tm.start_run(run.id)  # raises — terminal
 except InvalidStatusTransitionError as exc:
     print(exc)
 ```
 
-Allowed transitions:
-
 ```
-PENDING   -> RUNNING
-PENDING   -> CANCELLED
-RUNNING   -> SUCCESS
-RUNNING   -> FAILED
-RUNNING   -> CANCELLED
-SUCCESS   | FAILED   | CANCELLED   (terminal)
+PENDING -> RUNNING -> SUCCESS | FAILED
+PENDING -> CANCELLED
+RUNNING -> CANCELLED
+SUCCESS | FAILED | CANCELLED   (terminal)
 ```
 
-### End-to-end training lifecycle
+### End-to-end training — same code, local or Airflow
 
-`TrainingService` composes the orchestrator and the tracker. The same
-code works against `LocalDockerOrchestrator` (development) or
-`AirflowOrchestrator` (production) — application code does not know
-which is plugged in.
+`TrainingService` composes the orchestrator and the tracker. Swapping
+`LocalDockerOrchestrator` for `AirflowOrchestrator` is the only line that
+changes.
 
 ```python
-from mlops_framework import (
-    TrainingManager, TrainingService,
-    LocalDockerOrchestrator, InMemoryTracker,
-)
+from mlops_framework import TrainingManager, TrainingService, LocalDockerOrchestrator, InMemoryTracker
 
-orchestrator = LocalDockerOrchestrator()
-tracker      = InMemoryTracker()
-service      = TrainingService(TrainingManager(session, dm),
-                               orchestrator, tracker)
-
-run = service.create_run(
-    dataset_version_id=version.id,
-    pipeline_id="tests._pipelines.e2e_training:main",
-)
-service.start_run(run.id)                        # tracker + orchestrator + RUNNING
-final_state = service.wait_for_completion(run.id)
-# final_state == "SUCCESS"  -> run is now SUCCESS
-# final_state == "FAILED"   -> run is now FAILED, error_message captured
+service = TrainingService(TrainingManager(session, dm), LocalDockerOrchestrator(), InMemoryTracker())
+run = service.create_run(dataset_version_id=version.id, pipeline_id="my_pkg.pipelines:train")
+service.start_run(run.id)
+final_state = service.wait_for_completion(run.id)   # "SUCCESS" or "FAILED"
 ```
-
-To swap to Airflow, change one line:
 
 ```python
 from mlops_framework.orchestration.airflow import AirflowOrchestrator
 
-orchestrator = AirflowOrchestrator(
-    base_url="http://airflow.internal:8080",
-    username="airflow",
-    password="airflow",
-)
-# ... the rest of the service code is unchanged.
+orchestrator = AirflowOrchestrator(base_url="http://airflow.internal:8080", username="airflow", password="airflow")
+# `pipeline_id` now means the DAG id, not "module:callable" — see
+# "AirflowOrchestrator vs LocalDockerOrchestrator" below.
 ```
+
+#### `AirflowOrchestrator` vs `LocalDockerOrchestrator` — `pipeline_id` means different things
+
+`LocalDockerOrchestrator.trigger_pipeline(pipeline_id, ...)` imports
+`pipeline_id` directly as `"module:callable"`. `AirflowOrchestrator.trigger_pipeline(pipeline_id, ...)`
+treats `pipeline_id` as the **Airflow `dag_id`** instead — the real
+Python callable travels separately, in
+`TrainingRun.metadata["training_entrypoint"]`, which the DAG's
+`resolve_context`/`train` tasks read back over HTTP (see
+`infrastructure/airflow/dags/mlops_training_pipeline.py`). Get this
+backwards and `AirflowOrchestrator` 404s trying to trigger a DAG named
+after your Python module path. `scripts/run_end_to_end_demo.py` and
+`scripts/run_drift_recovery_demo.py` both show the correct pattern.
 
 ### Model registry and lifecycle
 
@@ -271,43 +357,34 @@ from mlops_framework.database.models.model_version import ModelState
 
 mm = ModelManager(session)
 model = mm.create_model(name="fraud-model", task="fraud_detection")
-
 mv = mm.create_model_version(
     model_id=model.id,
     dataset_version_id=version.id,
     training_run_id=run.id,
-    mlflow_run_id=run.mlflow_run_id,
-    artifact_uri="s3://models/fraud-v1.pkl",
     metrics={"f1": 0.86, "roc_auc": 0.92},
     state=ModelState.CANDIDATE,
 )
-
 mm.transition_state(mv.id, ModelState.APPROVED)
 mm.transition_state(mv.id, ModelState.PRODUCTION)
 ```
 
-Allowed model-version transitions:
-
 ```
-TRAINING    -> CANDIDATE | REJECTED
-CANDIDATE   -> APPROVED  | REJECTED | PRODUCTION
-APPROVED    -> PRODUCTION | ARCHIVED | REJECTED
-PRODUCTION  -> ARCHIVED
-ARCHIVED    | REJECTED   (terminal)
+TRAINING   -> CANDIDATE | REJECTED
+CANDIDATE  -> APPROVED  | REJECTED | PRODUCTION
+APPROVED   -> PRODUCTION | ARCHIVED | REJECTED
+PRODUCTION -> ARCHIVED
+ARCHIVED | REJECTED   (terminal)
 ```
 
 ### Experiment tracking
 
 Application code calls the framework abstraction, never `mlflow.*`
-directly. The same code works with `MLflowTracker` (production) or
-`InMemoryTracker` (tests).
+directly — `InMemoryTracker` in tests, `MLflowTracker` in production.
 
 ```python
-from mlops_framework import ExperimentTracker
 from mlops_framework.tracking.in_memory import InMemoryTracker
-# from mlops_framework.tracking.mlflow import MLflowTracker
 
-tracker: ExperimentTracker = InMemoryTracker()  # or MLflowTracker(...)
+tracker = InMemoryTracker()   # or MLflowTracker(tracking_uri=..., experiment_name=...)
 tracker.start_run(run_name="exp-42", tags={"pipeline": "fraud"})
 tracker.log_params({"n_estimators": 100, "max_depth": 6})
 tracker.log_metrics({"f1": 0.86, "roc_auc": 0.92}, step=1)
@@ -315,228 +392,302 @@ tracker.log_artifact("model.pkl")
 tracker.end_run(status="SUCCESS")
 ```
 
-### Week 3 — Governance, drift, events, serving
+## Governance: readiness, drift, eligibility, promotion
 
-The Week 3 additions layer explicit decision-making on top of the
-existing lifecycle. All public types are importable from the top
-level.
+Everything below is what `RetrainingWorkflow` chains automatically — each
+piece is also usable standalone.
 
-#### Dataset readiness
+### Dataset readiness
 
 ```python
-from mlops_framework import DatasetManager
 from mlops_framework.readiness import ReadinessEngine, TrainingPolicy
 
-dm = DatasetManager(session)
-dv = dm.get_version(dataset_version_id)
-
-engine = ReadinessEngine(session)
-result = engine.evaluate(
+result = ReadinessEngine(session).evaluate(
     dv,
-    TrainingPolicy(
-        required_size=1000,
-        freshness_hours=24,
-        required_columns=["amount", "is_fraud"],
-        dtypes={"amount": "float64", "is_fraud": "int64"},
-    ),
+    TrainingPolicy(required_size=1000, freshness_hours=24,
+                    required_columns=["amount", "is_fraud"],
+                    dtypes={"amount": "float64", "is_fraud": "int64"}),
 )
-assert result.is_ready          # or .status == "BLOCKED"
-# result.reasons, result.check_dict(), result.to_dict() are all explainable
+assert result.is_ready   # or result.status == "BLOCKED"; result.reasons is explainable
 ```
 
-#### Training eligibility
+### Drift detection
 
 ```python
-from mlops_framework.governance import (
-    TrainingEligibilityPolicy,
-    EligibilityConfig,
+from mlops_framework.drift import ScipyDriftDetector, DriftService, DriftConfig
+
+service = DriftService(session, ScipyDriftDetector())   # KS-test (numeric) / chi-square (categorical)
+result = service.evaluate(
+    reference_version=ref_dv, current_version=cur_dv,
+    reference_data={"amount": [...]}, current_data={"amount": [...]},
+    config=DriftConfig(threshold=0.05),
 )
+if result.drift_detected:
+    print([f.feature for f in result.feature_results if f.drift_detected])
+```
+
+Every evaluation is persisted (`DriftEvaluation`) and browsable per
+dataset version in Gateflow, and via `GET /api/drift/{version_id}`.
+
+### Training eligibility
+
+Separates "the data is READY" from "training should happen right now" —
+cooldowns, minimum new rows, and (critically) whether drift was actually
+observed:
+
+```python
+from mlops_framework.governance.eligibility import TrainingEligibilityPolicy, EligibilityConfig
 
 policy = TrainingEligibilityPolicy(session)
 decision = policy.evaluate(
-    policy.build_context(
-        dataset_version=dv,
-        readiness=result,        # from the readiness engine
-        drift=None,              # or a DriftResult
-        model=model,
-    ),
-    EligibilityConfig(
-        require_ready=True,
-        cooldown_hours=12,
-        min_new_rows=200,
-    ),
+    policy.build_context(dataset_version=dv, readiness=result, drift=drift_result, model=model),
+    EligibilityConfig(require_drift_to_retrain=True, cooldown_hours=12),
 )
 if not decision.eligible:
-    print(decision.reasons)     # explainable list
+    print(decision.reasons)
 ```
 
-#### Drift detection
+`require_drift_to_retrain=True` is what turns an automated retraining
+workflow into a genuine *reaction* to drift, not a cron job that always
+retrains — with no drift, this refuses.
+
+### Promotion policy
 
 ```python
-from mlops_framework.drift import (
-    ScipyDriftDetector,
-    DriftService,
-    DriftConfig,
-)
-
-detector = ScipyDriftDetector()    # uses scipy.stats under the hood
-service = DriftService(session, detector)
-result = service.evaluate(
-    reference_version=ref_dv,
-    current_version=cur_dv,
-    reference_data={"amount": [...], "class": [...]},
-    current_data={"amount": [...], "class": [...]},
-    config=DriftConfig(threshold=0.05),
-)
-assert not result.drift_detected
-```
-
-#### Promotion policy
-
-```python
-from mlops_framework.governance import (
-    ModelPromotionPolicy,
-    PromotionContext,
-    PromotionConfig,
-)
+from mlops_framework.governance.promotion import ModelPromotionPolicy, PromotionContext, PromotionConfig
 
 decision = ModelPromotionPolicy().evaluate(
     PromotionContext(candidate=mv, production=production_mv),
-    PromotionConfig(
-        min_metrics={"f1": 0.85, "auprc": 0.80},
-        must_beat_production=True,
-    ),
+    PromotionConfig(min_metrics={"f1": 0.85}, must_beat_production=True),
 )
 if decision.approved:
     mm.transition_state(mv.id, ModelState.APPROVED)
     mm.transition_state(mv.id, ModelState.PRODUCTION)
-else:
-    print(decision.reasons)   # explainable
 ```
 
-#### Automated retraining workflow
+`must_beat_production` compares the candidate against production's
+*stored*, training-time metrics on every metric they share. That stops
+being a fair bar once the production model's real-world data has
+drifted — pass `must_beat_production=False` with an absolute
+`min_metrics` floor instead when retraining in reaction to drift (see
+`scripts/run_drift_recovery_demo.py`).
+
+### Automated retraining workflow
+
+One call chains readiness → drift (if `drift_service` + reference/current
+data are given) → eligibility → training → promotion → event:
 
 ```python
 from mlops_framework.workflow import RetrainingWorkflow
 from mlops_framework.events import InMemoryEventPublisher
 
-events = InMemoryEventPublisher()
-workflow = RetrainingWorkflow(
-    session=session,
-    training_service=training_service,
-    event_publisher=events,
-)
-
+workflow = RetrainingWorkflow(session, training_service=service, event_publisher=InMemoryEventPublisher())
 outcome = workflow.run(
-    dataset_version=dv,
-    model=model,
+    dataset_version=dv, model=model,
     training_policy=TrainingPolicy(required_size=1000),
     eligibility_config=EligibilityConfig(cooldown_hours=12),
     promotion_config=PromotionConfig(min_metrics={"f1": 0.85}),
-    pipeline_id="tests._pipelines.e2e_training:main",
+    pipeline_id="my_pkg.pipelines:train",   # LocalDockerOrchestrator convention
 )
 if outcome.promoted:
-    print(events.events[0].payload)
+    print(outcome.steps)   # every step's pass/fail + explainable detail
 ```
 
-#### Serving bridge
+> **Known gap:** `RetrainingWorkflow.run()` forwards `pipeline_id`
+> straight through and has no parameter for
+> `metadata["training_entrypoint"]` — so it only works with
+> `LocalDockerOrchestrator` today, not `AirflowOrchestrator` (see
+> [pipeline_id means different things](#airfloworchestrator-vs-localdockerorchestrator--pipeline_id-means-different-things)
+> above). `scripts/run_drift_recovery_demo.py` trains the reactive
+> retrain through `LocalDockerOrchestrator` for exactly this reason.
+
+### Serving bridge
 
 ```python
 from mlops_framework.serving import ServingBridge
-from mlops_framework.database.session import get_db_manager
 
 bridge = ServingBridge(session_factory=get_db_manager().session_factory)
-
-# In a separate process (or test):
-import httpx
-httpx.post(
-    "http://localhost:8000/internal/model/reload",
-    json={
-        "model_name": "fraud-model",
-        "model_version": 3,
-        "artifact_uri": "s3://models/fraud-v3.pkl",
-    },
-)
-
-# Query the active version
-httpx.get("http://localhost:8000/internal/model/active/fraud-model")
+# uvicorn my_app:app --factory   where my_app:app = bridge.app
 ```
-
-Run the serving bridge locally with `uvicorn`:
 
 ```bash
-uvicorn my_app:app --factory --app-dir path/to/module
-# where my_app:app = ServingBridge(...).app
+curl -X POST localhost:8001/internal/model/reload \
+  -d '{"model_name": "fraud-model", "model_version": 3, "artifact_uri": "s3://models/fraud-v3.pkl"}'
+curl localhost:8001/internal/model/active/fraud-model
 ```
 
-#### End-to-end lineage
+### Lineage
 
 ```python
 from mlops_framework.lineage import LineageManager
 
 graph = LineageManager(session).graph_for_model_version(mv.id)
 for node in graph.nodes:
-    print(node.type, node.id, node.label)
+    print(node.type, node.label, node.attributes)   # TrainingRun nodes carry pipeline_id + mlflow_run_id
 for edge in graph.edges:
-    print(edge.source, "->", edge.target, "(", edge.type, ")")
+    print(edge.source, "->", edge.target, f"({edge.type})")
 ```
+
+## Gateflow — the management console
+
+A server-rendered console (HTML + vanilla JS, no build step) served on
+the same FastAPI app as the API, at `/`.
+
+| Page | Route | Shows |
+|---|---|---|
+| Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
+| Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
+| Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid |
+| Models | `/models/{id}` | Versions, metrics, production state |
+| Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
+| Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
+
+### API reference
+
+39 REST endpoints under `/api`, grouped by what they front:
+
+| Group | Examples | Purpose |
+|---|---|---|
+| Framework rows | `/api/dashboard`, `/api/datasets`, `/api/training-runs/{id}`, `/api/models/{id}`, `/api/readiness/{version_id}`, `/api/drift/{version_id}` | Thin façades over the managers — zero new business logic |
+| Lineage | `/api/lineage/{dataset-version\|model-version\|training-run}/{id}` | Lineage graph JSON |
+| Airflow proxy | `/api/airflow/health`, `/api/airflow/dags/{id}`, `/api/training-runs/{id}/tasks` | Live DAG/task state for the pipeline detail page |
+| MLflow proxy | `/api/training-runs/{id}/mlflow`, `/api/mlflow/experiments`, `/api/mlflow/registered-models` | Live run/experiment data for the run detail page |
+| Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network |
+
+Full list at `/docs` (OpenAPI) once the app is running.
+
+## Real end-to-end demos
+
+Three scripts, each proving a different slice against the **real**
+Docker Compose stack — no mocks. All assume
+`docker compose --env-file .env.docker up -d` has been run (see
+[Quickstart](#quickstart)) and, when run from the host rather than
+inside a container, that MLflow/MinIO/Airflow env vars are set (already
+present in `.env.example` — `cp .env.example .env` covers a host run).
+
+| Script | Proves | Orchestrator |
+|---|---|---|
+| `scripts/run_end_to_end_demo.py` | The full governance chain — dataset → readiness → eligibility → training → promotion → serving reload → lineage — on a synthetic dataset | `AirflowOrchestrator` (real DAG) |
+| `scripts/run_fraud_detection_e2e.py` | The same chain on the **real** 284,807-row Kaggle credit-card-fraud dataset; gates promotion on `average_precision` (the metric that actually matters at a 0.17% positive rate) | `LocalDockerOrchestrator` (training) + `AirflowOrchestrator` (adapter proof only) |
+| `scripts/run_drift_recovery_demo.py` | **Drift & self-healing**, two phases: (1) a rich, Airflow-driven initial training; (2) inject a real covariate shift, detect it with a real KS-test, and watch `RetrainingWorkflow` retrain and auto-promote a recovered model — all one call | Phase 1: `AirflowOrchestrator`. Phase 2: `LocalDockerOrchestrator` (see the known gap above) |
+
+```bash
+# 1. Full governance chain (synthetic data, ~5s)
+docker compose --env-file .env.docker --profile demo run --rm demo
+
+# 2. Real Kaggle dataset (needs case_studies/fraud_detection/data/creditcard.csv —
+#    see case_studies/fraud_detection/README.md to download it)
+MLFLOW_TRACKING_URI=http://localhost:5000 AIRFLOW_BASE_URL=http://localhost:8080 \
+  AIRFLOW_USERNAME=airflow AIRFLOW_PASSWORD=airflow \
+  PYTHONPATH=src:. .venv/bin/python -m scripts.run_fraud_detection_e2e
+
+# 3. Drift & self-healing — one-time setup: the Airflow image bakes
+#    case_studies/ in at BUILD time, so drift_demo_v1.csv must exist
+#    *before* rebuilding it (already committed; only re-run if you
+#    change case_studies/fraud_detection/data.py's generator):
+docker compose --env-file .env.docker build airflow-webserver airflow-scheduler
+docker compose --env-file .env.docker up -d
+MLFLOW_TRACKING_URI=http://localhost:5000 MLFLOW_S3_ENDPOINT_URL=http://localhost:9000 \
+  AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+  AIRFLOW_BASE_URL=http://localhost:8080 \
+  PYTHONPATH=src:. .venv/bin/python -m scripts.run_drift_recovery_demo
+```
+
+Every script's own module docstring documents its exact flow — read it
+before running if you're adapting one.
+
+## Case studies — reusability proof
+
+Two self-contained apps at the repo root, consuming the framework
+through the SDK only — see `case_studies/README.md`.
+
+| | Fraud Detection | Customer Churn |
+|---|---|---|
+| Domain | Credit-card fraud | 30-day telecom churn |
+| Data shape | 30 numeric features | 4 numeric + 2 categorical |
+| Metrics | `f1`, `average_precision` | `accuracy`, `f1`, `recall` |
+| SDK import | `mlops_framework.sdk` | `mlops_framework.sdk` |
+
+```bash
+python -m case_studies.fraud_detection.app
+python -m case_studies.customer_churn.app
+```
+
+`case_studies/*/tests/test_use_case.py::TestNoDirectManagerImports` is a
+static AST check that fails CI if either case study ever imports a
+manager, service, database model, or orchestrator directly — the SDK
+boundary is enforced, not just documented.
 
 ## Configuration
 
-Environment variables (see `.env.example`):
+Environment variables (`.env` for host runs / Alembic, `.env.docker` for
+`docker compose`) — see `.env.example`:
 
 | Variable | Description | Default |
-|----------|-------------|---------|
+|---|---|---|
 | `DATABASE_URL` | SQLAlchemy database URL | `postgresql+psycopg://postgres:postgres@localhost:5432/mlops_framework` |
-| `DATABASE_POOL_SIZE` | Connection pool size | `5` |
-| `DATABASE_MAX_OVERFLOW` | Max connections beyond pool | `10` |
-| `DATABASE_POOL_TIMEOUT` | Seconds to wait for a pool connection | `30` |
+| `DATABASE_POOL_SIZE` / `DATABASE_MAX_OVERFLOW` / `DATABASE_POOL_TIMEOUT` | Connection pool tuning | `5` / `10` / `30` |
 | `DATABASE_ECHO` | Echo SQL to stdout | `false` |
+| `MLFLOW_TRACKING_URI` | MLflow tracking server URL used by `MLflowTracker` | unset (falls back to `http://localhost:5000` in scripts) |
+| `MLFLOW_EXPERIMENT_NAME` | Default MLflow experiment | `mlops-framework` |
+| `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | MinIO/S3 credentials the MLflow **client** needs directly — it talks to the artifact store, bypassing the mlflow server. Missing these fails `log_artifact`/`download_artifacts` with a silent `AccessDenied`, not a crash | unset |
+| `AIRFLOW_BASE_URL` / `AIRFLOW_USERNAME` / `AIRFLOW_PASSWORD` | `AirflowOrchestrator` REST credentials | unset / `airflow` / `airflow` |
+| `SERVING_BRIDGE_URL` | Used by `HttpEventPublisher` | unset |
 | `APP_NAME` / `APP_VERSION` | Application metadata | `mlops-framework` / `0.1.0` |
 | `DEBUG` | Debug mode | `false` |
 
-`alembic.ini` does not contain any credentials. `alembic/env.py` loads
-`DATABASE_URL` from `.env` via `python-dotenv` and fails fast if it is
+`alembic.ini` holds no credentials — `alembic/env.py` loads
+`DATABASE_URL` from `.env` via `python-dotenv` and fails fast if it's
 missing.
 
-## Project Structure
+Inside `docker compose`, `app`/`serving`/`demo`/`airflow-webserver`/
+`airflow-scheduler` already have the MinIO credentials and in-network
+service URLs (`http://mlflow:5000`, `http://airflow-webserver:8080`, …)
+set in `docker-compose.yml` — you only need to export them yourself when
+running a script on the host.
+
+## Database migrations
+
+```bash
+alembic upgrade head      # apply all migrations
+alembic current            # show current revision
+alembic history             # show full migration history
+alembic revision -m "..."  # create a new empty migration
+alembic downgrade -1        # roll back one revision
+```
+
+| Revision | Adds |
+|---|---|
+| `001_initial` | `datasets`, `dataset_versions`, `training_runs` |
+| `002_training_run_lifecycle` | `pipeline_id`, `mlflow_run_id`, `error_message` on `training_runs` |
+| `003_models` | `models`, `model_versions`, `model_state_enum` |
+| `004_week3_governance` | `readiness_evaluations`, `drift_evaluations`, `model_promotion_events`, `serving_instances` |
+
+## Project structure
 
 ```
-mlops-framework/
-├── src/mlops_framework/         # framework source
-│   ├── config/                  # Pydantic settings
-│   ├── database/                # SQLAlchemy Base + session + models
-│   ├── dataset/                 # DatasetManager, checksums, schema hashing
-│   ├── training/                # TrainingManager, TrainingService, lifecycle
-│   ├── orchestration/           # Orchestrator ABC + adapters
-│   ├── tracking/                # ExperimentTracker ABC + adapters
-│   ├── model/                   # ModelManager + lifecycle
-│   ├── readiness/               # ReadinessEngine + TrainingPolicy
-│   ├── drift/                   # DriftDetector ABC + ScipyDriftDetector
-│   ├── governance/              # TrainingEligibilityPolicy + ModelPromotionPolicy
-│   ├── workflow/                # RetrainingWorkflow
-│   ├── events/                  # EventPublisher ABC + adapters
-│   ├── serving/                 # FastAPI ServingBridge
-│   ├── lineage/                 # LineageManager
-│   └── exceptions.py
+Framework/
+├── src/mlops_framework/     # framework source — see Module layout above
+├── case_studies/            # fraud_detection/, customer_churn/ — SDK consumers
+├── scripts/                 # real end-to-end demo entry points
 ├── tests/
-│   ├── unit/                    # unit tests
-│   ├── integration/             # integration + governance e2e tests
-│   └── _pipelines/              # fixture pipelines for orchestrator tests
+│   ├── unit/                 # unit tests
+│   ├── integration/          # integration + governance e2e tests
+│   ├── api/                  # FastAPI TestClient tests
+│   └── _pipelines/           # fixture pipelines for orchestrator tests
 ├── infrastructure/
-│   └── airflow/dags/            # sample DAG for Airflow deployment
-├── alembic/
-│   ├── versions/                # 001_initial, 002, 003, 004_week3_governance
-│   ├── env.py
-│   └── (no .ini — config in pyproject root)
-├── alembic.ini
-├── docker-compose.yml           # PostgreSQL
+│   ├── airflow/               # Dockerfile, entrypoint.sh, dags/
+│   ├── app/                   # Dockerfile for app/serving/demo
+│   ├── mlflow/, minio/, postgres/
+│   └── terraform/             # AWS deployment (see docs/aws-deployment-plan.md)
+├── alembic/                  # versions/, env.py
+├── docker-compose.yml
 ├── pyproject.toml
 ├── .env.example
 └── README.md
 ```
 
-## Database ERD
+## Database schema
 
 ```
 ┌─────────────┐         ┌───────────────────┐         ┌───────────────┐
@@ -612,432 +763,55 @@ mlops-framework/
                                        └──────────────────┘
 ```
 
-## Running Tests
+## Testing
 
 ```bash
-pytest                        # full suite
-pytest tests/unit             # unit tests only
-pytest tests/integration      # integration tests only
-pytest -v                     # verbose
-pytest -k orchestrator        # by name
-pytest --cov=mlops_framework  # coverage
+pytest                        # full suite — 469 passed, 24 skipped (live-service integration tests)
+pytest tests/unit              # unit tests only
+pytest tests/integration       # integration tests only
+pytest -k drift                # by name
+pytest --cov=mlops_framework   # coverage
 ```
 
-The test suite is hermetic:
+The suite is hermetic — no live MLflow, Airflow, or Postgres required:
 
-- Unit tests for `LocalDockerOrchestrator` spawn real Python
-  subprocesses against fixture pipelines in `tests/_pipelines/`.
-- Unit tests for `AirflowOrchestrator` use a fake `httpx.Client` — no
-  live Airflow needed.
-- Integration tests use SQLite in-memory with `StaticPool` so they run
-  in any environment.
-- End-to-end tests drive the full DatasetVersion → TrainingRun →
-  ModelVersion flow through `TrainingService` with the in-memory
-  orchestrator and tracker.
+- `LocalDockerOrchestrator` unit tests spawn real Python subprocesses
+  against fixture pipelines in `tests/_pipelines/`.
+- `AirflowOrchestrator` unit tests use a fake `httpx.Client`.
+- Integration tests use in-memory SQLite (`StaticPool`).
+- `tests/api/` boots the real FastAPI app via `TestClient` against an
+  in-memory database.
 
-## Definition of Done — End of Week 2
+The 24 skipped tests need a live stack (`docker compose up -d`) and are
+opt-in — see `tests/integration/test_airflow_live.py`.
 
-- [x] TrainingRun lifecycle with strict state transitions
-- [x] Orchestrator abstraction (`Orchestrator` ABC)
-- [x] LocalDockerOrchestrator
-- [x] AirflowOrchestrator adapter (REST API)
-- [x] ExperimentTracker abstraction
-- [x] MLflowTracker
-- [x] InMemoryTracker (test-friendly)
-- [x] `Model` entity
-- [x] `ModelVersion` entity
-- [x] Model lifecycle state transitions
-- [x] DatasetVersion → TrainingRun → ModelVersion lineage
-- [x] MLflow Run integration (columns + tracker run ids)
-- [x] End-to-end training lifecycle test
-- [x] Alembic migrations (3 revisions, head applied)
-- [x] 132/132 tests passing (40 Week 1 + 92 Week 2)
+## Known limitations
 
-## Definition of Done — End of Week 3
-
-- [x] `ReadinessEngine` evaluates a `DatasetVersion` against a
-      `TrainingPolicy` and produces a normalized READY/BLOCKED
-      decision. Every evaluation is persisted.
-- [x] `TrainingEligibilityPolicy` distinguishes dataset readiness
-      from training eligibility. Decisions are explainable.
-- [x] `DriftDetector` ABC + `ScipyDriftDetector` (KS for numerical,
-      chi-square for categorical). External statistical library is
-      hidden behind the abstraction.
-- [x] `ModelPromotionPolicy` with min-metric thresholds and
-      must-beat-production comparison. APPROVED/REJECTED is
-      explainable.
-- [x] `RetrainingWorkflow` orchestrates
-      readiness → drift → eligibility → training → promotion.
-      Framework owns the decisions; the orchestrator only executes.
-- [x] `EventPublisher` ABC + `InMemoryEventPublisher` and
-      `HttpEventPublisher`. `ModelPromotedEvent` is emitted on every
-      successful promotion.
-- [x] FastAPI `ServingBridge` reloads the model atomically. Prior
-      reloads are marked inactive; the active version is queryable.
-- [x] `LineageManager` walks the full chain
-      `Dataset → DatasetVersion → TrainingRun → ModelVersion →
-      ServingInstance`.
-- [x] End-to-end governance tests cover all 5 cases (BLOCKED,
-      TRAINING FAILURE, MODEL REJECTED, MODEL APPROVED, SERVING
-      RELOAD).
-- [x] Alembic migration `004_week3_governance` brings the schema
-      to head.
-- [x] 222/222 tests passing (132 Week 1+2 + 90 Week 3).
-
-## Known Limitations
-
-1. **`LocalDockerOrchestrator` is a subprocess shim, not Docker.**
-   The name carries forward compatibility with a future real
-   Docker-based implementation. The `Orchestrator` interface is
-   identical, so a `DockerOrchestrator` would be a drop-in.
-2. **Airflow "cancel" deletes the DAG run.** Airflow 2.x has no clean
+1. **`LocalDockerOrchestrator` is a subprocess shim, not Docker.** The
+   name carries forward compatibility with a future real Docker-based
+   implementation; the `Orchestrator` interface is identical, so a
+   `DockerOrchestrator` would be a drop-in.
+2. **`RetrainingWorkflow` only works with `LocalDockerOrchestrator`.**
+   It has no parameter to thread `metadata["training_entrypoint"]`
+   through to an Airflow-triggered run — see
+   [the note above](#automated-retraining-workflow).
+3. **Airflow "cancel" deletes the DAG run.** Airflow 2.x has no clean
    REST endpoint to cancel a running DAG run; deletion is the
-   documented workaround.
-3. **`pipeline_id` is the orchestrator-executable identifier**
-   (e.g. `"tests._pipelines.e2e_training:main"` for local,
-   `"mlops_training_pipeline"` for Airflow). A `PipelineRegistry` to
-   map friendly names is planned for Week 3.
-4. **`TrainingService.wait_for_completion` polls.** Production-grade
-   event/callback support is planned for Week 3.
-5. **MLflow is optional.** The framework does not require MLflow to
-   import or run; `MLflowTracker` is verified to fail with a clear
-   framework-level error when mlflow is missing, and `InMemoryTracker`
-   is provided as a drop-in for tests.
-
-## Recommended Next Steps — Week 4
-
-1. **Pipeline registry** — `PipelineRegistry` mapping friendly names
-   to orchestrator-executable identifiers per orchestrator.
-2. **Enforce single PRODUCTION per Model** — currently the
-   `RetrainingWorkflow` archives the prior production version on a
-   new promotion, but a database-level partial unique index would
-   be a stronger guarantee.
-3. **Real Docker orchestrator** — `DockerOrchestrator` implementing
-   the same `Orchestrator` interface.
-4. **Production Airflow integration tests** — minimal
-   docker-compose with webserver + scheduler to verify the adapter
-   against a live REST API.
-5. **Event transport upgrades** — Redis pub/sub or Kafka behind the
-   same `EventPublisher` ABC for higher-throughput deployments.
-6. **Callback-based completion** — replace `TrainingService` polling
-   with the promotion-event bus once a serving process can
-   acknowledge the reload.
-
----
-
-## Week 4 — Management UI, SDK, and Reusability Proof
-
-Week 4 turned the framework into a manageable product without touching
-the Week 1-3 internals. Three additions were shipped:
-
-1. **HTTP Management API** — FastAPI façade exposing the existing
-   managers as 15 REST endpoints.
-2. **Management UI** — server-rendered HTML + vanilla JS (no build
-   step) served on the same port as the API.
-3. **Python SDK** — `MLOpsProject` so app developers never import a
-   manager directly.
-
-### Layered architecture
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                    PRESENTATION LAYER                            │
-│  Management UI (HTML/CSS/JS, served by FastAPI on :8000)         │
-│  - Dashboard  - Datasets  - Runs  - Models  - Lineage           │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │ HTTP (JSON, fetch API)
-┌──────────────────────▼───────────────────────────────────────────┐
-│                    FRAMEWORK API (FastAPI)                       │
-│  src/mlops_framework/api/                                        │
-│  - 15 endpoints for dashboard, datasets, runs, models, lineage,  │
-│    readiness                                                      │
-│  - Pydantic DTOs, dependency-injected session/manager factories  │
-│  - Reuses: DatasetManager, TrainingManager, ModelManager,       │
-│            LineageManager, ReadinessEngine                       │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │ Python calls (no new abstractions)
-┌──────────────────────▼───────────────────────────────────────────┐
-│                    SDK LAYER (Python facade)                     │
-│  src/mlops_framework/sdk/                                        │
-│  - MLOpsProject(name) — one entry point                         │
-│  - MLOpsDataset, MLOpsRun, MLOpsModel — value objects           │
-│  - PipelineRegistry — maps friendly names to orchestrator IDs    │
-│  - SDK-level exceptions (MLOpsError, NotFoundError, ...)         │
-└──────────────────────┬───────────────────────────────────────────┘
-                       │ Python calls
-┌──────────────────────▼───────────────────────────────────────────┐
-│              EXISTING FRAMEWORK (Week 1-3, unchanged)            │
-│  Managers · Services · Workflows · Governance · Events · Serving│
-└──────────────────────────────────────────────────────────────────┘
-```
-
-**Zero new business logic** was added in Week 4. The API and SDK are
-pure façades: they translate HTTP/Python-call inputs into existing
-manager method calls and return manager outputs as Pydantic models /
-SDK value objects.
-
-### SDK quickstart
-
-```python
-from mlops_framework import MLOpsProject
-
-project = MLOpsProject.with_defaults("fraud-detection")
-project.register_pipeline(
-    "xgboost-training",
-    "my_pkg.pipelines:train_xgb",
-    description="XGBoost trainer for tabular data",
-)
-
-# Datasets
-dataset = project.create_dataset("credit-card-transactions")
-version = dataset.create_version(
-    storage_uri="s3://bucket/transactions-v1.parquet",
-    row_count=284_807,
-    metadata={"columns": [...]},
-)
-
-# Training (returns when done; raises TrainingError on failure)
-run = project.train(
-    dataset_version=version,
-    pipeline="xgboost-training",
-    parameters={"max_depth": 6},
-    wait=True,
-)
-print(run.status, run.metrics)
-
-# Models
-model = project.get_model("fraud-xgboost")
-for mv in model.versions:
-    print(mv.version_number, mv.state, mv.metrics)
-
-# Lineage
-graph = project.lineage.for_dataset_version(version.id)
-# graph["nodes"] / graph["edges"] — ready for any visualisation lib
-```
-
-### API quickstart
-
-```bash
-# Start the server
-uvicorn mlops_framework.api.app:create_app --factory --reload
-
-# Or programmatic:
-python -c "from mlops_framework.api.app import create_app; create_app().run()"
-```
-
-Then visit:
-- `http://localhost:8000/` — Management UI
-- `http://localhost:8000/docs` — interactive OpenAPI docs
-- `http://localhost:8000/api/dashboard` — JSON KPIs
-
-### Endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/dashboard` | Counts: datasets, versions, runs, production models, success rate |
-| GET | `/api/datasets` | List datasets with `version_count` and `latest_version` |
-| GET | `/api/datasets/{id}` | Dataset detail |
-| GET | `/api/datasets/{id}/versions` | All versions of a dataset |
-| GET | `/api/dataset-versions/{id}` | Single version with parsed metadata |
-| GET | `/api/training-runs` | List runs (filter by `status`, `dataset_version_id`) |
-| GET | `/api/training-runs/{id}` | Run detail with params, metrics, error |
-| GET | `/api/models` | List models with production summary |
-| GET | `/api/models/{id}` | Model detail |
-| GET | `/api/models/{id}/versions` | All versions of a model |
-| GET | `/api/model-versions/{id}` | Single version with parsed metrics |
-| GET | `/api/lineage/dataset-version/{id}` | Lineage graph JSON |
-| GET | `/api/lineage/model-version/{id}` | Lineage graph JSON |
-| GET | `/api/lineage/training-run/{id}` | Lineage graph JSON |
-| GET | `/api/readiness/{version_id}` | Latest readiness evaluation |
-
-### Reusability proof — two case studies on the same SDK
-
-| Concern | Fraud Detection | Customer Churn |
-|---|---|---|
-| Data shape | 30 numeric features + binary class | 4 numeric + 2 categorical + binary class |
-| Pipeline 1 | `fraud-baseline` | `churn-baseline` |
-| Pipeline 2 | `fraud-advanced` | `churn-balanced` |
-| Metrics | `f1`, `roc_auc` | `accuracy`, `f1`, `recall` |
-| Model name | `fraud-xgboost` | `churn-classifier` |
-| Task | binary_classification | binary_classification |
-| **SDK import** | `mlops_framework.sdk` | `mlops_framework.sdk` |
-
-Both case studies live at the repository root and are tested with the
-exact same SDK. The static check
-`TestNoDirectManagerImports::test_app_uses_only_sdk` enforces that the
-app code only imports `mlops_framework.sdk` — no managers, no services,
-no database models, no orchestrators.
-
-### Test counts
-
-| Layer | Tests | Status |
-|---|---|---|
-| Week 1-3 baseline (managers, services, governance, workflow) | 222 | unchanged |
-| Week 4: PipelineRegistry | 12 | new |
-| Week 4: API (6 routers + deps) | 29 | new |
-| Week 4: Management UI | 13 | new |
-| Week 4: App factory smoke | 2 | new |
-| Week 4: SDK | 18 | new |
-| Week 4: Fraud Detection case study | 14 | new |
-| Week 4: Customer Churn case study | 14 | new |
-| **Total** | **324** | passing |
-
-### Running everything
-
-```bash
-# Install dev deps
-pip install -e ".[dev]"
-
-# Run the test suite
-.venv/bin/pytest
-
-# Start the API + UI
-.venv/bin/uvicorn mlops_framework.api.app:create_app --factory --reload
-
-# Run the Fraud Detection case study
-python -m case_studies.fraud_detection.app
-
-# Run the Customer Churn case study
-python -m case_studies.customer_churn.app
-```
-
-## Week 5 — Real MLflow + Airflow in Docker Compose
-
-Week 5 ships a runnable local stack: real MLflow, real Airflow, a real
-fraud-detection CSV, and a real XGBoost trainer — all coordinated
-through the framework's existing `Orchestrator` and `ExperimentTracker`
-abstractions. No framework code is changed; the production adapters
-(`MLflowTracker`, `AirflowOrchestrator`) just get env-driven defaults
-and the demo wires them together.
-
-### What ships
-
-- **7 services in one Compose file** — `postgres`, `minio`, `mlflow`,
-  `airflow-common`, `airflow-webserver`, `airflow-scheduler`, `app`,
-  `serving`, plus an opt-in `demo` one-shot.
-- **A real Airflow DAG** (`infrastructure/airflow/dags/mlops_training_pipeline.py`)
-  with three tasks: `resolve_context` → `train` (real XGBoost) →
-  `register_and_promote` (PromotionPolicy + serving reload).
-- **A real trainer** (`case_studies/fraud_detection/pipelines.py:train_xgboost`)
-  that reads the synthetic CSV, fits `xgboost.XGBClassifier`, logs
-  metrics + pickle artifact to MLflow, and returns a metrics dict.
-- **A one-shot demo entry point** (`scripts/run_end_to_end_demo.py`)
-  that walks dataset → version → readiness → eligibility → training
-  → promotion → serving reload → lineage, printing each step.
-
-### Quickstart
-
-```bash
-# 1. Spin up the stack (Postgres + MinIO + MLflow + Airflow + app + serving)
-cp .env.example .env.docker
-docker compose --env-file .env.docker up -d
-
-# 2. Apply Alembic migrations once
-docker compose --env-file .env.docker run --rm app alembic upgrade head
-
-# 3. Run the demo (one-shot service OR Python out-of-container)
-docker compose --env-file .env.docker --profile demo run --rm demo
-# or, on the host:
-PYTHONPATH=src:. .venv/bin/python scripts/run_end_to_end_demo.py
-
-# 4. Inspect the results
-open http://localhost:8000  # Management UI (dashboard, models, lineage)
-open http://localhost:5000  # MLflow UI (runs, params, metrics, artifacts)
-open http://localhost:8080  # Airflow UI (DAG runs, task logs)
-open http://localhost:9001  # MinIO console (artifacts, minioadmin / minioadmin)
-```
-
-### Architecture (unchanged from Week 4)
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  PRESENTATION                                                     │
-│  Management UI (8000)   MLflow UI (5000)   Airflow UI (8080)     │
-└──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────┐
-│  ORCHESTRATION                                                    │
-│  AirflowOrchestrator ──httpx──> Airflow REST API (8080)          │
-│  LocalDockerOrchestrator ──subprocess──> (Week 1-3 tests)         │
-└──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────┐
-│  TRACKING                                                         │
-│  MLflowTracker ──mlflow SDK──> MLflow server (5000)              │
-│  InMemoryTracker ──dict──> (hermetic tests)                      │
-└──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────┐
-│  SERVING                                                          │
-│  ServingBridge (8001) ──HTTP──> ModelPromotedEvent publisher      │
-└──────────────────────────────────────────────────────────────────┘
-┌──────────────────────────────────────────────────────────────────┐
-│  FRAMEWORK CODE (unchanged)                                       │
-│  Models · Managers · Services · Policies · Lineage · SDK · API    │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-The framework does not import Airflow or MLflow in production code.
-The Airflow DAG imports the framework (because that's how Airflow
-works in real deployments), but the framework's own modules never
-import airflow.
-
-### Demo flow in detail
-
-The `scripts/run_end_to_end_demo.py` script performs the following
-sequence against the **real** stack:
-
-1. **Wait for health** — `Airflow /health`, `MLflow /health`,
-   `ServingBridge /healthz`.
-2. **Wire adapters** — `MLflowTracker(experiment="fraud-demo")` and
-   `AirflowOrchestrator(...)` are constructed from env-driven
-   settings; the `MLOpsProject` SDK is registered with the
-   `fraud-xgboost-real` pipeline.
-3. **Dataset + Version** — write the synthetic fraud CSV (5 000 rows)
-   into `case_studies/fraud_detection/data/transactions.csv` and
-   register it via `project.create_dataset(...)`.
-4. **Readiness** — `ReadinessEngine.evaluate(...)` with a policy that
-   requires 31 columns, 1 000+ rows, and `time/amount/class` dtypes.
-5. **Eligibility** — `TrainingEligibilityPolicy.evaluate(...)` with
-   `force=True` on the first pass.
-6. **Training** — `TrainingService.create_run(...)` registers a
-   `TrainingRun`, `MLflowTracker.start_run(...)` opens an MLflow run,
-   `AirflowOrchestrator.trigger_pipeline(...)` triggers the
-   `mlops_training_pipeline` DAG; the Airflow task trains an
-   `XGBClassifier` on the CSV and logs metrics + a pickle artifact.
-7. **Wait for DAG completion** — poll `get_execution_status` and
-   `get_task_instance_states` until SUCCESS.
-8. **Promotion** — `ModelPromotionPolicy.evaluate(...)` with
-   `min_metrics={"f1": 0.5}`, then `ModelManager.transition_state` to
-   `APPROVED → PRODUCTION` (and archive the prior production).
-9. **Serving reload** — `HttpEventPublisher.publish(ModelPromotedEvent)`
-   POSTs to the serving bridge `/internal/model/reload`; the bridge
-   writes a `ServingInstance` row and reports the active version on
-   `/internal/model/active/<name>`.
-10. **Lineage** — `LineageManager.graph_for_model_version(...)` prints
-    the chain: `Dataset → DatasetVersion → TrainingRun → ModelVersion`.
-
-### Test counts
-
-| Slice | Tests | Status |
-|---|---|---|
-| Week 1-3 baseline | 324 | unchanged |
-| Week 4: API / UI / SDK / case studies | new | passing |
-| Week 5: Settings (env overrides) | 8 | new |
-| Week 5: MLflowTracker (status mapping, env-fallback, end_run) | 11 | new |
-| Week 5: AirflowOrchestrator (task instance states, env-fallback) | 5 | new |
-| Week 5: End-to-end demo logic | 10 | new |
-| **Total** | **358** | passing |
-
-All 358 tests are hermetic — no live MLflow, Airflow, or Postgres
-required. The Docker Compose stack is opt-in for the user.
-
-### Recommended next steps (still open)
-
-- Database-side partial unique index on `models.production_version_id`
-  (out of scope for Week 5).
-- Distributed event transport (Redis / Kafka) behind the existing
-  `EventPublisher` ABC.
-- Real container-based Docker orchestrator (replace
-  `LocalDockerOrchestrator` with a callable image).
-- Callback-based `TrainingService` completion (the demo currently polls).
+   documented workaround (`AirflowOrchestrator.cancel_execution`).
+4. **`TrainingService.wait_for_completion` polls** rather than using a
+   callback/event bus.
+5. **No database-level uniqueness on "one PRODUCTION per Model".**
+   `RetrainingWorkflow`/promotion code archives the prior production
+   version on every new promotion, but nothing stops a concurrent writer
+   from creating two.
+6. **MLflow is optional.** The framework never requires it to import or
+   run — `MLflowTracker` fails with a clear framework-level error if
+   `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
+   tests.
+7. **The MLflow *client* needs S3 credentials directly** — see the
+   `MLFLOW_S3_ENDPOINT_URL` row in [Configuration](#configuration).
+   Missing them fails artifact upload/download silently (caught by a
+   broad `except` in the case-study pipelines), not loudly.
 
 ## License
 

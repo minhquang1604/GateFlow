@@ -29,6 +29,7 @@ services — the URLs are picked up from environment variables
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -49,16 +50,10 @@ from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.session import DatabaseManager
-from mlops_framework.events.publisher import HttpEventPublisher, ModelPromotedEvent
 from mlops_framework.governance.eligibility import (
     EligibilityConfig,
     EligibilityDecision,
     TrainingEligibilityPolicy,
-)
-from mlops_framework.governance.promotion import (
-    ModelPromotionPolicy,
-    PromotionConfig,
-    PromotionContext,
 )
 from mlops_framework.lineage.manager import LineageManager
 from mlops_framework.model.manager import ModelManager
@@ -77,6 +72,11 @@ DATASET_NAME = "credit-card-transactions"
 MODEL_NAME = "fraud-xgboost"
 PIPELINE_FRIENDLY = "fraud-xgboost-real"
 PIPELINE_ID = "case_studies.fraud_detection.pipelines:train_xgboost"
+# AirflowOrchestrator.trigger_pipeline() takes the DAG id, not the
+# module:callable path — see mlops_training_pipeline.py's
+# _resolve_entrypoint(). The callable travels separately in
+# metadata["training_entrypoint"].
+DAG_ID = os.environ.get("AIRFLOW_DAG_ID", "mlops_training_pipeline")
 DATA_ROWS = 5000
 
 STEP_SEP = "─" * 72
@@ -206,14 +206,23 @@ def main() -> int:
     else:
         print(f"  • reusing existing dataset at {data_path}")
 
+    # The DatasetVersion's storage_uri is what the *Airflow* `train` task
+    # reads (via resolve_context's payload["storage_uri"]), not this
+    # process. The airflow image is a separate build
+    # (infrastructure/airflow/Dockerfile) that bakes case_studies/ in at
+    # /opt/case_studies — a different root than this image's /opt/framework
+    # (infrastructure/app/Dockerfile) — so the path recorded here must be
+    # valid from the Airflow container's filesystem, not this one's.
+    airflow_csv_path = "/opt/case_studies/fraud_detection/data/transactions.csv"
+
     try:
         ds = project.get_dataset(DATASET_NAME)
     except Exception:
         ds = project.create_dataset(DATASET_NAME, description="Synthetic credit-card fraud")
 
-    if not any(v.storage_uri == str(data_path) for v in ds.versions):
+    if not any(v.storage_uri == airflow_csv_path for v in ds.versions):
         version = ds.create_version(
-            storage_uri=str(data_path),
+            storage_uri=airflow_csv_path,
             row_count=DATA_ROWS,
             metadata=fraud_data.schema_metadata(),
         )
@@ -303,15 +312,16 @@ def main() -> int:
 
         run = service.create_run(
             dataset_version_id=version.id,
-            pipeline_id=PIPELINE_ID,
+            pipeline_id=DAG_ID,
             trigger_type="MANUAL",
             metadata={
+                "training_entrypoint": PIPELINE_ID,
                 "parameters": {
                     "max_depth": 6,
                     "n_estimators": 150,
                     "learning_rate": 0.1,
                 },
-                "csv_uri": str(data_path),
+                "csv_uri": airflow_csv_path,
                 "model_name": MODEL_NAME,
                 "min_f1": 0.5,
                 "tracking_uri": endpoints["mlflow_uri"],
@@ -358,7 +368,7 @@ def main() -> int:
         print(
             f"  • {status.state.value:<10} "
             f"(task_states="
-            f"{orchestrator.get_task_instance_states(execution_id)})"
+            f"{orchestrator.get_task_instances(execution_id)})"
         )
         if status.state.value in ("SUCCESS", "FAILED", "CANCELLED"):
             final_state = status.state.value
@@ -370,84 +380,66 @@ def main() -> int:
         print(f"\n  ✗ Airflow DAG run did not succeed (final={final_state})")
         return 2
 
-    # Sync the TrainingRun lifecycle.
+    # Sync the TrainingRun lifecycle. The DAG's own `report_status` task
+    # already calls the app's internal API (POST .../finish) to complete
+    # the run — see mlops_training_pipeline.py — so by the time the DAG
+    # itself reaches SUCCESS the TrainingRun is normally already
+    # terminal. Only call complete_run here if that somehow didn't happen.
     with db.get_session() as session:
         dm = DatasetManager(session)
         tm = TrainingManager(session, dm)
-        service = TrainingService(
-            training_manager=tm, orchestrator=orchestrator, tracker=tracker
-        )
-        service.complete_run(run_id)
+        current_status = tm.get_run(run_id).status.value
+        if current_status not in ("SUCCESS", "FAILED", "CANCELLED"):
+            service = TrainingService(
+                training_manager=tm, orchestrator=orchestrator, tracker=tracker
+            )
+            service.complete_run(run_id)
+            current_status = tm.get_run(run_id).status.value
         tracker.end_run(status="SUCCESS")
-        print(f"  ✓ TrainingRun {run_id} marked SUCCESS")
+        print(f"  ✓ TrainingRun {run_id} status={current_status}")
 
     # ------------------------------------------------------------------ #
     # 7. Model evaluation + promotion
     # ------------------------------------------------------------------ #
-    _print_banner("6. Model evaluation + PromotionPolicy")
+    # The DAG's own `register_and_promote` task already applied the
+    # ModelPromotionPolicy server-side (POST .../models/{name}/promote,
+    # see mlops_framework.api.routers.internal.promote_model) and, on
+    # approval, published the ModelPromotedEvent to the ServingBridge
+    # itself (see register_and_promote() in mlops_training_pipeline.py).
+    # Re-running the policy and re-transitioning state here would just
+    # double-apply a decision already made — and crash, since the
+    # candidate is no longer in a state APPROVED/PRODUCTION can be
+    # entered from a second time. So this step only reads back what the
+    # DAG decided.
+    _print_banner("6. Model evaluation + PromotionPolicy (decided by the DAG)")
 
     with db.get_session() as session:
-        mm = ModelManager(session)
-        model_row = mm.get_model(model_id)
-        production_mv = mm._production_for_model(model_id)  # noqa: SLF001
-
-        # Find the most recent ModelVersion for this model — the
-        # Airflow task wrote a CANDIDATE one in step 4.
-        candidates = list(
-            session.execute(
-                select(ModelVersion)
-                .where(ModelVersion.model_id == model_id)
-                .order_by(ModelVersion.version_number.desc())
-                .limit(2)
-            ).scalars()
-        )
-        latest_mv = candidates[0] if candidates else None
+        latest_mv = session.execute(
+            select(ModelVersion)
+            .where(ModelVersion.model_id == model_id)
+            .order_by(ModelVersion.version_number.desc())
+            .limit(1)
+        ).scalars().first()
         if latest_mv is None:
             print("  ✗ no ModelVersion found after training")
             return 3
 
-        decision = ModelPromotionPolicy().evaluate(
-            context=PromotionContext(
-                candidate=latest_mv, production=production_mv
-            ),
-            config=PromotionConfig(
-                min_metrics={"f1": 0.5},
-                must_beat_production=False,
-                allow_cold_start=True,
-            ),
-        )
-        print(f"  • approved={decision.approved} reasons={decision.reasons}")
-        print(f"  • candidate metrics={decision.details.get('candidate_metrics')}")
+        print(f"  • ModelVersion v{latest_mv.version_number} state={latest_mv.state.value}")
+        print(f"  • candidate metrics={json.loads(latest_mv.metrics_json or '{}')}")
 
         promoted_id: int | None = None
         promoted_version: int | None = None
-        if not decision.approved:
-            print("  ✗ model rejected by promotion policy — servicing not updated")
-        else:
-            mm.transition_state(latest_mv.id, ModelState.APPROVED)
-            mm.transition_state(latest_mv.id, ModelState.PRODUCTION)
-            if production_mv is not None and production_mv.id != latest_mv.id:
-                mm.transition_state(production_mv.id, ModelState.ARCHIVED)
-            session.commit()
+        if latest_mv.state == ModelState.PRODUCTION:
             promoted_id = latest_mv.id
             promoted_version = latest_mv.version_number
+        else:
+            print(f"  ✗ model not in PRODUCTION (state={latest_mv.state.value})")
 
     # ------------------------------------------------------------------ #
-    # 8. Event publish → ServingBridge reload
+    # 8. Confirm the ServingBridge reload the DAG already triggered
     # ------------------------------------------------------------------ #
     if promoted_id is not None:
-        _print_banner("7. ModelPromotedEvent → ServingBridge reload")
-        events = HttpEventPublisher(url=f"{endpoints['serving_url']}/internal/model/reload")
-        event = ModelPromotedEvent(
-            model_name=MODEL_NAME,
-            model_version=promoted_version,
-            artifact_uri=None,
-            metrics=None,
-        )
-        published = events.publish(event)
-        print(f"  • HttpEventPublisher.publish(→ serving) returned {published}")
-
-        # Confirm the serving bridge is now serving the new model.
+        _print_banner("7. ServingBridge — confirm the DAG's reload took effect")
         resp = httpx.get(
             f"{endpoints['serving_url']}/internal/model/active/{MODEL_NAME}",
             timeout=5.0,

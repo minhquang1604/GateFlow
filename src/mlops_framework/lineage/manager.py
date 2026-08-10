@@ -227,7 +227,11 @@ class LineageManager:
                         id=f"TrainingRun:{run.id}",
                         type="TrainingRun",
                         label=f"run {run.id}",
-                        attributes={"status": run.status},
+                        attributes={
+                            "status": run.status,
+                            "pipeline_id": run.pipeline_id,
+                            "mlflow_run_id": run.mlflow_run_id,
+                        },
                     ),
                 )
                 self._add_edge(
@@ -288,6 +292,7 @@ class LineageManager:
                 label=f"run {run.id}",
                 attributes={
                     "status": run.status,
+                    "pipeline_id": run.pipeline_id,
                     "mlflow_run_id": run.mlflow_run_id,
                 },
             ),

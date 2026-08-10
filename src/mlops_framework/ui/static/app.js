@@ -114,8 +114,8 @@ function svgEl(tag, attrs = {}, ...children) {
 
 function statusKind(status) {
   const s = String(status || "").toLowerCase();
-  if (["success", "ready", "production", "passed", "approved_ok"].includes(s)) return "success";
-  if (["failed", "rejected", "blocked", "upstream_failed"].includes(s)) return "failed";
+  if (["success", "ready", "production", "passed", "approved_ok", "no_drift"].includes(s)) return "success";
+  if (["failed", "rejected", "blocked", "upstream_failed", "drift_detected"].includes(s)) return "failed";
   if (["running", "queued"].includes(s)) return "running";
   if (["pending", "training", "scheduled", "candidate"].includes(s)) return "pending";
   if (["cancelled", "archived", "skipped", "removed"].includes(s)) return "cancelled";
@@ -495,6 +495,8 @@ async function initDatasetDetail(id) {
       const meta = v.metadata || {};
       let readiness = null;
       try { readiness = await api(`/readiness/${v.id}`); } catch { /* optional */ }
+      let drift = null;
+      try { drift = await api(`/drift/${v.id}`); } catch { /* optional */ }
 
       const facts = el("dl", { class: "kv" },
         el("dt", {}, "Rows"), el("dd", {}, fmt.num(v.row_count)),
@@ -539,6 +541,28 @@ async function initDatasetDetail(id) {
                 : null)
           : el("div", { class: "muted" }, "Not evaluated yet."));
 
+      // A version can be either side of a drift comparison — the API
+      // resolves that; here we just render whatever the latest
+      // evaluation involving this version says.
+      const driftFeatures = (drift && drift.details && drift.details.feature_results) || [];
+      const driftPanel = el("div", { class: "card" },
+        el("div", { class: "chart-title" }, "Drift"),
+        drift
+          ? el("div", {},
+              el("div", { style: "margin-bottom:8px" }, statusBadge(drift.outcome)),
+              el("div", { class: "muted", style: "margin-bottom:8px" },
+                `method: ${drift.method} · score: ${fmt.metric(drift.score)}`),
+              driftFeatures.length
+                ? el("div", { class: "task-grid" },
+                    ...driftFeatures
+                      .filter((f) => f.drift_detected)
+                      .map((f) =>
+                        el("div", { class: "task-cell failed" },
+                          el("span", { class: "dot" }), f.feature,
+                          el("span", { class: "state" }, f.method))))
+                : null)
+          : el("div", { class: "muted" }, "Not evaluated yet."));
+
       sections.push(
         el("section", {},
           el("div", { class: "section-head" },
@@ -546,7 +570,10 @@ async function initDatasetDetail(id) {
             el("span", { class: "faint" }, fmt.ago(v.created_at))),
           el("div", { class: "grid-2" },
             el("div", { class: "card" }, facts),
-            el("div", {}, readinessPanel, classBalance ? el("div", { style: "height:16px" }) : null, classBalance)),
+            el("div", {},
+              readinessPanel,
+              el("div", { style: "height:16px" }), driftPanel,
+              classBalance ? el("div", { style: "height:16px" }) : null, classBalance)),
           schemaRows.length
             ? el("div", {},
                 el("h3", {}, `Schema — ${schemaRows.length} columns`),
@@ -1960,16 +1987,48 @@ async function initPipelineDetail(dagId) {
   const gridRunIds = p.data.grid_run_ids || [];
   const gridCells = p.data.grid_cells || [];
 
-  // Colour the graph by the newest run in the grid — "no data yet" for
-  // a DAG that has never run renders every node neutral.
-  const latestStateByTask = new Map();
-  if (gridRunIds.length) {
-    for (const c of gridCells) {
-      if (c.dag_run_id === gridRunIds[0]) latestStateByTask.set(c.task_id, c.state);
-    }
+  // One lookup per run, built once — switching the run selector below is
+  // then just a Map read, no re-scan of gridCells.
+  const statesByRun = new Map();
+  for (const c of gridCells) {
+    if (!statesByRun.has(c.dag_run_id)) statesByRun.set(c.dag_run_id, new Map());
+    statesByRun.get(c.dag_run_id).set(c.task_id, c.state);
   }
   const levels = tasks.length ? dagLevels(tasks) : null;
-  const graphView = levels ? renderDagGraph(tasks, levels, latestStateByTask) : null;
+
+  // Newest run first, matching the grid header and the run picker below.
+  const graphHost = el("div", { class: "table-wrap" });
+  function paintGraph(runId) {
+    const stateByTask = statesByRun.get(runId) || new Map();
+    const graph = levels ? renderDagGraph(tasks, levels, stateByTask) : null;
+    mount(graphHost, graph || banner("No task structure to draw yet."));
+  }
+  if (gridRunIds.length) paintGraph(gridRunIds[0]);
+  else mount(graphHost, banner("This DAG has no run history yet — nothing to colour."));
+
+  const runPicker = gridRunIds.length
+    ? el("label", { class: "run-picker" },
+        "Run: ",
+        el("select", {
+          onchange: (e) => paintGraph(e.target.value),
+        }, ...gridRunIds.map((rid, i) =>
+          el("option", { value: rid }, rid.replace(/^mlops-/, "") + (i === 0 ? "  (latest)" : "")))))
+    : null;
+
+  // Built from every state actually seen across this DAG's history, not
+  // a fixed universal list — a DAG that has never retried or skipped a
+  // task doesn't get legend entries for states that can't appear.
+  const seenStates = [...new Set(gridCells.map((c) => c.state).filter(Boolean))];
+  const legendOrder = ["success", "running", "failed", "upstream_failed", "up_for_retry", "queued", "scheduled", "skipped", "removed"];
+  seenStates.sort((a, b) => {
+    const ia = legendOrder.indexOf(a), ib = legendOrder.indexOf(b);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib) || a.localeCompare(b);
+  });
+  const legend = seenStates.length
+    ? el("div", { class: "legend" },
+        ...seenStates.map((s) => el("span", { class: `legend-item ${statusKind(s)}` },
+          el("span", { class: "dot" }), s)))
+    : null;
 
   const taskTable = el("table", {},
     el("thead", {}, el("tr", {},
@@ -2002,7 +2061,10 @@ async function initPipelineDetail(dagId) {
   mount(body,
     el("h3", {}, "Tasks"),
     el("div", { class: "card", style: "margin-bottom:16px" },
-      graphView ? el("div", { class: "table-wrap", style: "margin-bottom:16px" }, graphView) : null,
+      (runPicker || legend)
+        ? el("div", { class: "graph-toolbar" }, runPicker, legend)
+        : null,
+      levels ? el("div", { style: "margin-bottom:16px" }, graphHost) : null,
       el("div", { class: "table-wrap" }, taskTable)),
     el("h3", {}, "Task history"),
     el("p", { class: "muted", style: "margin:0 0 10px" },

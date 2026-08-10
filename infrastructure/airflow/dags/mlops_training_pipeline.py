@@ -26,12 +26,21 @@ Flow
    pipelines``) have no framework dependency, so they import fine in
    this environment. Logs params + metrics to MLflow directly when a
    tracker run id is supplied.
-3. ``register_and_promote`` — calls
+3. Three independent quality gates run in **parallel** once ``train``
+   succeeds — ``validate_metrics``, ``validate_artifact``,
+   ``validate_row_count`` — each a pass/fail check over data ``train``
+   already produced (no new I/O). Any one failing leaves
+   ``register_and_promote`` ``upstream_failed`` (its trigger rule is
+   the Airflow default, ``all_success``) — a candidate that fails a
+   sanity check never reaches the promotion endpoint at all.
+4. ``register_and_promote`` — calls
    ``POST /api/internal/models/{model_name}/promote`` to create a
    CANDIDATE :class:`ModelVersion`, apply the promotion policy, and
    (on approval) publish an HTTP event to the ServingBridge. The
    framework's own ``TrainingService`` already wrote the TrainingRun
    row; this task only adds the model side.
+5. ``report_status`` — always runs (``trigger_rule="all_done"``) and
+   tells the framework how the run ended, success or failure.
 
 The DAG runs on Airflow 2.x. It is intentionally minimal — there is
 no SLA, no retries, and no scheduling. The framework controls all
@@ -182,6 +191,82 @@ def train(**context: Any) -> dict[str, Any]:
     }
 
 
+def validate_metrics(**context: Any) -> dict[str, Any]:
+    """Gate 1/3 — the metrics ``train`` reported are present and sane.
+
+    Independent of ``validate_artifact``/``validate_row_count`` — all
+    three run in parallel off the same ``train`` XCom, none reads what
+    another writes. Raising here fails only this task; with
+    ``register_and_promote``'s default ``all_success`` trigger rule
+    that is enough to keep a candidate with a missing or nonsensical
+    metric away from the promotion endpoint entirely.
+    """
+    ti = context["ti"]
+    train_payload = ti.xcom_pull(task_ids="train")
+    if not train_payload:
+        raise RuntimeError("no train XCom to validate")
+
+    metrics = train_payload.get("metrics") or {}
+    required = ("f1", "precision", "recall")
+    missing = [m for m in required if m not in metrics]
+    if missing:
+        raise RuntimeError(f"missing required metric(s): {missing}")
+    out_of_range = {m: metrics[m] for m in required if not (0.0 <= metrics[m] <= 1.0)}
+    if out_of_range:
+        raise RuntimeError(f"metric(s) outside [0, 1]: {out_of_range}")
+    return {"check": "metrics", "passed": True, "checked": list(required)}
+
+
+def validate_artifact(**context: Any) -> dict[str, Any]:
+    """Gate 2/3 — ``train`` left a real, non-empty file behind.
+
+    ``train`` and this task run in the same Airflow worker
+    (``LocalExecutor`` spawns both as subprocesses of the scheduler
+    container), so the temp path ``train`` reported is still on the
+    same filesystem here — this is not re-reading over the network.
+    """
+    import os as _os
+
+    ti = context["ti"]
+    train_payload = ti.xcom_pull(task_ids="train")
+    if not train_payload:
+        raise RuntimeError("no train XCom to validate")
+
+    artifact_path = train_payload.get("artifact_path")
+    if not artifact_path:
+        raise RuntimeError("train() reported no artifact_path")
+    if not _os.path.exists(artifact_path):
+        raise RuntimeError(f"artifact_path does not exist on disk: {artifact_path}")
+    size = _os.path.getsize(artifact_path)
+    if size == 0:
+        raise RuntimeError(f"artifact at {artifact_path} is empty")
+    return {"check": "artifact", "passed": True, "size_bytes": size}
+
+
+def validate_row_count(**context: Any) -> dict[str, Any]:
+    """Gate 3/3 — ``train`` actually trained on the row count the
+    DatasetVersion was registered with, not a silently truncated read.
+    """
+    ti = context["ti"]
+    train_payload = ti.xcom_pull(task_ids="train")
+    ctx_payload = ti.xcom_pull(task_ids="resolve_context")
+    if not train_payload or not ctx_payload:
+        raise RuntimeError("missing XCom from upstream tasks")
+
+    trained_rows = (train_payload.get("params") or {}).get("n_rows")
+    expected_rows = ctx_payload.get("row_count")
+    if trained_rows is None:
+        raise RuntimeError("train() reported no params.n_rows")
+    if expected_rows is None:
+        raise RuntimeError("resolve_context reported no row_count")
+    if trained_rows != expected_rows:
+        raise RuntimeError(
+            f"trained on {trained_rows} rows but DatasetVersion is registered "
+            f"with {expected_rows} — pipeline may have read the wrong file"
+        )
+    return {"check": "row_count", "passed": True, "rows": trained_rows}
+
+
 def report_status(**context: Any) -> dict[str, Any]:
     """Tell the framework how this DAG run ended.
 
@@ -313,6 +398,22 @@ with DAG(
         task_id="train",
         python_callable=train,
     )
+    # Three independent quality gates — no ordering between them, so
+    # Airflow schedules them in parallel once `train` succeeds.
+    validate_metrics_task = PythonOperator(
+        task_id="validate_metrics",
+        python_callable=validate_metrics,
+    )
+    validate_artifact_task = PythonOperator(
+        task_id="validate_artifact",
+        python_callable=validate_artifact,
+    )
+    validate_row_count_task = PythonOperator(
+        task_id="validate_row_count",
+        python_callable=validate_row_count,
+    )
+    # Default trigger rule (all_success): any one gate failing leaves
+    # this upstream_failed without ever calling the promote endpoint.
     promote = PythonOperator(
         task_id="register_and_promote",
         python_callable=register_and_promote,
@@ -324,4 +425,4 @@ with DAG(
         python_callable=report_status,
         trigger_rule="all_done",
     )
-    resolve >> train_task >> promote >> report
+    resolve >> train_task >> [validate_metrics_task, validate_artifact_task, validate_row_count_task] >> promote >> report

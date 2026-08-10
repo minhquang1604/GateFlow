@@ -39,12 +39,31 @@ CANONICAL_COLUMNS: list[str] = (
 REAL_DATASET_FILENAME = "creditcard.csv"
 
 
+#: V-features whose *legit*-population distribution moves under drift.
+#: A subset, not all 28 — enough for the KS test to flag real drift
+#: without erasing every feature's separating signal at once.
+_DRIFT_FEATURES: frozenset[int] = frozenset(range(1, 7))
+
+
 def generate(
     n_rows: int = 5000,
     fraud_ratio: float = 0.002,
     seed: int = 42,
+    drift_shift: float = 0.0,
 ) -> Iterable[dict]:
-    """Yield rows of synthetic fraud-detection data."""
+    """Yield rows of synthetic fraud-detection data.
+
+    ``drift_shift`` simulates a covariate shift in *legitimate* traffic —
+    e.g. a new payment processor or a seasonal spending change — without
+    touching how fraud itself looks. At ``drift_shift=0`` (the default)
+    this is byte-for-byte what the function has always produced.
+    Legit ``amount`` scales up by ``(1 + drift_shift)`` and legit rows'
+    low-index V-features (:data:`_DRIFT_FEATURES`) drift toward the
+    fraud cluster. A decision boundary fit at ``drift_shift=0`` sees a
+    rising false-positive rate as the shift grows; a boundary refit on
+    the shifted data recovers, because fraud and (shifted) legit are
+    still separable — only the boundary needs to move.
+    """
     rng = random.Random(seed)
     columns = ["time", "amount"] + [f"v{i}" for i in range(1, 29)] + ["class"]
     n_fraud = max(1, int(n_rows * fraud_ratio))
@@ -57,7 +76,7 @@ def generate(
         if is_fraud:
             amount = round(rng.uniform(80, 2000), 2)
         else:
-            amount = round(rng.expovariate(1 / 60), 2)
+            amount = round(rng.expovariate(1 / 60) * (1 + drift_shift), 2)
         row = {
             "time": i * 1.0,
             "amount": amount,
@@ -68,6 +87,8 @@ def generate(
             base = rng.gauss(0, 1)
             if is_fraud:
                 base += rng.gauss(0.5, 0.3)
+            elif drift_shift and j in _DRIFT_FEATURES:
+                base += rng.gauss(drift_shift * 0.5, 0.15)
             row[f"v{j}"] = round(base, 4)
         row["class"] = 1 if is_fraud else 0
         yield row
@@ -78,6 +99,7 @@ def write_csv(
     n_rows: int = 5000,
     fraud_ratio: float = 0.002,
     seed: int = 42,
+    drift_shift: float = 0.0,
 ) -> Path:
     """Generate and write a CSV file. Returns the path."""
     p = Path(path)
@@ -86,7 +108,9 @@ def write_csv(
     with p.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=columns)
         w.writeheader()
-        for row in generate(n_rows=n_rows, fraud_ratio=fraud_ratio, seed=seed):
+        for row in generate(
+            n_rows=n_rows, fraud_ratio=fraud_ratio, seed=seed, drift_shift=drift_shift
+        ):
             w.writerow(row)
     return p
 

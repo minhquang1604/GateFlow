@@ -330,7 +330,7 @@ def exercise_airflow(session, version) -> Optional[Any]:
 
         status = orchestrator.get_execution_status(execution_id)
         _detail(f"polled status: {status.state.value}")
-        tasks = orchestrator.get_task_instance_states(execution_id)
+        tasks = orchestrator.get_task_instances(execution_id)
         _detail(f"task instances: {tasks or '{} (DAG is paused — none scheduled)'}")
 
         service.cancel_run(run.id)

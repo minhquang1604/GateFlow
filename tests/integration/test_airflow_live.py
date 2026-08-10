@@ -169,7 +169,7 @@ class TestAgainstRealAirflow:
 
     def test_task_instance_states_are_reported(self, orch, trigger):
         """Works even on a paused DAG — Airflow creates the instances."""
-        states = orch.get_task_instance_states(trigger())
+        states = orch.get_task_instances(trigger())
         assert isinstance(states, dict)
         if states:
             assert all(isinstance(v, str) for v in states.values())
