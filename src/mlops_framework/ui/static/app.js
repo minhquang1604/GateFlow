@@ -889,6 +889,18 @@ async function initRunDetail(id) {
       el("pre", { class: "log" }, run.error_message)));
   }
 
+  // Training itself can succeed while a side-effect (logging to MLflow,
+  // typically an S3/MinIO credentials issue on the artifact upload) fails —
+  // that must not stay buried in a worker's stdout. See train_xgboost() in
+  // case_studies/fraud_detection/pipelines.py.
+  const mlflowWarning = run.metadata?.orchestrator_result?.mlflow_logging_warning;
+  if (mlflowWarning) {
+    sections.push(el("div", {},
+      el("h3", {}, "MLflow logging warning"),
+      el("p", { class: "muted" }, "Training succeeded; logging the run to MLflow did not."),
+      el("pre", { class: "log" }, mlflowWarning)));
+  }
+
   sections.push(el("div", { class: "grid-2" },
     el("div", { class: "card" },
       el("div", { class: "chart-title" }, "Run"),

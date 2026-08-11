@@ -6,6 +6,12 @@ The factory pattern keeps tests deterministic — each test creates a fresh
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import threading
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -23,6 +29,8 @@ from mlops_framework.api.routers import (
     runs,
     schedules,
 )
+
+_log = logging.getLogger("mlops_framework.api.scheduler")
 
 
 def create_app(
@@ -53,6 +61,7 @@ def create_app(
             "façade over an existing Week 1-3 manager; no new business "
             "logic is introduced here."
         ),
+        lifespan=_lifespan,
     )
 
     # API routers
@@ -73,78 +82,82 @@ def create_app(
 
         _mount_ui(app, templates_dir=ui_templates_dir)
 
-    _warm_mlflow_import(app)
-    _start_scheduler(app)
-
     return app
 
 
-def _start_scheduler(app: FastAPI) -> None:
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Startup/shutdown, replacing the deprecated ``@app.on_event`` pair.
+
+    Order matches what the two ``on_event("startup")`` handlers used to run
+    in registration order: warm mlflow first, then start the scheduler loop.
+    """
+    _warm_mlflow_import()
+    scheduler_task = _start_scheduler(app)
+    app.state.scheduler_task = scheduler_task
+    try:
+        yield
+    finally:
+        if scheduler_task is not None:
+            scheduler_task.cancel()
+
+
+def _start_scheduler(app: FastAPI) -> asyncio.Task | None:
     """Fire due Schedules on a background loop — off unless
     ``settings.scheduler_enabled`` is set (see ``config/settings.py``).
 
-    Uses ``asyncio.create_task`` rather than a thread (contrast
-    ``_warm_mlflow_import`` above): each tick does real DB and
-    training-orchestration work through ``run_due_schedules``, which is
-    worth cancelling cleanly on shutdown rather than leaving a daemon
-    thread to run mid-tick against a database connection the app is
-    tearing down.
+    Uses ``asyncio.create_task`` rather than a thread: each tick does real DB
+    and training-orchestration work through ``run_due_schedules``, which is
+    worth cancelling cleanly on shutdown rather than leaving a daemon thread
+    to run mid-tick against a database connection the app is tearing down.
 
     A tick's own failure (a bad cron expression that slipped past
     validation, a training run that raised) is caught and logged, not
     left to kill the loop — one broken schedule must not silently stop
     every other schedule from ever firing again.
+
+    Returns the created task, or ``None`` when the scheduler is disabled —
+    the caller stores it on ``app.state.scheduler_task`` either way, so
+    tests can assert on it without reaching into a closure.
     """
-    import logging
-
     from mlops_framework.config.settings import get_settings
-
-    _log = logging.getLogger("mlops_framework.api.scheduler")
 
     settings = get_settings()
     if not settings.scheduler_enabled:
-        return
+        return None
 
-    @app.on_event("startup")
-    async def _start() -> None:
-        import asyncio
+    async def _loop() -> None:
+        from mlops_framework.database.session import DatabaseManager
+        from mlops_framework.scheduling.runner import run_due_schedules
 
-        async def _loop() -> None:
-            from mlops_framework.database.session import DatabaseManager
-            from mlops_framework.scheduling.runner import run_due_schedules
+        db = DatabaseManager()
+        poll_seconds = get_settings().scheduler_poll_seconds
+        _log.info("scheduler loop started (poll every %.0fs)", poll_seconds)
+        while True:
+            try:
 
-            db = DatabaseManager()
-            poll_seconds = get_settings().scheduler_poll_seconds
-            _log.info("scheduler loop started (poll every %.0fs)", poll_seconds)
-            while True:
-                try:
-                    def _tick() -> list:
-                        with db.get_session() as session:
-                            return run_due_schedules(
-                                session, mlflow_tracking_uri=settings.mlflow_tracking_uri
-                            )
-
-                    results = await asyncio.to_thread(_tick)
-                    fired = [r for r in results if r.fired]
-                    if fired:
-                        _log.info(
-                            "scheduler tick: fired %d schedule(s): %s",
-                            len(fired), [r.schedule_id for r in fired],
+                def _tick() -> list:
+                    with db.get_session() as session:
+                        return run_due_schedules(
+                            session, mlflow_tracking_uri=settings.mlflow_tracking_uri
                         )
-                except Exception:  # noqa: BLE001 - one bad tick must not end the loop
-                    _log.exception("scheduler tick failed")
-                await asyncio.sleep(poll_seconds)
 
-        app.state.scheduler_task = asyncio.create_task(_loop())
+                results = await asyncio.to_thread(_tick)
+                fired = [r for r in results if r.fired]
+                if fired:
+                    _log.info(
+                        "scheduler tick: fired %d schedule(s): %s",
+                        len(fired),
+                        [r.schedule_id for r in fired],
+                    )
+            except Exception:  # noqa: BLE001 - one bad tick must not end the loop
+                _log.exception("scheduler tick failed")
+            await asyncio.sleep(poll_seconds)
 
-    @app.on_event("shutdown")
-    async def _stop() -> None:
-        task = getattr(app.state, "scheduler_task", None)
-        if task is not None:
-            task.cancel()
+    return asyncio.create_task(_loop())
 
 
-def _warm_mlflow_import(app: FastAPI) -> None:
+def _warm_mlflow_import() -> None:
     """Import mlflow in the background at boot when it will be needed.
 
     ``importing mlflow`` costs ~14s of CPU — it drags in pandas, sqlalchemy,
@@ -161,19 +174,13 @@ def _warm_mlflow_import(app: FastAPI) -> None:
     Failures are ignored: this is a cache warm, and the endpoint still
     reports a missing or unreachable MLflow properly on its own.
     """
-    import os
-
     if not os.environ.get("MLFLOW_TRACKING_URI"):
         return
 
-    @app.on_event("startup")
-    def _warm() -> None:
-        import threading
+    def _load() -> None:
+        try:
+            import mlflow  # noqa: F401
+        except Exception:  # pragma: no cover - environment dependent
+            pass
 
-        def _load() -> None:
-            try:
-                import mlflow  # noqa: F401
-            except Exception:  # pragma: no cover - environment dependent
-                pass
-
-        threading.Thread(target=_load, name="mlflow-warm", daemon=True).start()
+    threading.Thread(target=_load, name="mlflow-warm", daemon=True).start()

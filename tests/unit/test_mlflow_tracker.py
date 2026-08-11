@@ -153,10 +153,17 @@ def _install_fake_mlflow(monkeypatch) -> _FakeMlflow:
 # ---------------------------------------------------------------------- #
 
 
-def test_import_does_not_require_mlflow():
+def test_import_does_not_require_mlflow(monkeypatch):
     """Importing the mlflow module must not trigger an mlflow import."""
-    # Ensure mlflow is not importable.
-    sys.modules.pop("mlflow", None)
+    # Ensure mlflow is not importable. A bare sys.modules.pop() here used to
+    # leak past this test: every test file that does `import mlflow` at
+    # module scope had already bound the real module by collection time, but
+    # any code that imports mlflow *inside a function* (e.g.
+    # train_xgboost() in the fraud-detection case study) resolves it fresh
+    # from sys.modules on each call — and got a second, distinct module
+    # object for the rest of the process once this ran. monkeypatch.delitem
+    # restores the entry after this test instead.
+    monkeypatch.delitem(sys.modules, "mlflow", raising=False)
     sys.modules.pop("mlops_framework.tracking.mlflow", None)
     reloaded = importlib.import_module("mlops_framework.tracking.mlflow")
     # The module itself should be importable; only construction calls mlflow.

@@ -299,27 +299,42 @@ def train_xgboost(config: dict) -> dict:
     # Optional MLflow logging. We don't import mlflow at module level
     # so the case study still works when MLflow is unavailable.
     tracker_run_id = config.get("tracker_run_id")
+    mlflow_logging_warning: str | None = None
     if tracker_run_id:
         try:
             import mlflow  # type: ignore[import-not-found]
-
-            tracking_uri = config.get("tracking_uri")
-            if tracking_uri:
-                mlflow.set_tracking_uri(tracking_uri)
-            with mlflow.start_run(run_id=tracker_run_id):
-                mlflow.log_params(params)
-                mlflow.log_metrics(metrics)
-                mlflow.log_artifact(artifact_path)
-        except Exception as exc:  # pragma: no cover - env dependent
-            print(f"[fraud-xgboost] mlflow logging skipped: {exc}")
+        except ImportError:
+            # MLflow really isn't installed — a legitimate, silent skip.
+            pass
+        else:
+            try:
+                tracking_uri = config.get("tracking_uri")
+                if tracking_uri:
+                    mlflow.set_tracking_uri(tracking_uri)
+                with mlflow.start_run(run_id=tracker_run_id):
+                    mlflow.log_params(params)
+                    mlflow.log_metrics(metrics)
+                    mlflow.log_artifact(artifact_path)
+            except Exception as exc:  # pragma: no cover - env dependent
+                # A real failure here (most commonly a missing
+                # MLFLOW_S3_ENDPOINT_URL / AWS_ACCESS_KEY_ID / AWS_SECRET_
+                # ACCESS_KEY -> AccessDenied on the artifact upload) must
+                # not vanish into a worker's stdout — surface it on the
+                # run itself so it shows up on the Gateflow run-detail
+                # page instead of only in a log nobody is tailing.
+                mlflow_logging_warning = str(exc)
+                print(f"[fraud-xgboost] mlflow logging failed: {exc}")
 
     # Always emit a single-line JSON summary for the orchestrator.
     print(json.dumps({"params": params, "metrics": metrics}))
 
-    return {
+    result: dict[str, Any] = {
         "status": "SUCCESS",
         "metrics": metrics,
         "artifact_path": artifact_path,
         "params": params,
         "pipeline": "fraud-xgboost",
     }
+    if mlflow_logging_warning is not None:
+        result["mlflow_logging_warning"] = mlflow_logging_warning
+    return result
