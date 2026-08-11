@@ -776,7 +776,7 @@ input[type="checkbox"] { accent-color: var(--accent); cursor: pointer; }
   margin: 0 0 14px;
 }
 
-select, input[type="search"], input[type="text"] {
+select, input[type="search"], input[type="text"], input[type="number"] {
   font: inherit;
   font-size: 14px;
   padding: 6px 11px;
@@ -786,6 +786,31 @@ select, input[type="search"], input[type="text"] {
   color: var(--text);
 }
 select:focus, input:focus { border-color: var(--accent); }
+
+/* A create/edit form laid out as label-above-field pairs, wrapping at
+ * whatever width each field needs — used by Scheduling's "New
+ * schedule" card, the one form in the console (everything else is
+ * read-only; see initSchedules()). */
+.form-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+}
+.form-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* A table cell holding 2-3 small action buttons side by side. */
+.row-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.row-actions .btn { padding: 4px 10px; font-size: 12.5px; }
 
 /* Secondary (default) + primary pair, à la Stripe/Linear: a quiet
  * neutral button for most actions, a solid-fill accent button for the

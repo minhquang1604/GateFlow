@@ -1,0 +1,23 @@
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Scheduling</span>
+    </nav>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Scheduling</h1>
+        <p class="page-desc">
+          Train a model again on a cron cadence, independent of drift —
+          the framework still runs it through the same readiness,
+          eligibility and promotion chain as every other run.
+        </p>
+      </div>
+      <div class="page-actions">
+        <button id="refresh" class="btn">Refresh</button>
+        <button id="new-schedule-btn" class="btn primary">New schedule</button>
+      </div>
+    </div>
+
+    <div id="schedule-form-host"></div>
+    <div id="schedule-status"></div>
+    <div id="schedules-out"></div>
+<script>initSchedules();</script>

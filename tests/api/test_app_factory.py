@@ -46,27 +46,32 @@ class TestFullAppBoot:
         client = TestClient(in_memory_app)
         # UI
         for path in (
-            "/", "/dashboard", "/datasets", "/runs", "/models", "/lineage",
-            "/experiments", "/pipelines",
+            "/", "/dashboard", "/datasets", "/runs", "/models", "/schedules",
+            "/lineage", "/experiments", "/pipelines",
         ):
             assert client.get(path).status_code == 200
         # Static assets
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/favicon.svg").status_code == 200
-        # OpenAPI exposes 39 distinct /api paths: 16 read endpoints over the
-        # framework's own rows (readiness + drift included), 14 that proxy
+        # OpenAPI exposes 47 distinct /api paths: 16 read endpoints over the
+        # framework's own rows (readiness + drift included), 19 that proxy
         # the systems a run executed on (Airflow: health/import-errors/pools,
         # DAG list, DAG detail, per-run tasks, per-task log; MLflow: the
-        # per-run view, experiments, the leaderboard, artifact listing and
-        # download, the model descriptor, the sweep tree, the
-        # registered-model list and the registry reconciliation), and 9
-        # under /internal (mlops_framework.api.routers.internal) — the
-        # DAG's callbacks plus the write endpoints, which are the only
-        # route into the deployed database from outside the VPC.
+        # per-run view, experiments, the leaderboard, the registered-model
+        # list, the registry reconciliation, and — each doubled, once scoped
+        # to a framework run id and once to a raw MLflow run id, see
+        # mlflow_views.py's ``_by_mlflow_id`` siblings — the single-run
+        # summary, artifact listing, artifact download, the model
+        # descriptor, and the sweep tree), 3 for cron scheduling
+        # (api/routers/schedules.py — list/create, get/update/delete,
+        # run-now), and 9 under /internal
+        # (mlops_framework.api.routers.internal) — the DAG's callbacks plus
+        # the write endpoints, which are the only route into the deployed
+        # database from outside the VPC.
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 39, f"Expected 39, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 47, f"Expected 47, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
         external = [
@@ -78,7 +83,7 @@ class TestFullAppBoot:
             or "airflow" in p
             or p.endswith(("/tasks", "/model-info", "/nested", "/log"))
         ]
-        assert len(external) == 14, external
+        assert len(external) == 19, external
 
     def test_app_without_ui(self, in_memory_app):
         # Build a second app with UI disabled

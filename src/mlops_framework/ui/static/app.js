@@ -594,11 +594,22 @@ async function initDatasetDetail(id) {
 /* Runs — Airflow-flavoured list with MLflow-style comparison          */
 /* ------------------------------------------------------------------ */
 
+// Runs page: the framework's own Training runs by default, or — once
+// an experiment is picked — MLflow's own ranked view of that
+// experiment's runs (including ones this framework never started).
+// One page, one nav entry; see the module-level note above app.js's
+// history for why these used to be two ("Training runs" vs
+// "Experiments") and aren't anymore.
 async function initRuns() {
-  const table = document.querySelector("table");
+  const out = document.getElementById("runs-out");
   const statusFilter = document.getElementById("status-filter");
   const search = document.getElementById("search");
   const compareBtn = document.getElementById("compare-btn");
+  const expFilter = document.getElementById("experiment-filter");
+  const rankByLabel = document.getElementById("rank-by-label");
+  const rankBy = document.getElementById("rank-by");
+  const rankDir = document.getElementById("rank-dir");
+  const filterInput = document.getElementById("filter-string");
   const selected = new Set();
 
   function updateCompare() {
@@ -607,17 +618,43 @@ async function initRuns() {
       ? `Compare ${selected.size} run${selected.size > 1 ? "s" : ""}`
       : "Compare runs";
   }
-
   compareBtn.addEventListener("click", () => {
     location.href = `/runs/compare?ids=${[...selected].join(",")}`;
   });
 
-  async function load() {
+  // Populate the experiment picker, best-effort — MLflow may be down,
+  // in which case this page just stays in "framework" mode. Pre-select
+  // from ?experiment=<id> so a link from elsewhere (a run's provenance
+  // card, an old /experiments/{id} bookmark — see the redirect in
+  // mount.py) lands directly in that experiment's own view.
+  const preselected = new URLSearchParams(location.search).get("experiment") || "";
+  try {
+    const p = await api("/mlflow/experiments");
+    if (p.available) {
+      const experiments = (p.data.experiments || []).filter((e) => e.lifecycle_stage === "active");
+      expFilter.append(...experiments.map((e) => el("option", { value: e.experiment_id }, e.name)));
+      if (preselected && experiments.some((e) => e.experiment_id === preselected)) {
+        expFilter.value = preselected;
+      }
+    }
+  } catch { /* the picker is a bonus, not a requirement */ }
+
+  function setMode(isExperiment) {
+    statusFilter.hidden = isExperiment;
+    rankByLabel.hidden = !isExperiment;
+    rankBy.hidden = !isExperiment;
+    rankDir.hidden = !isExperiment;
+    filterInput.hidden = !isExperiment;
+  }
+
+  let metricsSeen = null; // populated once per experiment selection
+
+  async function loadFrameworkRuns() {
     let all;
     try {
       all = await api("/training-runs?limit=500");
     } catch (e) {
-      setError(table.parentElement, e);
+      setError(out, e);
       return;
     }
     const q = (search.value || "").toLowerCase();
@@ -627,6 +664,8 @@ async function initRuns() {
       (!q || `${r.id} ${r.pipeline_id || ""} ${r.orchestrator || ""}`.toLowerCase().includes(q)));
 
     const maxDur = Math.max(...rows.map((r) => r.duration_seconds || 0), 1);
+    const table = el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}));
+    out.replaceChildren(el("div", { class: "table-wrap" }, table));
 
     makeSortable(table, rows,
       [
@@ -673,9 +712,123 @@ async function initRuns() {
     updateCompare();
   }
 
+  async function loadExperimentRuns(experimentId) {
+    out.replaceChildren(el("div", { class: "card muted" }, "Loading…"));
+
+    // Framework runs carry the MLflow run id, so a leaderboard row can
+    // point back at the run that produced it; runs with none link to
+    // the bare-MLflow run-detail page instead (see initMlflowRunDetail).
+    let byMlflowId = new Map();
+    try {
+      const runs = await api("/training-runs?limit=500");
+      byMlflowId = new Map(runs.filter((r) => r.mlflow_run_id).map((r) => [r.mlflow_run_id, r.id]));
+    } catch { /* the cross-link is a bonus, not a requirement */ }
+
+    const params = new URLSearchParams({ limit: "100", direction: rankDir.value });
+    if (rankBy.value) params.set("order_by", rankBy.value);
+    if (filterInput.value.trim()) params.set("filter_string", filterInput.value.trim());
+
+    let p;
+    try {
+      p = await api(`/mlflow/experiments/${encodeURIComponent(experimentId)}/runs?${params}`);
+    } catch (e) {
+      setError(out, e);
+      return;
+    }
+    if (!p.available) {
+      out.replaceChildren(banner(p.reason, "warn"));
+      return;
+    }
+
+    const runs = p.data.runs || [];
+    const metricKeys = [...new Set(runs.flatMap((r) => Object.keys(r.metrics || {})))].sort();
+
+    // Populate the rank-by choices once per experiment, from what its
+    // runs actually have.
+    if (metricsSeen === null && metricKeys.length) {
+      metricsSeen = metricKeys;
+      rankBy.replaceChildren(
+        el("option", { value: "" }, "start time"),
+        ...metricKeys.map((k) => el("option", { value: k }, k)));
+      const preferred = METRIC_PRIORITY.find((m) => metricKeys.includes(m));
+      if (preferred) {
+        rankBy.value = preferred;
+        await loadExperimentRuns(experimentId);
+        return;
+      }
+    }
+
+    const shown = metricKeys.filter((k) => METRIC_PRIORITY.includes(k) || k === rankBy.value);
+    const best = {};
+    for (const k of shown) {
+      best[k] = Math.max(...runs.map((r) => (r.metrics || {})[k] ?? -Infinity));
+    }
+
+    const table = el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "#"), el("th", {}, "Run"), el("th", {}, "Status"),
+        ...shown.map((k) => el("th", {}, k)),
+        el("th", {}, "Training run"), el("th", {}, "Started"))),
+      el("tbody", {}, ...(runs.length ? runs.map((r, i) => {
+        const fwId = byMlflowId.get(r.run_id);
+        return el("tr", {},
+          el("td", { class: "num" }, String(i + 1)),
+          el("td", {}, el("a", {
+            class: "mono", title: r.run_id,
+            href: fwId ? `/runs/${fwId}` : `/mlflow-runs/${encodeURIComponent(r.run_id)}`,
+          }, r.run_name || r.run_id.slice(0, 8))),
+          el("td", {}, statusBadge(r.status)),
+          ...shown.map((k) => {
+            const v = (r.metrics || {})[k];
+            const isBest = typeof v === "number" && v === best[k] && runs.length > 1;
+            return el("td", { class: "num" },
+              isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v)) : fmt.metric(v));
+          }),
+          el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
+                            : el("span", { class: "faint" }, "—")),
+          el("td", { class: "muted nowrap" }, fmt.ago(r.start_time)));
+      }) : [emptyRow(shown.length + 5, "No runs matched.")])));
+
+    const headline = rankBy.value || METRIC_PRIORITY.find((m) => shown.includes(m));
+    const chart = headline && runs.length > 1
+      ? barChart(`${headline} by run`, runs.slice(0, 12).map((r) => ({
+          label: r.run_name || r.run_id.slice(0, 6),
+          value: (r.metrics || {})[headline] ?? 0,
+        })))
+      : null;
+
+    mount(out,
+      el("p", { class: "muted", style: "margin:0 0 10px" },
+        `${runs.length} run${runs.length === 1 ? "" : "s"} · ordered by ${p.data.order_by}`),
+      el("div", { class: "table-wrap" }, table),
+      chart ? el("div", { style: "margin-top:16px;max-width:560px" }, chart) : null);
+  }
+
+  async function load() {
+    if (expFilter.value) {
+      setMode(true);
+      await loadExperimentRuns(expFilter.value);
+    } else {
+      setMode(false);
+      await loadFrameworkRuns();
+    }
+  }
+
+  expFilter.addEventListener("change", () => {
+    metricsSeen = null;
+    const url = new URL(location);
+    if (expFilter.value) url.searchParams.set("experiment", expFilter.value);
+    else url.searchParams.delete("experiment");
+    history.replaceState(null, "", url);
+    load();
+  });
   statusFilter.addEventListener("change", load);
   search.addEventListener("input", load);
   document.getElementById("refresh").addEventListener("click", load);
+  rankBy.addEventListener("change", load);
+  rankDir.addEventListener("change", load);
+  filterInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+
   await load();
 }
 
@@ -842,10 +995,28 @@ async function initRunDetail(id) {
   const modelPanel = el("div", {});
   sections.push(mlPanel, nestedPanel, artifactPanel, modelPanel);
 
-  api(`/training-runs/${id}/mlflow`).then((p) => {
+  renderMlflowSummary(mlPanel, `/training-runs/${id}/mlflow`, run);
+
+  if (run.mlflow_run_id) {
+    const basePath = `/training-runs/${id}`;
+    renderNestedRuns(nestedPanel, basePath);
+    renderArtifacts(artifactPanel, basePath, "");
+    renderModelInfo(modelPanel, basePath);
+  }
+
+  mount(body, ...sections);
+}
+
+// Provenance, training curves, system resources — the "MLflow" card on
+// both the framework run-detail page (``url`` = /training-runs/{id}/mlflow)
+// and the bare-MLflow run-detail page (``url`` = /mlflow/runs/{id}).
+// ``run`` is the framework TrainingRun object when there is one, for
+// datasetInputsCard's cross-link to framework lineage — null otherwise.
+function renderMlflowSummary(host, url, run) {
+  api(url).then((p) => {
     if (!p.available) {
-      if (run.mlflow_run_id) {
-        mlPanel.replaceChildren(el("h3", {}, "MLflow"), banner(p.reason, "warn"));
+      if (!run || run.mlflow_run_id) {
+        host.replaceChildren(el("h3", {}, "MLflow"), banner(p.reason, "warn"));
       }
       return;
     }
@@ -866,7 +1037,7 @@ async function initRunDetail(id) {
       .filter(([, series]) => series.length > 1)
       .map(([name, series]) => lineChart(name.replace(/^system\//, ""), series));
 
-    mount(mlPanel,
+    mount(host,
       el("div", { class: "section-head" },
         el("h3", {}, "MLflow"),
         el("a", { class: "faint", href: deepLink, target: "_blank", rel: "noopener" },
@@ -889,14 +1060,35 @@ async function initRunDetail(id) {
             el("div", { class: "grid-3" }, ...sysCharts))
         : null);
   }).catch(() => {});
+}
 
-  if (run.mlflow_run_id) {
-    renderNestedRuns(nestedPanel, id);
-    renderArtifacts(artifactPanel, id, "");
-    renderModelInfo(modelPanel, id);
-  }
+// The bare-MLflow-run detail page: everything initRunDetail() shows
+// under its "MLflow" heading, for a run this framework has no
+// TrainingRun row for at all — reached from /runs?experiment={id}'s
+// leaderboard, for whichever rows have no "Training run" cross-link
+// (see initRuns()'s loadExperimentRuns()).
+async function initMlflowRunDetail(mlflowRunId) {
+  const head = document.getElementById("run-head");
+  const body = document.getElementById("run-body");
+  const basePath = `/mlflow/runs/${encodeURIComponent(mlflowRunId)}`;
 
-  mount(body, ...sections);
+  head.replaceChildren(
+    el("div", { class: "breadcrumb" },
+      el("a", { href: "/runs" }, "Runs"), " / ", mlflowRunId.slice(0, 12)),
+    el("h2", {}, "MLflow run ", el("span", { class: "mono" }, mlflowRunId)),
+    el("p", { class: "subtitle" },
+      "Not a training run this framework started — no TrainingRun record, just what MLflow itself holds."));
+
+  const mlPanel = el("div", {});
+  const nestedPanel = el("div", {});
+  const artifactPanel = el("div", {});
+  const modelPanel = el("div", {});
+  mount(body, mlPanel, nestedPanel, artifactPanel, modelPanel);
+
+  renderMlflowSummary(mlPanel, basePath, null);
+  renderNestedRuns(nestedPanel, basePath);
+  renderArtifacts(artifactPanel, basePath, "");
+  renderModelInfo(modelPanel, basePath);
 }
 
 /* ------------------------------------------------------------------ */
@@ -927,7 +1119,7 @@ function provenanceCard(d) {
   if (info.experiment_id != null) {
     rows.push(el("dt", {}, "Experiment"));
     rows.push(el("dd", {},
-      el("a", { href: `/experiments/${encodeURIComponent(info.experiment_id)}` },
+      el("a", { href: `/runs?experiment=${encodeURIComponent(info.experiment_id)}` },
         `#${info.experiment_id}`)));
   }
   // MLflow's own view of the run, which can disagree with the framework's
@@ -1000,8 +1192,12 @@ function datasetInputsCard(inputs, run) {
       : null);
 }
 
-function renderNestedRuns(host, runId) {
-  api(`/training-runs/${runId}/nested`).then((p) => {
+// ``basePath`` is either `/training-runs/{id}` (framework run) or
+// `/mlflow/runs/{id}` (bare MLflow run, no framework row) — see
+// initRunDetail() and initMlflowRunDetail(), which share these three
+// render functions rather than each keeping its own copy.
+function renderNestedRuns(host, basePath) {
+  api(`${basePath}/nested`).then((p) => {
     if (!p.available) return;  // the MLflow panel above already said why
     const d = p.data;
     if (!d.parent && !(d.children || []).length) return;  // a standalone run
@@ -1055,11 +1251,11 @@ const TEXT_RE = /\.(txt|json|ya?ml|csv|md|log|cfg|ini|requirements)$/i;
 // Renders one directory of a run's artifacts, and recurses on click. Kept
 // as an explicit re-render rather than a tree widget: the API is already
 // per-directory, so this matches what the server can answer in one call.
-function renderArtifacts(host, runId, path) {
+function renderArtifacts(host, basePath, path) {
   host.replaceChildren(el("h3", {}, "Artifacts"),
     el("div", { class: "card muted" }, "Loading…"));
 
-  api(`/training-runs/${runId}/artifacts?path=${encodeURIComponent(path)}`).then((p) => {
+  api(`${basePath}/artifacts?path=${encodeURIComponent(path)}`).then((p) => {
     if (!p.available) {
       host.replaceChildren(el("h3", {}, "Artifacts"), banner(p.reason, "warn"));
       return;
@@ -1067,19 +1263,19 @@ function renderArtifacts(host, runId, path) {
     const entries = p.data.entries || [];
     const crumbs = el("div", { class: "breadcrumb" },
       el("a", { href: "#", onclick: "return false" }, "artifacts"));
-    crumbs.firstChild.addEventListener("click", () => renderArtifacts(host, runId, ""));
+    crumbs.firstChild.addEventListener("click", () => renderArtifacts(host, basePath, ""));
     let acc = "";
     for (const part of (path ? path.split("/") : [])) {
       acc = acc ? `${acc}/${part}` : part;
       const here = acc;
       crumbs.appendChild(document.createTextNode(" / "));
       const link = el("a", { href: "#" }, part);
-      link.addEventListener("click", (e) => { e.preventDefault(); renderArtifacts(host, runId, here); });
+      link.addEventListener("click", (e) => { e.preventDefault(); renderArtifacts(host, basePath, here); });
       crumbs.appendChild(link);
     }
 
     const rawUrl = (p2) =>
-      `${API}/training-runs/${runId}/artifacts/raw?path=${encodeURIComponent(p2)}`;
+      `${API}${basePath}/artifacts/raw?path=${encodeURIComponent(p2)}`;
 
     const list = el("div", { class: "table-wrap" },
       el("table", {},
@@ -1091,7 +1287,7 @@ function renderArtifacts(host, runId, path) {
             const a = el("a", { href: "#" }, `${e.name}/`);
             a.addEventListener("click", (ev) => {
               ev.preventDefault();
-              renderArtifacts(host, runId, e.path);
+              renderArtifacts(host, basePath, e.path);
             });
             nameCell.appendChild(a);
           } else {
@@ -1137,8 +1333,8 @@ function renderArtifacts(host, runId, path) {
   }).catch(() => {});
 }
 
-function renderModelInfo(host, runId) {
-  api(`/training-runs/${runId}/model-info`).then((p) => {
+function renderModelInfo(host, basePath) {
+  api(`${basePath}/model-info`).then((p) => {
     if (!p.available) {
       host.replaceChildren(el("h3", {}, "Model"), banner(p.reason, "warn"));
       return;
@@ -1330,35 +1526,58 @@ async function initModelDetail(id) {
       el("p", { class: "subtitle" }, model.description || "No description",
         model.task ? el("span", { class: "faint" }, `  ·  ${model.task}`) : null));
 
+    // Best-effort: registry-reconciliation is an ExternalPanel (MLflow may
+    // be down/unconfigured), so its columns are added to the table once it
+    // resolves rather than blocking the framework's own data from showing.
+    // This *is* the "does Gateflow's registry match MLflow's" answer — see
+    // renderRegistrySummary below for the same call's top-of-page banner.
     const reconcilePanel = el("div", {});
     const ordered = versions.slice().reverse();
     const metricKeys = [...new Set(versions.flatMap((v) => Object.keys(v.metrics || {})))]
       .filter((k) => METRIC_PRIORITY.includes(k))
       .sort((a, b) => METRIC_PRIORITY.indexOf(a) - METRIC_PRIORITY.indexOf(b));
 
-    const table = el("table", {},
-      el("thead", {}, el("tr", {},
-        el("th", {}, "Version"), el("th", {}, "State"),
-        ...metricKeys.map((k) => el("th", {}, k)),
-        el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"))),
-      el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
-        const best = {};
-        for (const k of metricKeys) {
-          best[k] = Math.max(...versions.map((x) => (x.metrics || {})[k] ?? -Infinity));
-        }
-        return el("tr", {},
-          el("td", {}, el("strong", {}, `v${v.version_number}`)),
-          el("td", {}, statusBadge(v.state)),
-          ...metricKeys.map((k) => {
-            const val = (v.metrics || {})[k];
-            const isBest = typeof val === "number" && val === best[k] && versions.length > 1;
-            return el("td", { class: "num" },
-              isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(val)) : fmt.metric(val));
-          }),
-          el("td", {}, v.training_run_id ? el("a", { href: `/runs/${v.training_run_id}` }, `#${v.training_run_id}`) : "—"),
-          el("td", { class: "muted" }, v.dataset_version_id ? `#${v.dataset_version_id}` : "—"),
-          el("td", { class: "muted nowrap" }, fmt.ago(v.created_at)));
-      }) : [emptyRow(metricKeys.length + 5, "No versions registered yet.")])));
+    const tableHost = el("div", { class: "table-wrap" },
+      el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}, emptyRow(1, "Loading…"))));
+
+    function renderVersionsTable(byVersionId) {
+      const table = el("table", {},
+        el("thead", {}, el("tr", {},
+          el("th", {}, "Version"), el("th", {}, "State"),
+          ...metricKeys.map((k) => el("th", {}, k)),
+          el("th", {}, "MLflow"), el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"))),
+        el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
+          const best = {};
+          for (const k of metricKeys) {
+            best[k] = Math.max(...versions.map((x) => (x.metrics || {})[k] ?? -Infinity));
+          }
+          const reg = byVersionId.get(v.id);
+          return el("tr", {},
+            el("td", {}, el("strong", {}, `v${v.version_number}`)),
+            el("td", {}, statusBadge(v.state),
+              reg?.drift ? el("span", { class: "badge failed", style: "margin-left:6px", title: reg.drift_reason || "" }, "MLflow disagrees") : null),
+            ...metricKeys.map((k) => {
+              const val = (v.metrics || {})[k];
+              const isBest = typeof val === "number" && val === best[k] && versions.length > 1;
+              return el("td", { class: "num" },
+                isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(val)) : fmt.metric(val));
+            }),
+            el("td", {}, reg == null
+              ? el("span", { class: "faint" }, "…")
+              : !reg.in_mlflow_registry
+              ? el("span", { class: "faint" }, "not registered")
+              : el("span", { class: "mono" },
+                  `v${reg.mlflow_version}`,
+                  reg.mlflow_aliases?.length ? ` @${reg.mlflow_aliases.join(", @")}` : "",
+                  reg.mlflow_stage && reg.mlflow_stage !== "None" ? ` (${reg.mlflow_stage})` : "")),
+            el("td", {}, v.training_run_id ? el("a", { href: `/runs/${v.training_run_id}` }, `#${v.training_run_id}`) : "—"),
+            el("td", { class: "muted" }, v.dataset_version_id ? `#${v.dataset_version_id}` : "—"),
+            el("td", { class: "muted nowrap" }, fmt.ago(v.created_at)));
+        }) : [emptyRow(metricKeys.length + 6, "No versions registered yet.")])));
+      tableHost.replaceChildren(table);
+    }
+
+    renderVersionsTable(new Map());
 
     const prod = versions.find((v) => v.state === "PRODUCTION");
     const chart = metricKeys.length && versions.length > 1
@@ -1377,17 +1596,197 @@ async function initModelDetail(id) {
           el("dt", {}, "Artifact"), el("dd", {}, prod.artifact_uri || "—"),
           el("dt", {}, "Training run"), el("dd", {}, prod.training_run_id ? `#${prod.training_run_id}` : "—"),
           el("dt", {}, "Promoted"), el("dd", {}, fmt.time(prod.created_at)))) : null,
+      reconcilePanel,
       el("h3", {}, "Versions"),
-      el("div", { class: "table-wrap" }, table),
+      tableHost,
       chart ? el("div", { style: "margin-top:16px;max-width:520px" }, chart) : null,
       prod ? el("p", { style: "margin-top:16px" },
-        el("a", { class: "btn", href: `/lineage?kind=model-version&id=${prod.id}` }, "View lineage")) : null,
-      reconcilePanel);
+        el("a", { class: "btn", href: `/lineage?kind=model-version&id=${prod.id}` }, "View lineage")) : null);
 
-    renderRegistryReconciliation(reconcilePanel, id);
+    renderRegistrySummary(reconcilePanel, id, renderVersionsTable);
   } catch (e) {
     setError(body, e);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Scheduling                                                           */
+/* ------------------------------------------------------------------ */
+
+function humanizeCron(expr) {
+  // A handful of common shapes rendered in words; anything else just
+  // shows the raw expression — not a full cron humanizer, which is
+  // more machinery than a tooltip needs.
+  const m = (expr || "").trim().split(/\s+/);
+  if (m.length !== 5) return expr;
+  const [min, hour, dom, mon, dow] = m;
+  const at = (h, mi) => `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}`;
+  if (dom === "*" && mon === "*" && dow === "*") {
+    if (/^\d+$/.test(min) && /^\d+$/.test(hour)) return `daily at ${at(hour, min)}`;
+    if (min === "*" && hour === "*") return "every minute";
+    if (min.startsWith("*/") && hour === "*") return `every ${min.slice(2)} minutes`;
+  }
+  if (dom === "*" && mon === "*" && /^\d+$/.test(dow) && /^\d+$/.test(min) && /^\d+$/.test(hour)) {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return `weekly on ${days[Number(dow)] ?? dow} at ${at(hour, min)}`;
+  }
+  if (/^\d+$/.test(dom) && mon === "*" && dow === "*" && /^\d+$/.test(min) && /^\d+$/.test(hour)) {
+    return `monthly on day ${dom} at ${at(hour, min)}`;
+  }
+  return expr;
+}
+
+async function initSchedules() {
+  const formHost = document.getElementById("schedule-form-host");
+  const statusHost = document.getElementById("schedule-status");
+  const out = document.getElementById("schedules-out");
+  const newBtn = document.getElementById("new-schedule-btn");
+
+  let models = [], datasets = [];
+  try {
+    [models, datasets] = await Promise.all([api("/models"), api("/datasets")]);
+  } catch (e) {
+    setError(out, e);
+    return;
+  }
+
+  function flash(msg, kind = "") {
+    statusHost.replaceChildren(banner(msg, kind));
+    setTimeout(() => { if (statusHost.firstChild?.textContent === msg) statusHost.replaceChildren(); }, 6000);
+  }
+
+  async function load() {
+    let schedules;
+    try {
+      schedules = await api("/schedules");
+    } catch (e) {
+      setError(out, e);
+      return;
+    }
+
+    const table = el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "Model"), el("th", {}, "Dataset"), el("th", {}, "Cron"),
+        el("th", {}, "Status"), el("th", {}, "Next fire"), el("th", {}, "Last run"),
+        el("th", {}, ""))),
+      el("tbody", {}, ...(schedules.length ? schedules.map((s) => {
+        const toggleBtn = el("button", { class: "btn" }, s.enabled ? "Disable" : "Enable");
+        toggleBtn.addEventListener("click", async () => {
+          try {
+            await api(`/schedules/${s.id}`, {
+              method: "PATCH", body: JSON.stringify({ enabled: !s.enabled }),
+            });
+            flash(`Schedule #${s.id} ${s.enabled ? "disabled" : "enabled"}.`, "ok");
+            load();
+          } catch (e) { flash(e.message, "err"); }
+        });
+
+        const runNowBtn = el("button", { class: "btn" }, "Run now");
+        runNowBtn.addEventListener("click", async () => {
+          runNowBtn.disabled = true;
+          runNowBtn.textContent = "Running…";
+          try {
+            const result = await api(`/schedules/${s.id}/run-now`, { method: "POST" });
+            flash(
+              result.fired
+                ? `Schedule #${s.id} ran — promoted=${result.promoted} (training run #${result.training_run_id}).`
+                : `Schedule #${s.id} did not fire: ${result.skipped_reason}.`,
+              result.fired && result.promoted ? "ok" : "warn",
+            );
+            load();
+          } catch (e) {
+            flash(e.message, "err");
+            runNowBtn.disabled = false;
+            runNowBtn.textContent = "Run now";
+          }
+        });
+
+        const deleteBtn = el("button", { class: "btn" }, "Delete");
+        deleteBtn.addEventListener("click", async () => {
+          if (!confirm(`Delete schedule #${s.id}? This cannot be undone.`)) return;
+          try {
+            await api(`/schedules/${s.id}`, { method: "DELETE" });
+            flash(`Schedule #${s.id} deleted.`, "ok");
+            load();
+          } catch (e) { flash(e.message, "err"); }
+        });
+
+        return el("tr", {},
+          el("td", {}, s.model_name
+            ? el("a", { href: `/models/${s.model_id}` }, s.model_name)
+            : `#${s.model_id}`),
+          el("td", { class: "muted" }, s.dataset_name || `#${s.dataset_id}`),
+          el("td", {},
+            el("span", { title: s.cron_expression }, humanizeCron(s.cron_expression)),
+            el("div", { class: "faint mono", style: "font-size:11px" }, s.cron_expression)),
+          el("td", {}, s.enabled
+            ? el("span", { class: "badge success" }, "enabled")
+            : el("span", { class: "faint" }, "disabled")),
+          el("td", { class: "muted nowrap" }, s.enabled ? fmt.time(s.next_fire_at) : "—"),
+          el("td", {}, s.last_training_run_id
+            ? el("a", { href: `/runs/${s.last_training_run_id}` }, `#${s.last_training_run_id}`)
+            : el("span", { class: "faint" }, "never")),
+          el("td", { class: "row-actions" }, toggleBtn, runNowBtn, deleteBtn));
+      }) : [emptyRow(7, "No schedules yet — click “New schedule” to add one.")])));
+
+    out.replaceChildren(el("div", { class: "table-wrap" }, table));
+  }
+
+  function showForm() {
+    if (!models.length || !datasets.length) {
+      formHost.replaceChildren(banner(
+        "Create a model and a dataset (with at least one version) first — "
+        + "a schedule needs both to know what to train.", "warn"));
+      return;
+    }
+    const modelSel = el("select", {}, ...models.map((m) => el("option", { value: m.id }, m.name)));
+    const datasetSel = el("select", {}, ...datasets.map((d) => el("option", { value: d.id }, d.name)));
+    const pipelineInput = el("input", { type: "text", placeholder: "package.module:callable", size: "34" });
+    const cronInput = el("input", { type: "text", placeholder: "0 2 * * *", size: "16" });
+    const minF1Input = el("input", { type: "number", step: "0.01", min: "0", max: "1", value: "0.0", size: "6" });
+    const submitBtn = el("button", { class: "btn primary" }, "Create");
+    const cancelBtn = el("button", { class: "btn" }, "Cancel");
+
+    submitBtn.addEventListener("click", async () => {
+      if (!pipelineInput.value.trim() || !cronInput.value.trim()) {
+        flash("Pipeline id and cron expression are both required.", "err");
+        return;
+      }
+      try {
+        await api("/schedules", {
+          method: "POST",
+          body: JSON.stringify({
+            model_id: Number(modelSel.value),
+            dataset_id: Number(datasetSel.value),
+            pipeline_id: pipelineInput.value.trim(),
+            cron_expression: cronInput.value.trim(),
+            min_f1: Number(minF1Input.value) || 0,
+          }),
+        });
+        formHost.replaceChildren();
+        flash("Schedule created.", "ok");
+        load();
+      } catch (e) {
+        flash(e.message, "err");
+      }
+    });
+    cancelBtn.addEventListener("click", () => formHost.replaceChildren());
+
+    formHost.replaceChildren(
+      el("div", { class: "card", style: "margin-bottom:16px" },
+        el("div", { class: "chart-title" }, "New schedule"),
+        el("div", { class: "form-grid" },
+          el("label", {}, "Model", modelSel),
+          el("label", {}, "Dataset", datasetSel),
+          el("label", {}, "Pipeline entrypoint", pipelineInput),
+          el("label", {}, "Cron expression", cronInput),
+          el("label", {}, "Min F1 to promote", minF1Input)),
+        el("div", { style: "margin-top:12px;display:flex;gap:8px" }, submitBtn, cancelBtn)));
+  }
+
+  newBtn.addEventListener("click", showForm);
+  document.getElementById("refresh").addEventListener("click", load);
+  await load();
 }
 
 /* ------------------------------------------------------------------ */
@@ -1485,200 +1884,31 @@ async function initLineage() {
   }
 }
 
-/* ------------------------------------------------------------------ */
-/* Experiments (MLflow)                                                */
-/* ------------------------------------------------------------------ */
-
-async function initExperiments() {
-  const out = document.getElementById("experiments-out");
-  let p;
-  try {
-    p = await api("/mlflow/experiments");
-  } catch (e) {
-    setError(out, e);
-    return;
-  }
-  if (!p.available) {
-    out.replaceChildren(banner(p.reason, "warn"));
-    return;
-  }
-
-  // Deleted experiments stay in MLflow's store; showing them alongside the
-  // live ones would misrepresent what is actually being tracked.
-  const rows = (p.data.experiments || []).filter((e) => e.lifecycle_stage === "active");
-  const table = el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}));
-  out.replaceChildren(el("div", { class: "table-wrap" }, table));
-
-  makeSortable(table, rows,
-    [
-      { label: "Experiment", sort: (e) => e.name },
-      { label: "ID", sort: (e) => e.experiment_id },
-      { label: "Artifact location" },
-      { label: "Created", sort: (e) => e.creation_time },
-    ],
-    (e) => el("tr", {},
-      el("td", {}, el("a", { href: `/experiments/${encodeURIComponent(e.experiment_id)}` }, e.name)),
-      el("td", { class: "mono" }, e.experiment_id),
-      el("td", { class: "mono faint truncate", title: e.artifact_location || "" },
-        e.artifact_location || "—"),
-      el("td", { class: "muted nowrap" }, fmt.ago(e.creation_time))));
-}
-
-async function initExperimentDetail(experimentId) {
-  const head = document.getElementById("exp-head");
-  const body = document.getElementById("exp-body");
-  const rankBy = document.getElementById("rank-by");
-  const rankDir = document.getElementById("rank-dir");
-  const filterInput = document.getElementById("filter-string");
-
-  mount(head,
-    el("div", { class: "breadcrumb" },
-      el("a", { href: "/experiments" }, "Experiments"), " / ", experimentId),
-    el("h2", {}, `Experiment ${experimentId}`),
-    el("p", { class: "subtitle" },
-      "Runs ranked server-side by MLflow. Runs this framework started link back to their training run."));
-
-  // Framework runs carry the MLflow run id, so a leaderboard row can point
-  // back at the run that produced it.
-  let byMlflowId = new Map();
-  try {
-    const runs = await api("/training-runs?limit=500");
-    byMlflowId = new Map(runs.filter((r) => r.mlflow_run_id).map((r) => [r.mlflow_run_id, r.id]));
-  } catch { /* the cross-link is a bonus, not a requirement */ }
-
-  let metricsSeen = null;
-
-  async function load() {
-    body.replaceChildren(el("div", { class: "card muted" }, "Loading…"));
-    const params = new URLSearchParams({ limit: "100", direction: rankDir.value });
-    if (rankBy.value) params.set("order_by", rankBy.value);
-    if (filterInput.value.trim()) params.set("filter_string", filterInput.value.trim());
-
-    let p;
-    try {
-      p = await api(`/mlflow/experiments/${encodeURIComponent(experimentId)}/runs?${params}`);
-    } catch (e) {
-      setError(body, e);
-      return;
-    }
-    if (!p.available) {
-      body.replaceChildren(banner(p.reason, "warn"));
-      return;
-    }
-
-    const runs = p.data.runs || [];
-    const metricKeys = [...new Set(runs.flatMap((r) => Object.keys(r.metrics || {})))].sort();
-
-    // Populate the rank-by choices once, from what the runs actually have.
-    if (metricsSeen === null && metricKeys.length) {
-      metricsSeen = metricKeys;
-      rankBy.replaceChildren(
-        el("option", { value: "" }, "start time"),
-        ...metricKeys.map((k) => el("option", { value: k }, k)));
-      const preferred = METRIC_PRIORITY.find((m) => metricKeys.includes(m));
-      if (preferred) {
-        rankBy.value = preferred;
-        load();
-        return;
-      }
-    }
-
-    const shown = metricKeys.filter((k) => METRIC_PRIORITY.includes(k) || k === rankBy.value);
-    const best = {};
-    for (const k of shown) {
-      best[k] = Math.max(...runs.map((r) => (r.metrics || {})[k] ?? -Infinity));
-    }
-
-    const table = el("table", {},
-      el("thead", {}, el("tr", {},
-        el("th", {}, "#"), el("th", {}, "Run"), el("th", {}, "Status"),
-        ...shown.map((k) => el("th", {}, k)),
-        el("th", {}, "Training run"), el("th", {}, "Started"))),
-      el("tbody", {}, ...(runs.length ? runs.map((r, i) => {
-        const fwId = byMlflowId.get(r.run_id);
-        return el("tr", {},
-          el("td", { class: "num" }, String(i + 1)),
-          el("td", {}, el("span", { class: "mono", title: r.run_id },
-            r.run_name || r.run_id.slice(0, 8))),
-          el("td", {}, statusBadge(r.status)),
-          ...shown.map((k) => {
-            const v = (r.metrics || {})[k];
-            const isBest = typeof v === "number" && v === best[k] && runs.length > 1;
-            return el("td", { class: "num" },
-              isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v)) : fmt.metric(v));
-          }),
-          el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
-                            : el("span", { class: "faint" }, "—")),
-          el("td", { class: "muted nowrap" }, fmt.ago(r.start_time)));
-      }) : [emptyRow(shown.length + 5, "No runs matched.")])));
-
-    const headline = rankBy.value || METRIC_PRIORITY.find((m) => shown.includes(m));
-    const chart = headline && runs.length > 1
-      ? barChart(`${headline} by run`, runs.slice(0, 12).map((r) => ({
-          label: r.run_name || r.run_id.slice(0, 6),
-          value: (r.metrics || {})[headline] ?? 0,
-        })))
-      : null;
-
-    mount(body,
-      el("p", { class: "muted", style: "margin:0 0 10px" },
-        `${runs.length} run${runs.length === 1 ? "" : "s"} · ordered by ${p.data.order_by}`),
-      el("div", { class: "table-wrap" }, table),
-      chart ? el("div", { style: "margin-top:16px;max-width:560px" }, chart) : null);
-  }
-
-  document.getElementById("apply-rank").addEventListener("click", load);
-  rankBy.addEventListener("change", load);
-  rankDir.addEventListener("change", load);
-  filterInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
-  await load();
-}
 
 /* ------------------------------------------------------------------ */
 /* MLflow model registry reconciliation                                */
 /* ------------------------------------------------------------------ */
 
-// The framework promotes versions in its own table; MLflow keeps a registry
-// of its own; nothing reconciles them. A version marked PRODUCTION here
-// with no alias in MLflow means one of the two sides never blessed what is
-// actually being served — this panel is the only place that surfaces it.
-function renderRegistryReconciliation(host, modelId) {
+// The framework promotes versions in its own table; since CP1/CP2 that
+// promotion also pushes into MLflow's own registry (see
+// mlops_framework.tracking.mlflow_registry) — this panel is where any
+// remaining disagreement between the two would still show up (MLflow
+// down at promote time, someone changing state by hand on either side).
+// Per-version columns (MLflow version/stage/alias, and a "disagrees"
+// flag) are merged directly into the model detail page's own Versions
+// table via ``onVersions`` — showing the two side by side in one table
+// is the point, not a second table repeating the same version numbers.
+// This function renders only the top-of-page summary banner and any
+// registry entries the framework doesn't know about at all.
+function renderRegistrySummary(host, modelId, onVersions) {
   api(`/models/${modelId}/registry-reconciliation`).then((p) => {
     if (!p.available) {
-      host.replaceChildren(
-        el("h3", {}, "MLflow registry"), banner(p.reason, "warn"));
+      host.replaceChildren(banner(`MLflow registry: ${p.reason}`, "warn"));
       return;
     }
     const d = p.data;
     const rows = d.versions || [];
-
-    const table = el("table", {},
-      el("thead", {}, el("tr", {},
-        el("th", {}, "Version"),
-        el("th", {}, "Framework state"),
-        el("th", {}, "In MLflow registry"),
-        el("th", {}, "MLflow version"),
-        el("th", {}, "Stage"),
-        el("th", {}, "Aliases"),
-        el("th", {}, ""))),
-      el("tbody", {}, ...(rows.length ? rows.map((v) =>
-        el("tr", {},
-          el("td", {}, el("strong", {}, `v${v.framework_version_number}`)),
-          el("td", {}, statusBadge(v.framework_state)),
-          el("td", {}, v.in_mlflow_registry
-            ? el("span", { class: "badge success" }, "yes")
-            : el("span", { class: "faint" }, "no")),
-          el("td", { class: "mono" }, v.mlflow_version || "—"),
-          // MLflow 3 deprecated stages, so "None" here is normal and only
-          // meaningful next to the alias column.
-          el("td", { class: "mono faint" }, v.mlflow_stage || "—"),
-          el("td", { class: "mono" },
-            (v.mlflow_aliases || []).length ? v.mlflow_aliases.join(", ")
-                                            : el("span", { class: "faint" }, "—")),
-          el("td", {}, v.drift
-            ? el("span", { class: "badge failed", title: v.drift_reason || "" }, "drift")
-            : el("span", { class: "faint" }, "ok")))
-      ) : [emptyRow(7, "No versions to reconcile.")])));
+    onVersions(new Map(rows.map((v) => [v.framework_version_id, v])));
 
     const drifted = rows.filter((v) => v.drift);
     mount(host,
@@ -1695,7 +1925,6 @@ function renderRegistryReconciliation(host, modelId) {
             drifted.map((v) => `v${v.framework_version_number} — ${v.drift_reason}`).join("; "),
             "err")
         : banner("Framework state and MLflow registry agree on every version."),
-      el("div", { class: "table-wrap" }, table),
       (d.mlflow_only || []).length
         ? el("div", { style: "margin-top:16px" },
             el("div", { class: "chart-title", style: "margin-bottom:8px" },

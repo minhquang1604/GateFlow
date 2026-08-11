@@ -22,6 +22,7 @@ from mlops_framework.api.routers import (
     models,
     readiness,
     runs,
+    schedules,
 )
 
 
@@ -65,6 +66,7 @@ def create_app(
     app.include_router(airflow_views.router, prefix="/api", tags=["airflow"])
     app.include_router(readiness.router, prefix="/api", tags=["readiness"])
     app.include_router(drift.router, prefix="/api", tags=["drift"])
+    app.include_router(schedules.router, prefix="/api", tags=["scheduling"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
 
     if mount_ui:
@@ -73,8 +75,74 @@ def create_app(
         _mount_ui(app, templates_dir=ui_templates_dir)
 
     _warm_mlflow_import(app)
+    _start_scheduler(app)
 
     return app
+
+
+def _start_scheduler(app: FastAPI) -> None:
+    """Fire due Schedules on a background loop — off unless
+    ``settings.scheduler_enabled`` is set (see ``config/settings.py``).
+
+    Uses ``asyncio.create_task`` rather than a thread (contrast
+    ``_warm_mlflow_import`` above): each tick does real DB and
+    training-orchestration work through ``run_due_schedules``, which is
+    worth cancelling cleanly on shutdown rather than leaving a daemon
+    thread to run mid-tick against a database connection the app is
+    tearing down.
+
+    A tick's own failure (a bad cron expression that slipped past
+    validation, a training run that raised) is caught and logged, not
+    left to kill the loop — one broken schedule must not silently stop
+    every other schedule from ever firing again.
+    """
+    import logging
+
+    from mlops_framework.config.settings import get_settings
+
+    _log = logging.getLogger("mlops_framework.api.scheduler")
+
+    settings = get_settings()
+    if not settings.scheduler_enabled:
+        return
+
+    @app.on_event("startup")
+    async def _start() -> None:
+        import asyncio
+
+        async def _loop() -> None:
+            from mlops_framework.database.session import DatabaseManager
+            from mlops_framework.scheduling.runner import run_due_schedules
+
+            db = DatabaseManager()
+            poll_seconds = get_settings().scheduler_poll_seconds
+            _log.info("scheduler loop started (poll every %.0fs)", poll_seconds)
+            while True:
+                try:
+                    def _tick() -> list:
+                        with db.get_session() as session:
+                            return run_due_schedules(
+                                session, mlflow_tracking_uri=settings.mlflow_tracking_uri
+                            )
+
+                    results = await asyncio.to_thread(_tick)
+                    fired = [r for r in results if r.fired]
+                    if fired:
+                        _log.info(
+                            "scheduler tick: fired %d schedule(s): %s",
+                            len(fired), [r.schedule_id for r in fired],
+                        )
+                except Exception:  # noqa: BLE001 - one bad tick must not end the loop
+                    _log.exception("scheduler tick failed")
+                await asyncio.sleep(poll_seconds)
+
+        app.state.scheduler_task = asyncio.create_task(_loop())
+
+    @app.on_event("shutdown")
+    async def _stop() -> None:
+        task = getattr(app.state, "scheduler_task", None)
+        if task is not None:
+            task.cancel()
 
 
 def _warm_mlflow_import(app: FastAPI) -> None:

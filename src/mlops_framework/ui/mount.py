@@ -22,8 +22,15 @@ Pages:
 
 * ``/`` and ``/dashboard`` — KPI dashboard
 * ``/datasets``, ``/datasets/{id}`` — dataset list and detail
-* ``/runs``, ``/runs/{id}``, ``/runs/compare`` — runs, detail, compare
+* ``/runs``, ``/runs/{id}``, ``/runs/compare`` — runs, detail, compare.
+  ``/runs?experiment={id}`` switches to MLflow's own ranked view of
+  that experiment — this used to be the separate ``/experiments``
+  pages, which now just redirect here.
+* ``/mlflow-runs/{mlflow_run_id}`` — run detail for a run with no
+  framework TrainingRun row, reached from ``/runs?experiment={id}``
 * ``/models``, ``/models/{id}`` — model list and detail
+* ``/schedules`` — cron-triggered automatic retraining (create, edit,
+  run-now); see ``scheduling/runner.py``
 * ``/lineage`` — lineage explorer
 
 The static folder (CSS + JS) is mounted at ``/static``.
@@ -36,7 +43,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -60,6 +67,12 @@ def _asset_version(path: Path) -> str:
 
 
 _FAVICON_VERSION = _asset_version(_PKG_UI / "static" / "favicon.svg")
+# Same problem, same fix, for the CSS and JS the console actually runs —
+# a code change here is invisible in an already-open tab (and often a
+# fresh load too) without a version bump in the URL, since app.css/app.js
+# are otherwise requested from the exact same path on every deploy.
+_CSS_VERSION = _asset_version(_PKG_UI / "static" / "app.css")
+_JS_VERSION = _asset_version(_PKG_UI / "static" / "app.js")
 
 # Inline 16px stroke icons. Inlined rather than linked so the console has
 # no external asset to fetch and renders identically offline.
@@ -87,13 +100,13 @@ _ICONS: dict[str, str] = {
         '<path d="M9 1.8l6.5 3.6v7.2L9 16.2 2.5 12.6V5.4z"/>'
         '<path d="M2.5 5.4L9 9l6.5-3.6M9 9v7.2"/>'
     ),
+    "scheduling": (
+        '<circle cx="9" cy="9.5" r="6.5"/><path d="M9 6v3.5l2.5 1.8"/>'
+        '<path d="M6.2 2.2 3.5 4M11.8 2.2 14.5 4"/>'
+    ),
     "lineage": (
         '<circle cx="3.5" cy="4" r="2"/><circle cx="3.5" cy="14" r="2"/>'
         '<circle cx="14.5" cy="9" r="2"/><path d="M5.5 4.8l7 3.4M5.5 13.2l7-3.4"/>'
-    ),
-    "experiments": (
-        '<path d="M7 2v4.6L2.8 13.6A1.6 1.6 0 0 0 4.2 16h9.6a1.6 1.6 0 0 0 '
-        '1.4-2.4L11 6.6V2"/><path d="M5.8 2h6.4M5.4 10.5h7.2"/>'
     ),
     "pipelines": (
         '<circle cx="3.2" cy="3.2" r="1.7"/><circle cx="14.8" cy="3.2" r="1.7"/>'
@@ -108,26 +121,36 @@ _ICONS: dict[str, str] = {
 # Two groups, not seven: "Core domains" is everything that is this
 # framework's own record (dataset -> run -> model -> lineage), and
 # "Orchestration" is everything that is another system's record reached
-# read-only (an MLflow run, an Airflow DAG run — see the module
-# docstrings on mlflow_gateway.py / airflow_gateway.py for why those stay
-# distinct identity spaces from a TrainingRun even though they sit one
-# eyebrow apart here).
+# read-only (an Airflow DAG run — see airflow_gateway.py's module
+# docstring for why that stays a distinct identity space from a
+# TrainingRun even though it sits one eyebrow apart here).
+#
+# "Experiments" used to be its own entry here, a separate page reading
+# MLflow's runs list. It no longer is: for a run this framework started,
+# that page showed close to the same thing /runs/{id} already does (its
+# own "MLflow" panel embeds provenance, charts, artifacts, model info —
+# see run_detail.html), so the two pages left a reader guessing which
+# one to open for no real difference. /runs now folds both in — pick an
+# experiment there to switch to MLflow's own ranked view of it,
+# including runs this framework never started (mlflow_gateway.py answers
+# that request; see runs.html / initRuns()). /experiments and
+# /experiments/{id} still redirect here for old links/bookmarks.
 _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     (
         "Core domains",
         [
             ("dashboard", "/dashboard", "Dashboard"),
             ("datasets", "/datasets", "Datasets"),
-            ("runs", "/runs", "Training runs"),
+            ("runs", "/runs", "Runs"),
             ("compare", "/runs/compare", "Compare runs"),
             ("models", "/models", "Model registry"),
+            ("scheduling", "/schedules", "Scheduling"),
             ("lineage", "/lineage", "Lineage"),
         ],
     ),
     (
         "Orchestration",
         [
-            ("experiments", "/experiments", "Experiments"),
             ("pipelines", "/pipelines", "Pipelines"),
         ],
     ),
@@ -171,7 +194,7 @@ def mount_ui(
 
     @app.get("/runs", response_class=HTMLResponse)
     def runs() -> str:
-        return _page(pages, "runs.html", "Training runs", "runs")
+        return _page(pages, "runs.html", "Runs", "runs")
 
     # Registered before /runs/{run_id} so "compare" is not swallowed by the
     # int path converter (which would 422 on a non-numeric segment).
@@ -191,23 +214,42 @@ def mount_ui(
     def model_detail(model_id: int) -> str:
         return _page(pages, "model_detail.html", f"Model #{model_id}", "models")
 
+    @app.get("/schedules", response_class=HTMLResponse)
+    def schedules() -> str:
+        return _page(pages, "schedules.html", "Scheduling", "scheduling")
+
     @app.get("/lineage", response_class=HTMLResponse)
     def lineage() -> str:
         return _page(pages, "lineage.html", "Lineage", "lineage")
 
-    @app.get("/experiments", response_class=HTMLResponse)
-    def experiments() -> str:
-        return _page(pages, "experiments.html", "Experiments", "experiments")
+    # /experiments and /experiments/{id} used to be their own pages; both
+    # folded into /runs (pick an experiment there — see _NAV's comment
+    # on why). These redirect rather than 404 so an old bookmark or a
+    # link from outside the console still lands somewhere useful.
+    @app.get("/experiments")
+    def experiments() -> RedirectResponse:
+        return RedirectResponse("/runs")
 
     # The id is a string, not an int: MLflow experiment ids are opaque and
     # are not the framework's own integer primary keys.
-    @app.get("/experiments/{experiment_id}", response_class=HTMLResponse)
-    def experiment_detail(experiment_id: str) -> str:
+    @app.get("/experiments/{experiment_id}")
+    def experiment_detail(experiment_id: str) -> RedirectResponse:
+        from urllib.parse import quote
+
+        return RedirectResponse(f"/runs?experiment={quote(experiment_id, safe='')}")
+
+    # A run reachable only by its raw MLflow run id — no framework
+    # TrainingRun row (a sweep's child run, a run this framework never
+    # started). "runs" stays the active nav key: this is still a run
+    # detail page, just fed by /mlflow/runs/{id} instead of
+    # /training-runs/{id} — see run_detail.html's framework-run sibling.
+    @app.get("/mlflow-runs/{mlflow_run_id}", response_class=HTMLResponse)
+    def mlflow_run_detail(mlflow_run_id: str) -> str:
         return _page(
             pages,
-            "experiment_detail.html",
-            f"Experiment {experiment_id}",
-            "experiments",
+            "mlflow_run_detail.html",
+            f"MLflow run {mlflow_run_id[:12]}",
+            "runs",
         )
 
     @app.get("/pipelines", response_class=HTMLResponse)
@@ -303,7 +345,7 @@ def _document(title: str, active: str, fragment: str) -> str:
 <title>{title} &middot; {BRAND}</title>
 <link rel="icon" href="/static/favicon.svg?v={_FAVICON_VERSION}" type="image/svg+xml">
 <link rel="alternate icon" href="/static/favicon.png?v={_FAVICON_VERSION}" sizes="32x32">
-<link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/app.css?v={_CSS_VERSION}">
 <link rel="preload" href="/static/fonts/Inter-Variable.woff2" as="font" type="font/woff2" crossorigin>
 <script>
   // Applied before first paint so a dark-theme reload does not flash white.
@@ -312,7 +354,7 @@ def _document(title: str, active: str, fragment: str) -> str:
     if (t) document.documentElement.dataset.theme = t;
   }} catch (e) {{}}
 </script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v={_JS_VERSION}"></script>
 </head>
 <body>
 <a class="skip-link" href="#content">Skip to main content</a>

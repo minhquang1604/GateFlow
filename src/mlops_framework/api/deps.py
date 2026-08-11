@@ -17,6 +17,7 @@ from mlops_framework.database.session import (
 )
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.model.manager import ModelManager
+from mlops_framework.scheduling.manager import ScheduleManager
 from mlops_framework.training.manager import TrainingManager
 
 
@@ -68,3 +69,8 @@ def get_training_manager(
 def get_model_manager(db: Session = Depends(get_db)) -> ModelManager:
     """FastAPI dependency for :class:`ModelManager`."""
     return ModelManager(db)
+
+
+def get_schedule_manager(db: Session = Depends(get_db)) -> ScheduleManager:
+    """FastAPI dependency for :class:`ScheduleManager`."""
+    return ScheduleManager(db)

@@ -90,6 +90,37 @@ class Settings(BaseSettings):
         description="Base URL of the FastAPI ServingBridge.",
     )
 
+    # Telegram admin-approval gate (used by the drift/retrain demo script
+    # to block an automated retrain behind a human Approve/Deny before it
+    # runs — see scripts/_telegram_approval.py).
+    telegram_bot_token: Optional[str] = Field(
+        default=None,
+        description="Telegram bot token used to send the retrain approval request.",
+    )
+    telegram_admin_chat_id: Optional[str] = Field(
+        default=None,
+        description="Telegram chat_id of the admin who approves/denies a retrain.",
+    )
+    telegram_approval_timeout_seconds: float = Field(
+        default=3600.0,
+        description="How long to wait for the admin's Approve/Deny before treating a retrain as denied.",
+    )
+
+    # Scheduling (cron-triggered automatic retraining — see
+    # scheduling/runner.py and api/app.py's _start_scheduler). Off by
+    # default: a background loop that can trigger real training runs
+    # has no business starting itself in every test that builds an app,
+    # only in the actual deployed service (docker-compose sets
+    # SCHEDULER_ENABLED=true on the app container).
+    scheduler_enabled: bool = Field(
+        default=False,
+        description="Run the background loop that fires due Schedules automatically.",
+    )
+    scheduler_poll_seconds: float = Field(
+        default=60.0,
+        description="How often the scheduler loop checks for due schedules.",
+    )
+
     # Application settings
     app_name: str = Field(
         default="mlops-framework",

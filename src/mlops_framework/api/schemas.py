@@ -338,3 +338,73 @@ class DriftEvaluationOut(ApiModel):
             notes=obj.notes,
             created_at=getattr(obj, "created_at", None),
         )
+
+
+# ---------------------------------------------------------------------- #
+# Scheduling
+# ---------------------------------------------------------------------- #
+
+
+class ScheduleOut(ApiModel):
+    id: int
+    model_id: int
+    model_name: Optional[str] = None
+    dataset_id: int
+    dataset_name: Optional[str] = None
+    pipeline_id: str
+    cron_expression: str
+    enabled: bool
+    parameters: Optional[Dict[str, Any]] = None
+    min_f1: float
+    last_triggered_at: Optional[datetime] = None
+    last_training_run_id: Optional[int] = None
+    # Computed, not stored — see scheduling/cron.py. None when the cron
+    # expression somehow fails to evaluate (should not happen past
+    # create/update validation, but a display field degrading to None
+    # beats a 500 on the schedule list).
+    next_fire_at: Optional[datetime] = None
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_schedule(cls, obj) -> "ScheduleOut":
+        """Build from a ``Schedule`` ORM row.
+
+        Named to avoid pydantic's own (deprecated) ``BaseModel.from_orm``
+        — see this file's other ``from_orm_with_*`` builders for the
+        same reason.
+        """
+        from mlops_framework.scheduling import cron
+
+        parameters = None
+        if getattr(obj, "parameters_json", None):
+            try:
+                parameters = json.loads(obj.parameters_json)
+            except (TypeError, ValueError):
+                parameters = None
+
+        next_fire_at = None
+        try:
+            next_fire_at = cron.next_fire_time(
+                obj.cron_expression, obj.last_triggered_at or obj.created_at
+            )
+        except Exception:  # noqa: BLE001 - a display field, never worth a 500
+            pass
+
+        return cls(
+            id=obj.id,
+            model_id=obj.model_id,
+            model_name=getattr(getattr(obj, "model", None), "name", None),
+            dataset_id=obj.dataset_id,
+            dataset_name=getattr(getattr(obj, "dataset", None), "name", None),
+            pipeline_id=obj.pipeline_id,
+            cron_expression=obj.cron_expression,
+            enabled=obj.enabled,
+            parameters=parameters,
+            min_f1=obj.min_f1,
+            last_triggered_at=obj.last_triggered_at,
+            last_training_run_id=obj.last_training_run_id,
+            next_fire_at=next_fire_at,
+            notes=obj.notes,
+            created_at=getattr(obj, "created_at", None),
+        )

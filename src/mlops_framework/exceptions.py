@@ -208,3 +208,24 @@ class ServingError(MLopsFrameworkError):
     """Base exception for serving-bridge errors."""
 
     pass
+
+
+# --- Scheduling -------------------------------------------------------- #
+
+
+class ScheduleError(MLopsFrameworkError):
+    """Base exception for schedule lifecycle errors."""
+
+    pass
+
+
+class ScheduleNotFoundError(ScheduleError):
+    """Raised when a Schedule is not found."""
+
+    pass
+
+
+class InvalidCronExpressionError(ScheduleError):
+    """Raised when a cron expression is not valid 5-field cron syntax."""
+
+    pass

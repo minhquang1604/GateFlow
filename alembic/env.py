@@ -39,6 +39,7 @@ from mlops_framework.database.models.model import Model
 from mlops_framework.database.models.model_promotion_event import ModelPromotionEvent
 from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.readiness_evaluation import ReadinessEvaluation
+from mlops_framework.database.models.schedule import Schedule
 from mlops_framework.database.models.serving_instance import ServingInstance
 from mlops_framework.database.models.training_run import TrainingRun
 
