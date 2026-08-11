@@ -17,8 +17,8 @@ and can be added later without changing the public surface.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Dict, Iterable
 
 
 class PipelineNotFoundError(KeyError):
@@ -45,7 +45,7 @@ class PipelineEntry:
     name: str
     pipeline_id: str
     description: str = ""
-    parameters: Dict[str, object] = field(default_factory=dict)
+    parameters: dict[str, object] = field(default_factory=dict)
 
 
 class PipelineRegistry:
@@ -67,7 +67,7 @@ class PipelineRegistry:
     """
 
     def __init__(self, entries: Iterable[PipelineEntry] | None = None) -> None:
-        self._entries: Dict[str, PipelineEntry] = {}
+        self._entries: dict[str, PipelineEntry] = {}
         if entries:
             for entry in entries:
                 self.register(entry)

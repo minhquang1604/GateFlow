@@ -16,18 +16,26 @@ Lifecycle:
                 CANDIDATE -> REJECTED
 """
 
+import enum
+from typing import TYPE_CHECKING
+
 from sqlalchemy import (
-    String,
-    Text,
-    Integer,
-    Float,
-    ForeignKey,
     Enum as SQLEnum,
 )
+from sqlalchemy import (
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-import enum
 
 from mlops_framework.database.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from mlops_framework.database.models.dataset_version import DatasetVersion
+    from mlops_framework.database.models.model import Model
+    from mlops_framework.database.models.training_run import TrainingRun
 
 
 class ModelState(str, enum.Enum):

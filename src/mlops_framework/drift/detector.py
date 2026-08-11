@@ -21,8 +21,8 @@ import json
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Iterable, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -35,7 +35,7 @@ from mlops_framework.database.models.drift_evaluation import (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------- #
@@ -67,7 +67,7 @@ class FeatureDrift:
     method: str
     score: float
     drift_detected: bool
-    p_value: Optional[float] = None
+    p_value: float | None = None
     detail: str = ""
 
 
@@ -307,7 +307,7 @@ class ScipyDriftDetector(DriftDetector):
         all_int = all(float(v).is_integer() for v in sample)
         if not all_int:
             return False
-        distinct = len({v for v in sample})
+        distinct = len(set(sample))
         return distinct <= max(20, len(sample) // 5)
 
 

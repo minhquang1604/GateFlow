@@ -82,8 +82,8 @@ directly before.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 import boto3
@@ -103,7 +103,7 @@ from mlops_framework.orchestration.base import (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _parse_airflow_state(state: str) -> ExecutionState:
@@ -123,7 +123,7 @@ def _parse_airflow_state(state: str) -> ExecutionState:
 
 def _read_task_log_from_s3(
     remote_base: str, dag_id: str, dag_run_id: str, task_id: str, try_number: int
-) -> Optional[str]:
+) -> str | None:
     """Read one task attempt's log straight from S3.
 
     ``remote_base`` is ``Settings.airflow_remote_log_base`` (e.g.
@@ -163,7 +163,7 @@ def _read_task_log_from_s3(
         raise
 
 
-def _parse_iso(value: Optional[str]) -> Optional[datetime]:
+def _parse_iso(value: str | None) -> datetime | None:
     if not value:
         return None
     try:
@@ -195,10 +195,10 @@ class AirflowOrchestrator(Orchestrator):
 
     def __init__(
         self,
-        base_url: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
-        http_client: Optional[httpx.Client] = None,
+        base_url: str | None = None,
+        username: str | None = None,
+        password: str | None = None,
+        http_client: httpx.Client | None = None,
     ) -> None:
         # Set attributes first so __del__ is safe even if we raise below.
         self._owns_client = http_client is None
@@ -229,7 +229,7 @@ class AirflowOrchestrator(Orchestrator):
         if self._owns_client and self._client is not None:
             self._client.close()
 
-    def __enter__(self) -> "AirflowOrchestrator":
+    def __enter__(self) -> AirflowOrchestrator:
         return self
 
     def __exit__(self, *_exc: Any) -> None:
@@ -285,7 +285,7 @@ class AirflowOrchestrator(Orchestrator):
     def trigger_pipeline(
         self,
         pipeline_id: str,
-        config: Optional[dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> str:
         """Trigger a DAG run.
 

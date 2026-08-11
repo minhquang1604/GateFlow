@@ -6,15 +6,18 @@ the framework publishes a promotion event for downstream consumers
 persisted to the database so the framework can replay and audit.
 """
 
+import enum
+
 from sqlalchemy import (
-    String,
-    Text,
-    Integer,
-    ForeignKey,
     Enum as SQLEnum,
 )
+from sqlalchemy import (
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
-import enum
 
 from mlops_framework.database.base import Base, TimestampMixin
 

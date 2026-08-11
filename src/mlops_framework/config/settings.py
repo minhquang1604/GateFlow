@@ -1,7 +1,6 @@
 """Application settings using Pydantic Settings."""
 
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -42,7 +41,7 @@ class Settings(BaseSettings):
     )
 
     # MLflow tracking server
-    mlflow_tracking_uri: Optional[str] = Field(
+    mlflow_tracking_uri: str | None = Field(
         default=None,
         description="URI of the MLflow tracking server (e.g. http://mlflow:5000).",
     )
@@ -50,17 +49,17 @@ class Settings(BaseSettings):
         default="mlops-framework",
         description="MLflow experiment name used by MLflowTracker.",
     )
-    mlflow_artifact_root: Optional[str] = Field(
+    mlflow_artifact_root: str | None = Field(
         default=None,
         description="Default MLflow artifact root (informational only).",
     )
-    mlflow_s3_endpoint_url: Optional[str] = Field(
+    mlflow_s3_endpoint_url: str | None = Field(
         default=None,
         description="S3-compatible endpoint URL used by MLflow artifact uploads.",
     )
 
     # Airflow orchestrator
-    airflow_base_url: Optional[str] = Field(
+    airflow_base_url: str | None = Field(
         default=None,
         description="Base URL of the Airflow webserver (used by AirflowOrchestrator).",
     )
@@ -72,7 +71,7 @@ class Settings(BaseSettings):
         default="airflow",
         description="Password for the Airflow REST API.",
     )
-    airflow_remote_log_base: Optional[str] = Field(
+    airflow_remote_log_base: str | None = Field(
         default=None,
         description=(
             "s3://bucket/prefix that Airflow's own remote task logging "
@@ -85,7 +84,7 @@ class Settings(BaseSettings):
     )
 
     # FastAPI ServingBridge (used by the HTTP event publisher)
-    serving_bridge_url: Optional[str] = Field(
+    serving_bridge_url: str | None = Field(
         default=None,
         description="Base URL of the FastAPI ServingBridge.",
     )
@@ -93,11 +92,11 @@ class Settings(BaseSettings):
     # Telegram admin-approval gate (used by the drift/retrain demo script
     # to block an automated retrain behind a human Approve/Deny before it
     # runs — see scripts/_telegram_approval.py).
-    telegram_bot_token: Optional[str] = Field(
+    telegram_bot_token: str | None = Field(
         default=None,
         description="Telegram bot token used to send the retrain approval request.",
     )
-    telegram_admin_chat_id: Optional[str] = Field(
+    telegram_admin_chat_id: str | None = Field(
         default=None,
         description="Telegram chat_id of the admin who approves/denies a retrain.",
     )

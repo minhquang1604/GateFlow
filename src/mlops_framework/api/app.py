@@ -7,7 +7,6 @@ The factory pattern keeps tests deterministic — each test creates a fresh
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI
 
@@ -31,7 +30,7 @@ def create_app(
     title: str = "MLOps Framework Management API",
     version: str = "0.1.0",
     mount_ui: bool = True,
-    ui_templates_dir: Optional[Path] = None,
+    ui_templates_dir: Path | None = None,
 ) -> FastAPI:
     """Build a FastAPI app with the management API routers mounted.
 

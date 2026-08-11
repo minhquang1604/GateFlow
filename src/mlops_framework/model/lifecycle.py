@@ -11,8 +11,8 @@ ARCHIVED and REJECTED are terminal.
 """
 
 from mlops_framework.database.models.model_version import (
-    ModelState,
     VALID_MODEL_STATE_TRANSITIONS,
+    ModelState,
 )
 from mlops_framework.exceptions import InvalidModelStateTransitionError
 

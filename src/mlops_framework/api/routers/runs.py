@@ -14,7 +14,7 @@ the run it belongs to.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
@@ -24,15 +24,15 @@ from mlops_framework.api import airflow_gateway
 from mlops_framework.api.deps import get_db
 from mlops_framework.api.mlflow_gateway import panel, tracking_uri
 from mlops_framework.api.schemas import ExternalPanel, TrainingRunOut
-from mlops_framework.database.models.training_run import RunStatus, TrainingRun
+from mlops_framework.database.models.training_run import TrainingRun
 
 router = APIRouter()
 
 
 @router.get("/training-runs", response_model=list[TrainingRunOut])
 def list_runs(
-    status: Optional[str] = Query(default=None, description="Filter by run status"),
-    dataset_version_id: Optional[int] = Query(default=None),
+    status: str | None = Query(default=None, description="Filter by run status"),
+    dataset_version_id: int | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=1000),
     db: Session = Depends(get_db),
 ) -> list[TrainingRunOut]:

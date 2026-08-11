@@ -6,16 +6,17 @@ that operators can see *why* a dataset version was marked READY or
 BLOCKED.
 """
 
+import enum
+
 from sqlalchemy import (
-    String,
-    Text,
-    Integer,
-    ForeignKey,
     Enum as SQLEnum,
-    JSON,
+)
+from sqlalchemy import (
+    ForeignKey,
+    Integer,
+    Text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
-import enum
 
 from mlops_framework.database.base import Base, TimestampMixin
 

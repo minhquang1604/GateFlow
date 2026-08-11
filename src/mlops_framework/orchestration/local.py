@@ -18,14 +18,13 @@ terminates the running process.
 from __future__ import annotations
 
 import json
-import os
 import signal
 import subprocess
 import sys
 import threading
 import uuid
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from mlops_framework.exceptions import (
     ExecutionNotFoundError,
@@ -39,7 +38,7 @@ from mlops_framework.orchestration.base import (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _resolve_entry_point(pipeline_id: str) -> tuple[str, str]:
@@ -71,13 +70,13 @@ class _LocalExecution:
         self.process = process
         self.state = state
         self.started_at = started_at
-        self.finished_at: Optional[datetime] = None
-        self.exit_code: Optional[int] = None
-        self.message: Optional[str] = None
+        self.finished_at: datetime | None = None
+        self.exit_code: int | None = None
+        self.message: str | None = None
         self.metadata: dict[str, Any] = {}
         self._stdout_parts: list[str] = []
         self._stderr_parts: list[str] = []
-        self._reader_thread: Optional[threading.Thread] = None
+        self._reader_thread: threading.Thread | None = None
 
     def refresh_if_finished(self) -> None:
         if self.state in {ExecutionState.SUCCESS, ExecutionState.FAILED, ExecutionState.CANCELLED}:
@@ -118,7 +117,7 @@ class LocalDockerOrchestrator(Orchestrator):
     so it has no external dependencies.
     """
 
-    def __init__(self, python_executable: Optional[str] = None) -> None:
+    def __init__(self, python_executable: str | None = None) -> None:
         self._python = python_executable or sys.executable
         self._executions: dict[str, _LocalExecution] = {}
         self._lock = threading.Lock()
@@ -130,7 +129,7 @@ class LocalDockerOrchestrator(Orchestrator):
     def trigger_pipeline(
         self,
         pipeline_id: str,
-        config: Optional[dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> str:
         module, fn = _resolve_entry_point(pipeline_id)
         execution_id = uuid.uuid4().hex

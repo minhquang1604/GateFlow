@@ -1,9 +1,15 @@
 """DatasetVersion ORM model."""
 
-from sqlalchemy import String, Text, Integer, BigInteger, Boolean, ForeignKey
+from typing import TYPE_CHECKING
+
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mlops_framework.database.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from mlops_framework.database.models.dataset import Dataset
+    from mlops_framework.database.models.training_run import TrainingRun
 
 
 class DatasetVersion(Base, TimestampMixin):

@@ -30,7 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -72,11 +72,11 @@ class TrainingRunContextOut(BaseModel):
     dataset_version_id: int
     storage_uri: str
     row_count: int
-    pipeline_id: Optional[str] = None
+    pipeline_id: str | None = None
     metadata: dict[str, Any] = {}
     # The registered file digest, so a remote worker can confirm it read
     # the same bytes. None when the version was registered without one.
-    dataset_content_sha256: Optional[str] = None
+    dataset_content_sha256: str | None = None
 
 
 @router.get(
@@ -124,16 +124,16 @@ def get_training_run_context(
 class PromoteModelRequest(BaseModel):
     dataset_version_id: int
     training_run_id: int
-    mlflow_run_id: Optional[str] = None
+    mlflow_run_id: str | None = None
     metrics: dict[str, Any] = {}
-    artifact_uri: Optional[str] = None
+    artifact_uri: str | None = None
     min_f1: float = 0.0
 
 
 class PromoteModelResponse(BaseModel):
     promoted: bool
     model_version_id: int
-    model_version: Optional[int] = None
+    model_version: int | None = None
     reasons: list[str] = []
 
 
@@ -224,7 +224,7 @@ def promote_model(
 
 class CreateDatasetRequest(BaseModel):
     name: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class DatasetOut(BaseModel):
@@ -322,8 +322,8 @@ def create_dataset_version(
 
 class CreateModelRequest(BaseModel):
     name: str
-    task: Optional[str] = None
-    description: Optional[str] = None
+    task: str | None = None
+    description: str | None = None
 
 
 class ModelOut(BaseModel):
@@ -407,10 +407,10 @@ class CreateTrainingRunRequest(BaseModel):
 class TrainingRunOut(BaseModel):
     id: int
     status: str
-    pipeline_id: Optional[str] = None
-    dataset_version_id: Optional[int] = None
-    mlflow_run_id: Optional[str] = None
-    execution_id: Optional[str] = None
+    pipeline_id: str | None = None
+    dataset_version_id: int | None = None
+    mlflow_run_id: str | None = None
+    execution_id: str | None = None
 
 
 def _run_out(run: TrainingRun, tm: TrainingManager) -> TrainingRunOut:
@@ -448,7 +448,7 @@ class StartTrainingRunRequest(BaseModel):
     # Defaults come from the app's own environment so a client does not
     # need to know the deployment's internal hostnames.
     experiment_name: str = "fraud-detection"
-    dag_id: Optional[str] = None
+    dag_id: str | None = None
 
 
 @router.post("/internal/training-runs/{run_id}/start", response_model=TrainingRunOut)
@@ -529,7 +529,7 @@ def start_training_run(
 
 class FinishTrainingRunRequest(BaseModel):
     status: str = Field(description="SUCCESS or FAILED")
-    error_message: Optional[str] = None
+    error_message: str | None = None
     result: dict[str, Any] = Field(default_factory=dict)
 
 

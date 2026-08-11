@@ -19,7 +19,7 @@ from mlops_framework.database.session import DatabaseManager
 from mlops_framework.serving.bridge import ServingBridge
 
 
-def _build_app() -> "ServingBridge":
+def _build_app() -> ServingBridge:
     """Build a ServingBridge that persists reloads to the framework DB."""
     db = DatabaseManager()
 

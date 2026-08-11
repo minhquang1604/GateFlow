@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -49,6 +48,7 @@ from mlops_framework.pipeline.manager import (
 )
 from mlops_framework.readiness.engine import (
     ReadinessEngine,
+    ReadinessResult,
     TrainingPolicy,
 )
 from mlops_framework.sdk.exceptions import (
@@ -61,7 +61,6 @@ from mlops_framework.tracking.base import ExperimentTracker
 from mlops_framework.tracking.in_memory import InMemoryTracker
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
-
 
 # ---------------------------------------------------------------------- #
 # Value objects (read-only, JSON-serializable)
@@ -80,7 +79,7 @@ class MLOpsDatasetVersion:
     metadata: dict
 
     @classmethod
-    def from_orm(cls, v: DatasetVersion) -> "MLOpsDatasetVersion":
+    def from_orm(cls, v: DatasetVersion) -> MLOpsDatasetVersion:
         meta = {}
         if v.metadata_json:
             try:
@@ -103,11 +102,11 @@ class MLOpsDatasetVersion:
 class MLOpsDataset:
     id: int
     name: str
-    description: Optional[str]
-    _project: "MLOpsProject"
+    description: str | None
+    _project: MLOpsProject
 
     @property
-    def versions(self) -> List[MLOpsDatasetVersion]:
+    def versions(self) -> list[MLOpsDatasetVersion]:
         with self._project._session_scope() as s:
             self._project._ensure_managers(s)
             return [
@@ -116,7 +115,7 @@ class MLOpsDataset:
             ]
 
     @property
-    def latest_version(self) -> Optional[MLOpsDatasetVersion]:
+    def latest_version(self) -> MLOpsDatasetVersion | None:
         with self._project._session_scope() as s:
             self._project._ensure_managers(s)
             v = self._project.datasets.get_latest_version(self.id)
@@ -126,7 +125,7 @@ class MLOpsDataset:
         self,
         storage_uri: str,
         row_count: int,
-        metadata: Optional[dict] = None,
+        metadata: dict | None = None,
     ) -> MLOpsDatasetVersion:
         with self._project._session_scope() as s:
             self._project._ensure_managers(s)
@@ -144,13 +143,13 @@ class MLOpsRun:
     id: int
     status: str
     pipeline_id: str
-    dataset_version_id: Optional[int]
+    dataset_version_id: int | None
     parameters: dict
     metrics: dict
-    error_message: Optional[str]
+    error_message: str | None
 
     @classmethod
-    def from_orm(cls, r: TrainingRun) -> "MLOpsRun":
+    def from_orm(cls, r: TrainingRun) -> MLOpsRun:
         meta = {}
         if r.metadata_json:
             try:
@@ -175,12 +174,12 @@ class MLOpsModelVersion:
     version_number: int
     state: str
     metrics: dict
-    dataset_version_id: Optional[int]
-    training_run_id: Optional[int]
-    artifact_uri: Optional[str]
+    dataset_version_id: int | None
+    training_run_id: int | None
+    artifact_uri: str | None
 
     @classmethod
-    def from_orm(cls, v: ModelVersion) -> "MLOpsModelVersion":
+    def from_orm(cls, v: ModelVersion) -> MLOpsModelVersion:
         metrics = {}
         if v.metrics_json:
             try:
@@ -203,12 +202,12 @@ class MLOpsModelVersion:
 class MLOpsModel:
     id: int
     name: str
-    description: Optional[str]
-    task: Optional[str]
-    _project: "MLOpsProject"
+    description: str | None
+    task: str | None
+    _project: MLOpsProject
 
     @property
-    def versions(self) -> List[MLOpsModelVersion]:
+    def versions(self) -> list[MLOpsModelVersion]:
         with self._project._session_scope() as s:
             self._project._ensure_managers(s)
             return [
@@ -217,7 +216,7 @@ class MLOpsModel:
             ]
 
     @property
-    def production_version(self) -> Optional[MLOpsModelVersion]:
+    def production_version(self) -> MLOpsModelVersion | None:
         for v in self.versions:
             if v.state == ModelState.PRODUCTION.value:
                 return v
@@ -226,7 +225,7 @@ class MLOpsModel:
 
 @dataclass
 class MLOpsLineage:
-    _project: "MLOpsProject"
+    _project: MLOpsProject
 
     def for_dataset_version(self, version_id: int) -> dict:
         with self._project._session_scope() as s:
@@ -303,7 +302,7 @@ class MLOpsProject:
         name: str,
         *,
         db_url: str | None = None,
-    ) -> "MLOpsProject":
+    ) -> MLOpsProject:
         """Build an MLOpsProject with the framework's default adapters.
 
         Uses the local Docker orchestrator and the in-memory tracker. This
@@ -369,7 +368,7 @@ class MLOpsProject:
     def create_dataset(
         self,
         name: str,
-        description: Optional[str] = None,
+        description: str | None = None,
     ) -> MLOpsDataset:
         with self._session_scope() as s:
             self._ensure_managers(s)
@@ -391,7 +390,7 @@ class MLOpsProject:
                 id=ds.id, name=ds.name, description=ds.description, _project=self
             )
 
-    def list_datasets(self) -> List[MLOpsDataset]:
+    def list_datasets(self) -> list[MLOpsDataset]:
         with self._session_scope() as s:
             self._ensure_managers(s)
             return [
@@ -408,8 +407,8 @@ class MLOpsProject:
     def create_model(
         self,
         name: str,
-        task: Optional[str] = None,
-        description: Optional[str] = None,
+        task: str | None = None,
+        description: str | None = None,
     ) -> MLOpsModel:
         with self._session_scope() as s:
             self._ensure_managers(s)
@@ -435,7 +434,7 @@ class MLOpsProject:
                 _project=self,
             )
 
-    def list_models(self) -> List[MLOpsModel]:
+    def list_models(self) -> list[MLOpsModel]:
         with self._session_scope() as s:
             self._ensure_managers(s)
             return [
@@ -514,7 +513,7 @@ class MLOpsProject:
         self,
         dataset_version: MLOpsDatasetVersion,
         policy: TrainingPolicy | None = None,
-    ) -> Any:
+    ) -> ReadinessResult:
         """Run the readiness engine for ``dataset_version``.
 
         Returns a :class:`ReadinessResult`; call ``.is_ready()`` to check

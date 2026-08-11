@@ -21,7 +21,8 @@ background when a tracking URI is configured.
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from mlops_framework.api.schemas import ExternalPanel
 from mlops_framework.tracking.mlflow_client import client_or_reason, tracking_uri

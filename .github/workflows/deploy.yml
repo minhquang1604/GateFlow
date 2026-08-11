@@ -74,6 +74,9 @@ jobs:
         # tests alone would still be blind.
         run: python -m compileall -q src case_studies infrastructure scripts tests
 
+      - name: Lint (ruff)
+        run: ruff check src/
+
       - name: Run the test suite
         run: pytest tests/ -q
 

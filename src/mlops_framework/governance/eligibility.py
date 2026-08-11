@@ -27,10 +27,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.database.models.dataset_version import DatasetVersion
@@ -40,7 +40,6 @@ from mlops_framework.database.models.model_version import (
     ModelVersion,
 )
 from mlops_framework.database.models.training_run import (
-    RunStatus,
     TrainingRun,
 )
 from mlops_framework.drift.detector import DriftResult
@@ -51,7 +50,7 @@ from mlops_framework.readiness.engine import (
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------- #
@@ -71,40 +70,40 @@ class EligibilityConfig:
     require_ready: bool = True
     # Minimum new rows since the most recent training run on the same
     # dataset. ``None`` disables the check.
-    min_new_rows: Optional[int] = None
+    min_new_rows: int | None = None
     # If True, training is only allowed when a recent drift evaluation
     # detected drift. ``None`` disables.
-    require_drift_to_retrain: Optional[bool] = None
+    require_drift_to_retrain: bool | None = None
     # If True, training is blocked when recent drift evaluation
     # detected drift. ``None`` disables.
-    block_when_drift_detected: Optional[bool] = None
+    block_when_drift_detected: bool | None = None
     # Minimum gap between two training runs on the same dataset, in
     # hours. ``None`` disables.
-    cooldown_hours: Optional[float] = None
+    cooldown_hours: float | None = None
     # If provided, training is blocked when the existing production
     # model already meets all these metrics. ``None`` disables.
-    block_when_production_metrics_meet: Optional[dict[str, float]] = None
+    block_when_production_metrics_meet: dict[str, float] | None = None
     # If provided, training is only allowed when the existing
     # production model is *below* these metrics on at least one key.
     # ``None`` disables.
-    require_production_below: Optional[dict[str, float]] = None
+    require_production_below: dict[str, float] | None = None
     # If True, retraining is blocked when no production model exists
     # yet (i.e. the very first training must be triggered explicitly
     # rather than by the workflow). ``None`` disables.
-    require_existing_production: Optional[bool] = None
+    require_existing_production: bool | None = None
     # If True, retraining is blocked when a production model exists
     # (use this to control a "first training only" workflow). ``None``
     # disables.
-    block_when_production_exists: Optional[bool] = None
+    block_when_production_exists: bool | None = None
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "EligibilityConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> EligibilityConfig:
         if data is None:
             return cls()
         return cls(**data)
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: v for k, v in self.__dict__.items()}
+        return dict(self.__dict__)
 
 
 @dataclass
@@ -115,19 +114,19 @@ class EligibilityContext:
     know about the database.
     """
 
-    readiness: Optional[ReadinessResult] = None
-    drift: Optional[DriftResult] = None
+    readiness: ReadinessResult | None = None
+    drift: DriftResult | None = None
     # Most recent training run on the same dataset (if any).
-    last_training_run: Optional[TrainingRun] = None
+    last_training_run: TrainingRun | None = None
     # The most recent model version (if any), regardless of state.
-    last_model_version: Optional[ModelVersion] = None
+    last_model_version: ModelVersion | None = None
     # The currently production model version (if any).
-    production_model_version: Optional[ModelVersion] = None
+    production_model_version: ModelVersion | None = None
     # Row count of the candidate dataset version.
     candidate_row_count: int = 0
     # Row count of the dataset version that produced the existing
     # production model (if any).
-    production_row_count: Optional[int] = None
+    production_row_count: int | None = None
     # Optional explicit override (e.g. operator says "force train").
     force: bool = False
 
@@ -172,9 +171,9 @@ class TrainingEligibilityPolicy:
         self,
         *,
         dataset_version: DatasetVersion,
-        readiness: Optional[ReadinessResult] = None,
-        drift: Optional[DriftResult] = None,
-        model: Optional[Model] = None,
+        readiness: ReadinessResult | None = None,
+        drift: DriftResult | None = None,
+        model: Model | None = None,
         force: bool = False,
     ) -> EligibilityContext:
         """Build an :class:`EligibilityContext` for a dataset version.
@@ -187,7 +186,7 @@ class TrainingEligibilityPolicy:
         prod_mv = None
         if model is not None:
             prod_mv = self._production_for_model(model.id)
-        production_row_count: Optional[int] = None
+        production_row_count: int | None = None
         if prod_mv is not None:
             dv = self._session.get(DatasetVersion, prod_mv.dataset_version_id)
             if dv is not None:
@@ -276,7 +275,7 @@ class TrainingEligibilityPolicy:
             if last_completed is not None:
                 # Defensive tz handling
                 if last_completed.tzinfo is None:
-                    last_completed = last_completed.replace(tzinfo=timezone.utc)
+                    last_completed = last_completed.replace(tzinfo=UTC)
                 gap = (_now() - last_completed).total_seconds() / 3600.0
                 details["hours_since_last_run"] = round(gap, 2)
                 if gap < cfg.cooldown_hours:
@@ -348,7 +347,7 @@ class TrainingEligibilityPolicy:
     # DB helpers
     # ------------------------------------------------------------------ #
 
-    def _most_recent_run(self, dataset_id: int) -> Optional[TrainingRun]:
+    def _most_recent_run(self, dataset_id: int) -> TrainingRun | None:
         # A dataset has many versions; we look at the *most recent*
         # training run on any of them.
         return self._session.execute(
@@ -364,7 +363,7 @@ class TrainingEligibilityPolicy:
             .limit(1)
         ).scalars().first()
 
-    def _most_recent_model_version(self, dataset_id: int) -> Optional[ModelVersion]:
+    def _most_recent_model_version(self, dataset_id: int) -> ModelVersion | None:
         return self._session.execute(
             select(ModelVersion)
             .where(
@@ -378,7 +377,7 @@ class TrainingEligibilityPolicy:
             .limit(1)
         ).scalars().first()
 
-    def _production_for_model(self, model_id: int) -> Optional[ModelVersion]:
+    def _production_for_model(self, model_id: int) -> ModelVersion | None:
         return self._session.execute(
             select(ModelVersion)
             .where(

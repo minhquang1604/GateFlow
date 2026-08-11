@@ -1,21 +1,19 @@
 """Dataset manager for managing datasets and versions."""
 
 import json
-from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
-from mlops_framework.dataset.checksum import calculate_file_checksum, calculate_dict_checksum
-from mlops_framework.dataset.versioning import calculate_schema_hash, calculate_dict_schema_hash
-from mlops_framework.dataset.schemas import DatasetCreate, DatasetVersionCreate
+from mlops_framework.dataset.checksum import calculate_dict_checksum
+from mlops_framework.dataset.versioning import calculate_schema_hash
 from mlops_framework.exceptions import (
     DatasetNotFoundError,
-    DuplicateDatasetNameError,
     DatasetVersionNotFoundError,
+    DuplicateDatasetNameError,
     ImmutableDatasetVersionError,
 )
 
@@ -38,7 +36,7 @@ class DatasetManager:
         """
         self._session = session
 
-    def create_dataset(self, name: str, description: Optional[str] = None) -> Dataset:
+    def create_dataset(self, name: str, description: str | None = None) -> Dataset:
         """Create a new dataset.
 
         Args:
@@ -82,7 +80,7 @@ class DatasetManager:
             raise DatasetNotFoundError(f"Dataset with id {dataset_id} not found")
         return dataset
 
-    def get_dataset_by_name(self, name: str) -> Optional[Dataset]:
+    def get_dataset_by_name(self, name: str) -> Dataset | None:
         """Get a dataset by name.
 
         Args:
@@ -122,7 +120,7 @@ class DatasetManager:
     def _calculate_version_checksum(
         self,
         storage_uri: str,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Calculate checksum for a dataset version.
 
@@ -145,7 +143,7 @@ class DatasetManager:
 
     def _calculate_version_schema_hash(
         self,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """Calculate schema hash for a dataset version.
 
@@ -173,7 +171,7 @@ class DatasetManager:
         dataset_id: int,
         storage_uri: str,
         row_count: int,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> DatasetVersion:
         """Create a new version for a dataset.
 
@@ -193,7 +191,7 @@ class DatasetManager:
             DatasetNotFoundError: If dataset not found
         """
         # Verify dataset exists
-        dataset = self.get_dataset(dataset_id)
+        self.get_dataset(dataset_id)
 
         # Get next version number
         version_number = self._get_next_version_number(dataset_id)
@@ -253,7 +251,7 @@ class DatasetManager:
             ).scalars().all()
         )
 
-    def get_latest_version(self, dataset_id: int) -> Optional[DatasetVersion]:
+    def get_latest_version(self, dataset_id: int) -> DatasetVersion | None:
         """Get the latest version for a dataset.
 
         Args:

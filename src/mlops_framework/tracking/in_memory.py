@@ -8,7 +8,7 @@ package or a tracking server.
 from __future__ import annotations
 
 import uuid
-from typing import Any, Optional
+from typing import Any
 
 from mlops_framework.tracking.base import ExperimentTracker, RunStatus
 
@@ -18,15 +18,15 @@ class InMemoryTracker(ExperimentTracker):
 
     def __init__(self) -> None:
         self.params: list[tuple[str, Any]] = []
-        self.metrics: list[tuple[str, float, Optional[int]]] = []
+        self.metrics: list[tuple[str, float, int | None]] = []
         self.artifacts: list[str] = []
         self.runs: list[dict[str, Any]] = []
-        self._active_id: Optional[str] = None
+        self._active_id: str | None = None
 
     def start_run(
         self,
-        run_name: Optional[str] = None,
-        tags: Optional[dict[str, str]] = None,
+        run_name: str | None = None,
+        tags: dict[str, str] | None = None,
     ) -> str:
         if self._active_id is not None:
             return self._active_id
@@ -48,14 +48,14 @@ class InMemoryTracker(ExperimentTracker):
         self,
         key: str,
         value: float,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         self.metrics.append((key, float(value), step))
 
     def log_metrics(
         self,
         metrics: dict[str, float],
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         for k, v in metrics.items():
             self.log_metric(k, v, step=step)
@@ -63,7 +63,7 @@ class InMemoryTracker(ExperimentTracker):
     def log_artifact(self, path: str) -> None:
         self.artifacts.append(path)
 
-    def end_run(self, status: "str | RunStatus" = RunStatus.SUCCESS) -> None:
+    def end_run(self, status: str | RunStatus = RunStatus.SUCCESS) -> None:
         if self._active_id is None:
             return
         status_value = status.value if isinstance(status, RunStatus) else str(status)

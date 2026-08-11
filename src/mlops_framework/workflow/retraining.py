@@ -25,13 +25,13 @@ that captures the outcome, the decision, and an explainable reason.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
-from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_promotion_event import (
@@ -46,12 +46,11 @@ from mlops_framework.database.models.training_run import (
     TrainingRun,
 )
 from mlops_framework.dataset.manager import DatasetManager
-from mlops_framework.drift.detector import DriftDetector, DriftService
+from mlops_framework.drift.detector import DriftService
 from mlops_framework.events.publisher import (
     EventPublisher,
     ModelPromotedEvent,
 )
-from mlops_framework.exceptions import ModelNotApprovedError, NotEligibleError
 from mlops_framework.governance.eligibility import (
     EligibilityConfig,
     TrainingEligibilityPolicy,
@@ -68,7 +67,7 @@ from mlops_framework.training.service import TrainingService
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------- #
@@ -99,13 +98,13 @@ class RetrainingOutcome:
     """Aggregate outcome of a retraining workflow execution."""
 
     dataset_version_id: int
-    model_id: Optional[int]
-    training_run_id: Optional[int]
-    model_version_id: Optional[int]
-    promotion_event_id: Optional[int]
+    model_id: int | None
+    training_run_id: int | None
+    model_version_id: int | None
+    promotion_event_id: int | None
     steps: list[StepResult]
     promoted: bool
-    blocked_reason: Optional[str] = None
+    blocked_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -142,12 +141,12 @@ class RetrainingWorkflow:
         session: Session,
         *,
         training_service: TrainingService,
-        readiness_engine: Optional[ReadinessEngine] = None,
-        eligibility_policy: Optional[TrainingEligibilityPolicy] = None,
-        promotion_policy: Optional[ModelPromotionPolicy] = None,
-        drift_service: Optional[DriftService] = None,
-        event_publisher: Optional[EventPublisher] = None,
-        event_session: Optional[Session] = None,
+        readiness_engine: ReadinessEngine | None = None,
+        eligibility_policy: TrainingEligibilityPolicy | None = None,
+        promotion_policy: ModelPromotionPolicy | None = None,
+        drift_service: DriftService | None = None,
+        event_publisher: EventPublisher | None = None,
+        event_session: Session | None = None,
     ) -> None:
         self._session = session
         self._service = training_service
@@ -175,10 +174,10 @@ class RetrainingWorkflow:
         eligibility_config: EligibilityConfig | dict[str, Any] | None = None,
         promotion_config: PromotionConfig | dict[str, Any] | None = None,
         # Hooks
-        reference_data: Optional[dict[str, list[float]]] = None,
-        current_data: Optional[dict[str, list[float]]] = None,
+        reference_data: dict[str, list[float]] | None = None,
+        current_data: dict[str, list[float]] | None = None,
         pipeline_id: str = "tests._pipelines.e2e_training:main",
-        evaluate_model: Optional[Callable[[ModelVersion], dict[str, Any]]] = None,
+        evaluate_model: Callable[[ModelVersion], dict[str, Any]] | None = None,
         force: bool = False,
     ) -> RetrainingOutcome:
         """Run the full retraining workflow.
@@ -449,7 +448,7 @@ class RetrainingWorkflow:
 
     def _reference_version(
         self, dataset_version: DatasetVersion
-    ) -> Optional[DatasetVersion]:
+    ) -> DatasetVersion | None:
         """Pick the most recent prior version of the same dataset."""
         from sqlalchemy import select
 
@@ -466,7 +465,7 @@ class RetrainingWorkflow:
     def _resolve_candidate_metrics(
         self,
         run: TrainingRun,
-        evaluate_model: Optional[Callable[[ModelVersion], dict[str, Any]]],
+        evaluate_model: Callable[[ModelVersion], dict[str, Any]] | None,
     ) -> dict[str, Any]:
         """Find the metrics for the just-finished training run.
 
@@ -507,7 +506,7 @@ class RetrainingWorkflow:
                 pass
         return {}
 
-    def _production_for_model(self, model_id: int) -> Optional[ModelVersion]:
+    def _production_for_model(self, model_id: int) -> ModelVersion | None:
         from sqlalchemy import select
 
         return self._session.execute(
@@ -519,7 +518,7 @@ class RetrainingWorkflow:
             .limit(1)
         ).scalars().first()
 
-    def _publish_promotion(self, mv: ModelVersion) -> Optional[int]:
+    def _publish_promotion(self, mv: ModelVersion) -> int | None:
         """Persist a :class:`ModelPromotionEvent` and call the publisher."""
         if self._event_publisher is None:
             return None
@@ -567,11 +566,11 @@ class RetrainingWorkflow:
         model: ModelRow,
         steps: list[StepResult],
         *,
-        training_run_id: Optional[int] = None,
-        model_version_id: Optional[int] = None,
-        promotion_event_id: Optional[int] = None,
+        training_run_id: int | None = None,
+        model_version_id: int | None = None,
+        promotion_event_id: int | None = None,
         promoted: bool = False,
-        blocked_reason: Optional[str] = None,
+        blocked_reason: str | None = None,
     ) -> RetrainingOutcome:
         return RetrainingOutcome(
             dataset_version_id=dataset_version.id,

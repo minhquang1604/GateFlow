@@ -17,10 +17,10 @@ xgboost, or a no-op.
 
 from __future__ import annotations
 
-import json
 import threading
-from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
@@ -28,11 +28,10 @@ from pydantic import BaseModel, Field
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.serving_instance import ServingInstance
-from mlops_framework.events.publisher import ModelPromotedEvent
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------- #
@@ -63,7 +62,7 @@ class ServingModelRegistry:
         model_id: int,
         model_version_id: int,
         model_version_number: int,
-        artifact_uri: Optional[str] = None,
+        artifact_uri: str | None = None,
         payload: Any = None,
     ) -> dict[str, Any]:
         record = {
@@ -79,7 +78,7 @@ class ServingModelRegistry:
             self._active[model_name] = record
         return record
 
-    def get_active(self, model_name: str) -> Optional[dict[str, Any]]:
+    def get_active(self, model_name: str) -> dict[str, Any] | None:
         with self._lock:
             rec = self._active.get(model_name)
             if rec is None:
@@ -105,10 +104,10 @@ class ReloadRequest(BaseModel):
 
     model_name: str = Field(..., min_length=1, max_length=255)
     model_version: int = Field(..., ge=1)
-    artifact_uri: Optional[str] = Field(None, max_length=512)
-    metrics: Optional[dict[str, Any]] = None
-    model_id: Optional[int] = Field(None, ge=1)
-    model_version_id: Optional[int] = Field(None, ge=1)
+    artifact_uri: str | None = Field(None, max_length=512)
+    metrics: dict[str, Any] | None = None
+    model_id: int | None = Field(None, ge=1)
+    model_version_id: int | None = Field(None, ge=1)
 
 
 # ---------------------------------------------------------------------- #
@@ -128,10 +127,10 @@ class ServingBridge:
 
     def __init__(
         self,
-        registry: Optional[ServingModelRegistry] = None,
-        loader: Optional[Callable[[str], Any]] = None,
-        session_factory: Optional[Callable[[], Any]] = None,
-        serving_instance_id: Optional[str] = None,
+        registry: ServingModelRegistry | None = None,
+        loader: Callable[[str], Any] | None = None,
+        session_factory: Callable[[], Any] | None = None,
+        serving_instance_id: str | None = None,
     ) -> None:
         self._registry = registry or ServingModelRegistry()
         self._loader = loader
@@ -232,9 +231,9 @@ class ServingBridge:
         *,
         model_name: str,
         model_version_number: int,
-        artifact_uri: Optional[str],
-        model_id: Optional[int],
-        model_version_id: Optional[int],
+        artifact_uri: str | None,
+        model_id: int | None,
+        model_version_id: int | None,
     ) -> dict[str, int]:
         """Persist a reload to the framework's database.
 

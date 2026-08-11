@@ -1,9 +1,9 @@
 """Database session factory and engine management."""
 
+from collections.abc import Generator
 from contextlib import contextmanager
-from typing import Generator
 
-from sqlalchemy import create_engine, Engine
+from sqlalchemy import Engine, create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from mlops_framework.config.settings import get_settings

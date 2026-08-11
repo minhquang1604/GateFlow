@@ -10,10 +10,10 @@ way a cron-triggered one does, just without waiting on the clock.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import get_db, get_schedule_manager
@@ -37,26 +37,26 @@ class CreateScheduleRequest(BaseModel):
     pipeline_id: str
     cron_expression: str
     enabled: bool = True
-    parameters: Optional[dict[str, Any]] = None
+    parameters: dict[str, Any] | None = None
     min_f1: float = 0.0
-    notes: Optional[str] = None
+    notes: str | None = None
 
 
 class UpdateScheduleRequest(BaseModel):
-    cron_expression: Optional[str] = None
-    enabled: Optional[bool] = None
-    parameters: Optional[dict[str, Any]] = None
-    min_f1: Optional[float] = None
-    notes: Optional[str] = None
+    cron_expression: str | None = None
+    enabled: bool | None = None
+    parameters: dict[str, Any] | None = None
+    min_f1: float | None = None
+    notes: str | None = None
 
 
 class RunNowResponse(BaseModel):
     schedule_id: int
     fired: bool
-    skipped_reason: Optional[str] = None
-    training_run_id: Optional[int] = None
-    promoted: Optional[bool] = None
-    blocked_reason: Optional[str] = None
+    skipped_reason: str | None = None
+    training_run_id: int | None = None
+    promoted: bool | None = None
+    blocked_reason: str | None = None
 
 
 @router.post("/schedules", response_model=ScheduleOut, status_code=201)
@@ -84,7 +84,7 @@ def create_schedule(
 
 @router.get("/schedules", response_model=list[ScheduleOut])
 def list_schedules(
-    model_id: Optional[int] = None,
+    model_id: int | None = None,
     enabled_only: bool = False,
     sm: ScheduleManager = Depends(get_schedule_manager),
 ) -> list[ScheduleOut]:

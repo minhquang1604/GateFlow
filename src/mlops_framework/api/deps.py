@@ -6,7 +6,7 @@ router uses the same configuration.
 
 from __future__ import annotations
 
-from typing import Iterator
+from collections.abc import Iterator
 
 from fastapi import Depends
 from sqlalchemy.orm import Session

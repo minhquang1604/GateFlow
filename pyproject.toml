@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    { name = "MLOps Team", email = "team@example.com" }
+    { name = "minhquang1604", email = "caominhquang1604@gmail.com" }
 ]
 keywords = ["mlops", "machine-learning", "data-pipeline", "training", "ml"]
 classifiers = [
@@ -46,11 +46,6 @@ dev = [
     "httpx>=0.25.0",
 ]
 
-[project.urls]
-Homepage = "https://github.com/example/mlops-framework"
-Repository = "https://github.com/example/mlops-framework"
-Issues = "https://github.com/example/mlops-framework/issues"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -72,6 +67,10 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
     "B008",  # do not perform function calls in argument defaults
+    "UP042", # str+Enum -> enum.StrEnum: changes str(member) from "Cls.MEMBER"
+             # to the bare value, a real behavior change for anything that
+             # logs/serializes these enums today — needs its own reviewed
+             # change, not a lint sweep.
 ]
 
 [tool.ruff.lint.isort]

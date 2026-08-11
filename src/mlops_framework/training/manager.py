@@ -16,18 +16,17 @@ Public methods:
 """
 
 import json
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from mlops_framework.database.models.training_run import TrainingRun, RunStatus, TriggerType
+from mlops_framework.database.models.training_run import RunStatus, TrainingRun, TriggerType
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.exceptions import (
-    TrainingRunNotFoundError,
-    DatasetVersionNotFoundError,
     InvalidStatusTransitionError,
+    TrainingRunNotFoundError,
 )
 from mlops_framework.training.lifecycle import is_terminal, validate_transition
 
@@ -46,7 +45,7 @@ class TrainingManager:
     def __init__(
         self,
         session: Session,
-        dataset_manager: Optional[DatasetManager] = None,
+        dataset_manager: DatasetManager | None = None,
     ) -> None:
         """Initialize training manager.
 
@@ -68,7 +67,7 @@ class TrainingManager:
 
     @staticmethod
     def _now() -> datetime:
-        return datetime.now(timezone.utc)
+        return datetime.now(UTC)
 
     def _parse_status(self, status: "str | RunStatus") -> RunStatus:
         if isinstance(status, RunStatus):
@@ -86,8 +85,8 @@ class TrainingManager:
         self,
         dataset_version_id: int,
         trigger_type: "str | TriggerType" = TriggerType.MANUAL,
-        pipeline_id: Optional[str] = None,
-        metadata: Optional[dict[str, Any]] = None,
+        pipeline_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TrainingRun:
         """Create a new training run in PENDING state.
 
@@ -133,7 +132,7 @@ class TrainingManager:
     # Lifecycle transitions
     # ------------------------------------------------------------------ #
 
-    def start_run(self, run_id: int, mlflow_run_id: Optional[str] = None) -> TrainingRun:
+    def start_run(self, run_id: int, mlflow_run_id: str | None = None) -> TrainingRun:
         """Transition a run PENDING -> RUNNING.
 
         Args:
@@ -176,7 +175,7 @@ class TrainingManager:
         self._session.flush()
         return run
 
-    def fail_run(self, run_id: int, error_message: Optional[str] = None) -> TrainingRun:
+    def fail_run(self, run_id: int, error_message: str | None = None) -> TrainingRun:
         """Transition a run RUNNING -> FAILED, recording an error message."""
         run = self.get_run(run_id)
         if is_terminal(run.status):
@@ -260,7 +259,7 @@ class TrainingManager:
     def update_run(
         self,
         run_id: int,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> TrainingRun:
         """Update metadata for a training run. Backwards-compatible alias."""
         run = self.get_run(run_id)
@@ -281,7 +280,7 @@ class TrainingManager:
             raise TrainingRunNotFoundError(f"TrainingRun with id {run_id} not found")
         return run
 
-    def list_runs(self, dataset_version_id: Optional[int] = None) -> list[TrainingRun]:
+    def list_runs(self, dataset_version_id: int | None = None) -> list[TrainingRun]:
         """List training runs, optionally filtered by dataset version."""
         query = select(TrainingRun)
         if dataset_version_id is not None:

@@ -21,14 +21,14 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # ---------------------------------------------------------------------- #
@@ -78,9 +78,9 @@ class ModelPromotedEvent(Event):
         self,
         model_name: str,
         model_version: int,
-        artifact_uri: Optional[str] = None,
-        metrics: Optional[dict[str, Any]] = None,
-        timestamp: Optional[str] = None,
+        artifact_uri: str | None = None,
+        metrics: dict[str, Any] | None = None,
+        timestamp: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {
             "model_name": model_name,
@@ -161,8 +161,8 @@ class HttpEventPublisher(EventPublisher):
         url: str,
         *,
         timeout: float = 5.0,
-        headers: Optional[dict[str, str]] = None,
-        client: Optional[httpx.Client] = None,
+        headers: dict[str, str] | None = None,
+        client: httpx.Client | None = None,
     ) -> None:
         if not url:
             raise ValueError("HttpEventPublisher requires a url")

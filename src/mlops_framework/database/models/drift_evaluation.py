@@ -5,15 +5,18 @@ operators can see *when* drift was observed, *which* dataset versions
 were compared, and *what* the framework decided.
 """
 
+import enum
+
 from sqlalchemy import (
-    String,
-    Text,
-    Float,
-    ForeignKey,
     Enum as SQLEnum,
 )
+from sqlalchemy import (
+    Float,
+    ForeignKey,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
-import enum
 
 from mlops_framework.database.base import Base, TimestampMixin
 

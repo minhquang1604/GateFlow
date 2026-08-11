@@ -18,12 +18,11 @@ construction time.
 from __future__ import annotations
 
 import json
-from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from mlops_framework.orchestration.base import ExecutionState, Orchestrator
-from mlops_framework.training.manager import TrainingManager
 from mlops_framework.tracking.base import ExperimentTracker
+from mlops_framework.training.manager import TrainingManager
 
 
 class TrainingService:
@@ -46,7 +45,7 @@ class TrainingService:
         self,
         training_manager: TrainingManager,
         orchestrator: Orchestrator,
-        tracker: Optional[ExperimentTracker] = None,
+        tracker: ExperimentTracker | None = None,
     ) -> None:
         self._manager = training_manager
         self._orchestrator = orchestrator
@@ -61,7 +60,7 @@ class TrainingService:
         dataset_version_id: int,
         pipeline_id: str,
         trigger_type: str = "MANUAL",
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> Any:
         """Create a PENDING training run for a dataset version."""
         return self._manager.create_run(
@@ -87,7 +86,7 @@ class TrainingService:
         """
         run = self._manager.get_run(run_id)
 
-        tracker_run_id: Optional[str] = None
+        tracker_run_id: str | None = None
         if self._tracker is not None:
             tracker_run_id = self._tracker.start_run(
                 run_name=f"training-run-{run_id}",
@@ -107,7 +106,7 @@ class TrainingService:
     def build_pipeline_config(
         self,
         run_id: int,
-        tracker_run_id: Optional[str] = None,
+        tracker_run_id: str | None = None,
     ) -> dict[str, Any]:
         """Assemble the config handed to the pipeline entry point.
 
@@ -195,7 +194,7 @@ class TrainingService:
             self._tracker.end_run(status="SUCCESS")
         return self._manager.complete_run(run_id)
 
-    def fail_run(self, run_id: int, error_message: Optional[str] = None) -> Any:
+    def fail_run(self, run_id: int, error_message: str | None = None) -> Any:
         """Mark the run FAILED and end the tracker run (if any)."""
         run = self._manager.get_run(run_id)
         if self._tracker is not None and run.mlflow_run_id:
@@ -261,7 +260,7 @@ class TrainingService:
             self.cancel_run(run_id)
         return last_state
 
-    def _last_message(self, execution_id: str) -> Optional[str]:
+    def _last_message(self, execution_id: str) -> str | None:
         try:
             return self._orchestrator.get_execution_status(execution_id).message
         except Exception:

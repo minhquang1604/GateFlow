@@ -20,7 +20,7 @@ import enum
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 
 class ExecutionState(str, enum.Enum):
@@ -40,11 +40,11 @@ class ExecutionStatus:
 
     execution_id: str
     state: ExecutionState
-    pipeline_id: Optional[str] = None
-    started_at: Optional[datetime] = None
-    finished_at: Optional[datetime] = None
-    exit_code: Optional[int] = None
-    message: Optional[str] = None
+    pipeline_id: str | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    exit_code: int | None = None
+    message: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -82,7 +82,7 @@ class Orchestrator(ABC):
     def trigger_pipeline(
         self,
         pipeline_id: str,
-        config: Optional[dict[str, Any]] = None,
+        config: dict[str, Any] | None = None,
     ) -> str:
         """Trigger a pipeline execution and return an execution identifier.
 

@@ -16,8 +16,8 @@ SUCCESS, FAILED and CANCELLED are terminal.
 """
 
 from mlops_framework.database.models.training_run import (
-    RunStatus,
     VALID_STATUS_TRANSITIONS,
+    RunStatus,
 )
 from mlops_framework.exceptions import InvalidStatusTransitionError
 

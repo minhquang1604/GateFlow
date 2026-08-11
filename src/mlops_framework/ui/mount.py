@@ -40,12 +40,10 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-
 
 _PKG_UI = Path(__file__).parent
 
@@ -159,7 +157,7 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
 
 def mount_ui(
     app: FastAPI,
-    templates_dir: Optional[Path] = None,
+    templates_dir: Path | None = None,
 ) -> None:
     """Mount the Management UI on ``app`` at ``/``.
 

@@ -18,13 +18,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 from mlops_framework.database.models.model_version import (
-    ModelState,
     ModelVersion,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Configuration & decision
@@ -48,7 +46,7 @@ class PromotionConfig:
     min_floors: dict[str, float] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "PromotionConfig":
+    def from_dict(cls, data: dict[str, Any] | None) -> PromotionConfig:
         if data is None:
             return cls()
         return cls(
@@ -74,7 +72,7 @@ class PromotionContext:
     """Inputs to the promotion decision."""
 
     candidate: ModelVersion
-    production: Optional[ModelVersion] = None
+    production: ModelVersion | None = None
 
 
 @dataclass

@@ -9,7 +9,7 @@ separate concern; see ``scheduling/runner.py``.
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -39,9 +39,9 @@ class ScheduleManager:
         cron_expression: str,
         *,
         enabled: bool = True,
-        parameters: Optional[dict[str, Any]] = None,
+        parameters: dict[str, Any] | None = None,
         min_f1: float = 0.0,
-        notes: Optional[str] = None,
+        notes: str | None = None,
     ) -> Schedule:
         cron.validate(cron_expression)
         if self._session.get(Model, model_id) is None:
@@ -70,7 +70,7 @@ class ScheduleManager:
         return schedule
 
     def list_schedules(
-        self, *, model_id: Optional[int] = None, enabled_only: bool = False
+        self, *, model_id: int | None = None, enabled_only: bool = False
     ) -> list[Schedule]:
         stmt = select(Schedule).order_by(Schedule.id)
         if model_id is not None:
@@ -83,11 +83,11 @@ class ScheduleManager:
         self,
         schedule_id: int,
         *,
-        cron_expression: Optional[str] = None,
-        enabled: Optional[bool] = None,
-        parameters: Optional[dict[str, Any]] = None,
-        min_f1: Optional[float] = None,
-        notes: Optional[str] = None,
+        cron_expression: str | None = None,
+        enabled: bool | None = None,
+        parameters: dict[str, Any] | None = None,
+        min_f1: float | None = None,
+        notes: str | None = None,
     ) -> Schedule:
         schedule = self.get_schedule(schedule_id)
         if cron_expression is not None:
@@ -105,7 +105,7 @@ class ScheduleManager:
         return schedule
 
     def record_trigger(
-        self, schedule_id: int, *, triggered_at, training_run_id: Optional[int]
+        self, schedule_id: int, *, triggered_at, training_run_id: int | None
     ) -> Schedule:
         """Called by the runner after firing a schedule — advances
         ``last_triggered_at`` so the same window isn't fired twice."""

@@ -17,7 +17,7 @@ share it without an inverted dependency:
 from __future__ import annotations
 
 import os
-from typing import Any, Optional, Tuple
+from typing import Any
 
 from mlops_framework.config.settings import get_settings
 
@@ -43,12 +43,12 @@ def _apply_http_limits() -> None:
         os.environ.setdefault(key, value)
 
 
-def tracking_uri() -> Optional[str]:
+def tracking_uri() -> str | None:
     """Return the configured tracking URI, if any."""
     return get_settings().mlflow_tracking_uri
 
 
-def client_or_reason() -> Tuple[Any, Optional[str]]:
+def client_or_reason() -> tuple[Any, str | None]:
     """Build an ``MlflowClient``, or explain why one is not available.
 
     Returns:

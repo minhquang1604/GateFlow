@@ -11,7 +11,8 @@ call path; this gateway only ever calls its read methods.
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -31,12 +32,12 @@ from mlops_framework.config.settings import get_settings
 _PANEL_TIMEOUT_SECONDS = 8.0
 
 
-def base_url() -> Optional[str]:
+def base_url() -> str | None:
     """Return the configured Airflow base URL, if any."""
     return get_settings().airflow_base_url
 
 
-def client_or_reason() -> Tuple[Any, Optional[str]]:
+def client_or_reason() -> tuple[Any, str | None]:
     """Build an ``AirflowOrchestrator``, or explain why one is not available.
 
     Returns:

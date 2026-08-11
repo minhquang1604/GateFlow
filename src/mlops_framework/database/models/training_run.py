@@ -1,11 +1,17 @@
 """TrainingRun ORM model."""
 
-from sqlalchemy import String, Text, Integer, ForeignKey, Enum as SQLEnum
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from datetime import datetime
 import enum
+from datetime import datetime
+from typing import TYPE_CHECKING
+
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy import ForeignKey, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mlops_framework.database.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from mlops_framework.database.models.dataset_version import DatasetVersion
 
 
 class RunStatus(str, enum.Enum):

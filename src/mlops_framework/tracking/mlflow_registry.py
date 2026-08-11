@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import logging
 import posixpath
-from typing import Optional
 
 from mlops_framework.tracking.mlflow_client import client_or_reason
 
@@ -63,7 +62,7 @@ def _ensure_registered_model(client: object, name: str) -> None:
             raise
 
 
-def artifact_filename_from_uri(artifact_uri: Optional[str]) -> str:
+def artifact_filename_from_uri(artifact_uri: str | None) -> str:
     """Derive the MLflow-relative artifact filename from whatever a
     caller has on hand.
 
@@ -82,9 +81,9 @@ def artifact_filename_from_uri(artifact_uri: Optional[str]) -> str:
 
 def sync_candidate(
     model_name: str,
-    mlflow_run_id: Optional[str],
+    mlflow_run_id: str | None,
     artifact_filename: str = DEFAULT_ARTIFACT_FILENAME,
-) -> Optional[str]:
+) -> str | None:
     """Register a new MLflow Model Version for a just-created CANDIDATE.
 
     Returns the MLflow version string on success, or ``None`` — MLflow
@@ -114,7 +113,7 @@ def sync_candidate(
         return None
 
 
-def sync_production(model_name: str, version: Optional[str]) -> bool:
+def sync_production(model_name: str, version: str | None) -> bool:
     """Mark ``version`` as the one being served on MLflow's side:
     stage=Production (auto-archiving whichever version held it before)
     and the ``champion`` alias.

@@ -31,8 +31,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -55,15 +55,15 @@ _log = logging.getLogger("mlops_framework.scheduling.runner")
 class ScheduleFireResult:
     schedule_id: int
     fired: bool
-    skipped_reason: Optional[str] = None
-    outcome: Optional[RetrainingOutcome] = None
+    skipped_reason: str | None = None
+    outcome: RetrainingOutcome | None = None
 
 
 def run_due_schedules(
     session: Session,
     *,
-    mlflow_tracking_uri: Optional[str] = None,
-    now: Optional[datetime] = None,
+    mlflow_tracking_uri: str | None = None,
+    now: datetime | None = None,
 ) -> list[ScheduleFireResult]:
     """Fire every enabled schedule that is due, in one pass.
 
@@ -71,7 +71,7 @@ def run_due_schedules(
     disabled schedules aren't reported at all — "disabled" isn't an
     interesting outcome to surface on every tick.
     """
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     sm = ScheduleManager(session)
     results: list[ScheduleFireResult] = []
 
@@ -94,7 +94,7 @@ def run_schedule_now(
     session: Session,
     schedule_id: int,
     *,
-    mlflow_tracking_uri: Optional[str] = None,
+    mlflow_tracking_uri: str | None = None,
 ) -> ScheduleFireResult:
     """Fire one schedule immediately, bypassing the cron check.
 
@@ -102,10 +102,10 @@ def run_schedule_now(
     now, not "now if it happens to be due".
     """
     schedule = ScheduleManager(session).get_schedule(schedule_id)
-    return _fire(session, schedule, mlflow_tracking_uri, datetime.now(timezone.utc))
+    return _fire(session, schedule, mlflow_tracking_uri, datetime.now(UTC))
 
 
-def _fire(session: Session, schedule: Any, mlflow_tracking_uri: Optional[str], now: datetime) -> ScheduleFireResult:
+def _fire(session: Session, schedule: Any, mlflow_tracking_uri: str | None, now: datetime) -> ScheduleFireResult:
     dm = DatasetManager(session)
     version = dm.get_latest_version(schedule.dataset_id)
     if version is None:

@@ -29,7 +29,7 @@ pins the current behaviour against a real server.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import ExperimentTrackingError
@@ -48,7 +48,7 @@ def _import_mlflow():
     return mlflow
 
 
-def _map_run_status(status: "str | RunStatus") -> str:
+def _map_run_status(status: str | RunStatus) -> str:
     """Map a framework :class:`RunStatus` to the MLflow run-status string.
 
     The framework exposes three terminal states. MLflow uses
@@ -85,8 +85,8 @@ class MLflowTracker(ExperimentTracker):
 
     def __init__(
         self,
-        tracking_uri: Optional[str] = None,
-        experiment_name: Optional[str] = None,
+        tracking_uri: str | None = None,
+        experiment_name: str | None = None,
     ) -> None:
         mlflow = _import_mlflow()
         self._mlflow = mlflow
@@ -115,8 +115,8 @@ class MLflowTracker(ExperimentTracker):
 
     def start_run(
         self,
-        run_name: Optional[str] = None,
-        tags: Optional[dict[str, str]] = None,
+        run_name: str | None = None,
+        tags: dict[str, str] | None = None,
     ) -> str:
         if self._active_run is not None:
             # An active run already exists; return its id.
@@ -137,7 +137,7 @@ class MLflowTracker(ExperimentTracker):
         self,
         key: str,
         value: float,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         self._require_active()
         self._mlflow.log_metric(key, value, step=step)
@@ -145,7 +145,7 @@ class MLflowTracker(ExperimentTracker):
     def log_metrics(
         self,
         metrics: dict[str, float],
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         self._require_active()
         self._mlflow.log_metrics(metrics, step=step)
@@ -154,7 +154,7 @@ class MLflowTracker(ExperimentTracker):
         self._require_active()
         self._mlflow.log_artifact(path)
 
-    def end_run(self, status: "str | RunStatus" = RunStatus.SUCCESS) -> None:
+    def end_run(self, status: str | RunStatus = RunStatus.SUCCESS) -> None:
         if self._active_run is None:
             return
         mlflow_status = _map_run_status(status)

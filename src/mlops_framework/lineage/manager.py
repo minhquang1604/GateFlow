@@ -16,8 +16,9 @@ lineage data. It produces a serializable :class:`LineageGraph`.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -26,12 +27,10 @@ from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model
 from mlops_framework.database.models.model_version import (
-    ModelState,
     ModelVersion,
 )
 from mlops_framework.database.models.serving_instance import ServingInstance
 from mlops_framework.database.models.training_run import TrainingRun
-
 
 # ---------------------------------------------------------------------- #
 # Data classes

@@ -14,9 +14,9 @@ Public API:
 """
 
 import json
-from typing import Any, Optional
+from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mlops_framework.database.models.model import Model
@@ -45,8 +45,8 @@ class ModelManager:
     def create_model(
         self,
         name: str,
-        description: Optional[str] = None,
-        task: Optional[str] = None,
+        description: str | None = None,
+        task: str | None = None,
     ) -> Model:
         existing = self._session.execute(
             select(Model).where(Model.name == name)
@@ -64,7 +64,7 @@ class ModelManager:
             raise ModelNotFoundError(f"Model with id {model_id} not found")
         return model
 
-    def get_model_by_name(self, name: str) -> Optional[Model]:
+    def get_model_by_name(self, name: str) -> Model | None:
         return self._session.execute(
             select(Model).where(Model.name == name)
         ).scalar_one_or_none()
@@ -87,12 +87,12 @@ class ModelManager:
         self,
         model_id: int,
         dataset_version_id: int,
-        training_run_id: Optional[int] = None,
-        mlflow_run_id: Optional[str] = None,
-        artifact_uri: Optional[str] = None,
-        metrics: Optional[dict[str, Any]] = None,
+        training_run_id: int | None = None,
+        mlflow_run_id: str | None = None,
+        artifact_uri: str | None = None,
+        metrics: dict[str, Any] | None = None,
         state: ModelState = ModelState.TRAINING,
-        notes: Optional[str] = None,
+        notes: str | None = None,
     ) -> ModelVersion:
         # Verify model exists.
         self.get_model(model_id)

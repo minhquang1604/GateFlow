@@ -10,12 +10,11 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from mlops_framework.lineage.manager import LineageGraph
-
 
 # ---------------------------------------------------------------------- #
 # Shared
@@ -43,7 +42,7 @@ class ExternalPanel(BaseModel):
     """
 
     available: bool
-    reason: Optional[str] = None
+    reason: str | None = None
     data: Any = None
 
 
@@ -61,11 +60,11 @@ class DatasetVersionOut(ApiModel):
     schema_hash: str
     row_count: int
     is_immutable: bool
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_orm_with_metadata(cls, obj) -> "DatasetVersionOut":
+    def from_orm_with_metadata(cls, obj) -> DatasetVersionOut:
         """Build a schema from a ``DatasetVersion``, parsing metadata_json."""
         metadata = None
         if getattr(obj, "metadata_json", None):
@@ -90,9 +89,9 @@ class DatasetVersionOut(ApiModel):
 class DatasetOut(ApiModel):
     id: int
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     version_count: int = 0
-    latest_version: Optional[DatasetVersionOut] = None
+    latest_version: DatasetVersionOut | None = None
 
 
 # ---------------------------------------------------------------------- #
@@ -102,25 +101,25 @@ class DatasetOut(ApiModel):
 
 class TrainingRunOut(ApiModel):
     id: int
-    dataset_version_id: Optional[int] = None
-    model_id: Optional[int] = None
-    pipeline_id: Optional[str] = None
+    dataset_version_id: int | None = None
+    model_id: int | None = None
+    pipeline_id: str | None = None
     status: str
-    trigger_type: Optional[str] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    duration_seconds: Optional[float] = None
-    error_message: Optional[str] = None
-    mlflow_run_id: Optional[str] = None
-    orchestrator: Optional[str] = None
-    execution_id: Optional[str] = None
-    parameters: Optional[Dict[str, Any]] = None
-    metrics: Optional[Dict[str, Any]] = None
-    metadata: Optional[Dict[str, Any]] = None
-    created_at: Optional[datetime] = None
+    trigger_type: str | None = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    duration_seconds: float | None = None
+    error_message: str | None = None
+    mlflow_run_id: str | None = None
+    orchestrator: str | None = None
+    execution_id: str | None = None
+    parameters: dict[str, Any] | None = None
+    metrics: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_orm_with_json(cls, obj) -> "TrainingRunOut":
+    def from_orm_with_json(cls, obj) -> TrainingRunOut:
         """Build a schema, parsing JSON columns.
 
         ``TrainingRun`` only persists a single ``metadata_json`` blob —
@@ -129,7 +128,7 @@ class TrainingRunOut(ApiModel):
         present and fall back gracefully when they aren't.
         """
 
-        def _maybe_load(raw: str | None) -> Dict[str, Any] | None:
+        def _maybe_load(raw: str | None) -> dict[str, Any] | None:
             if not raw:
                 return None
             try:
@@ -189,15 +188,15 @@ class ModelVersionOut(ApiModel):
     model_id: int
     version_number: int
     state: str
-    dataset_version_id: Optional[int] = None
-    training_run_id: Optional[int] = None
-    artifact_uri: Optional[str] = None
-    metrics: Optional[Dict[str, Any]] = None
-    notes: Optional[str] = None
-    created_at: Optional[datetime] = None
+    dataset_version_id: int | None = None
+    training_run_id: int | None = None
+    artifact_uri: str | None = None
+    metrics: dict[str, Any] | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_orm_with_metrics(cls, obj) -> "ModelVersionOut":
+    def from_orm_with_metrics(cls, obj) -> ModelVersionOut:
         metrics = None
         raw = getattr(obj, "metrics_json", None)
         if raw:
@@ -222,10 +221,10 @@ class ModelVersionOut(ApiModel):
 class ModelOut(ApiModel):
     id: int
     name: str
-    description: Optional[str] = None
-    task: Optional[str] = None
+    description: str | None = None
+    task: str | None = None
     version_count: int = 0
-    production_version: Optional[ModelVersionOut] = None
+    production_version: ModelVersionOut | None = None
 
 
 # ---------------------------------------------------------------------- #
@@ -262,11 +261,11 @@ class LineageGraphOut(BaseModel):
 
     root_kind: str
     root_id: str
-    nodes: List[Dict[str, Any]]
-    edges: List[Dict[str, Any]]
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
 
     @classmethod
-    def from_graph(cls, graph: LineageGraph) -> "LineageGraphOut":
+    def from_graph(cls, graph: LineageGraph) -> LineageGraphOut:
         return cls(**graph.to_dict())
 
 
@@ -279,13 +278,13 @@ class ReadinessEvaluationOut(ApiModel):
     id: int
     dataset_version_id: int
     status: str
-    policy: Optional[Dict[str, Any]] = None
-    checks: Optional[Dict[str, Any]] = None
-    reasons: Optional[Any] = None
-    created_at: Optional[datetime] = None
+    policy: dict[str, Any] | None = None
+    checks: dict[str, Any] | None = None
+    reasons: Any | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_orm_with_json(cls, obj) -> "ReadinessEvaluationOut":
+    def from_orm_with_json(cls, obj) -> ReadinessEvaluationOut:
         def _maybe_load(raw):
             if not raw:
                 return None
@@ -311,14 +310,14 @@ class DriftEvaluationOut(ApiModel):
     current_dataset_version_id: int
     method: str
     outcome: str
-    score: Optional[float] = None
-    threshold: Optional[float] = None
-    details: Optional[Dict[str, Any]] = None
-    notes: Optional[str] = None
-    created_at: Optional[datetime] = None
+    score: float | None = None
+    threshold: float | None = None
+    details: dict[str, Any] | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_orm_with_json(cls, obj) -> "DriftEvaluationOut":
+    def from_orm_with_json(cls, obj) -> DriftEvaluationOut:
         details = None
         raw = getattr(obj, "details_json", None)
         if raw:
@@ -348,26 +347,26 @@ class DriftEvaluationOut(ApiModel):
 class ScheduleOut(ApiModel):
     id: int
     model_id: int
-    model_name: Optional[str] = None
+    model_name: str | None = None
     dataset_id: int
-    dataset_name: Optional[str] = None
+    dataset_name: str | None = None
     pipeline_id: str
     cron_expression: str
     enabled: bool
-    parameters: Optional[Dict[str, Any]] = None
+    parameters: dict[str, Any] | None = None
     min_f1: float
-    last_triggered_at: Optional[datetime] = None
-    last_training_run_id: Optional[int] = None
+    last_triggered_at: datetime | None = None
+    last_training_run_id: int | None = None
     # Computed, not stored — see scheduling/cron.py. None when the cron
     # expression somehow fails to evaluate (should not happen past
     # create/update validation, but a display field degrading to None
     # beats a 500 on the schedule list).
-    next_fire_at: Optional[datetime] = None
-    notes: Optional[str] = None
-    created_at: Optional[datetime] = None
+    next_fire_at: datetime | None = None
+    notes: str | None = None
+    created_at: datetime | None = None
 
     @classmethod
-    def from_schedule(cls, obj) -> "ScheduleOut":
+    def from_schedule(cls, obj) -> ScheduleOut:
         """Build from a ``Schedule`` ORM row.
 
         Named to avoid pydantic's own (deprecated) ``BaseModel.from_orm``

@@ -10,7 +10,7 @@ site to swap out if that ever changes.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from mlops_framework.exceptions import InvalidCronExpressionError
 
@@ -32,7 +32,7 @@ def validate(cron_expression: str) -> None:
         # is_valid() checks syntax; constructing it also catches a field
         # combination is_valid() lets through but croniter can't actually
         # iterate (e.g. a day-of-month/month pair that never occurs).
-        croniter(cron_expression, datetime.now(timezone.utc))
+        croniter(cron_expression, datetime.now(UTC))
     except (CroniterBadCronError, ValueError) as exc:
         raise InvalidCronExpressionError(
             f"{cron_expression!r} is not a usable cron expression: {exc}"
@@ -44,7 +44,7 @@ def next_fire_time(cron_expression: str, after: datetime) -> datetime:
     from croniter import croniter
 
     if after.tzinfo is None:
-        after = after.replace(tzinfo=timezone.utc)
+        after = after.replace(tzinfo=UTC)
     return croniter(cron_expression, after).get_next(datetime)
 
 

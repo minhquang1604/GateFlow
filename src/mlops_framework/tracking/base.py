@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Iterable, Optional
+from typing import Any
 
 
 class RunStatus(str, Enum):
@@ -35,8 +35,8 @@ class ExperimentTracker(ABC):
     @abstractmethod
     def start_run(
         self,
-        run_name: Optional[str] = None,
-        tags: Optional[dict[str, str]] = None,
+        run_name: str | None = None,
+        tags: dict[str, str] | None = None,
     ) -> str:
         """Begin a new tracker run and return its identifier."""
         raise NotImplementedError
@@ -56,7 +56,7 @@ class ExperimentTracker(ABC):
         self,
         key: str,
         value: float,
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         """Log a single metric."""
         raise NotImplementedError
@@ -65,7 +65,7 @@ class ExperimentTracker(ABC):
     def log_metrics(
         self,
         metrics: dict[str, float],
-        step: Optional[int] = None,
+        step: int | None = None,
     ) -> None:
         """Log a batch of metrics."""
         raise NotImplementedError
@@ -76,6 +76,6 @@ class ExperimentTracker(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def end_run(self, status: "str | RunStatus" = RunStatus.SUCCESS) -> None:
+    def end_run(self, status: str | RunStatus = RunStatus.SUCCESS) -> None:
         """End the current run with a final status."""
         raise NotImplementedError

@@ -4,10 +4,15 @@ A Model is a logical container for one or more ModelVersions. Model
 names are unique within the system.
 """
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mlops_framework.database.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from mlops_framework.database.models.model_version import ModelVersion
 
 
 class Model(Base, TimestampMixin):

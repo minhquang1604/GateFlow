@@ -13,9 +13,10 @@ the decision.
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -25,11 +26,10 @@ from mlops_framework.database.models.readiness_evaluation import (
     ReadinessEvaluation,
     ReadinessStatus,
 )
-from mlops_framework.exceptions import ReadinessError
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 # ---------------------------------------------------------------------- #
@@ -59,15 +59,15 @@ class TrainingPolicy:
     """
 
     required_size: int = 0
-    freshness_hours: Optional[int] = None
+    freshness_hours: int | None = None
     required_columns: list[str] = field(default_factory=list)
     dtypes: dict[str, str] = field(default_factory=dict)
-    max_missing_ratio: Optional[float] = None
-    expected_column_count: Optional[int] = None
+    max_missing_ratio: float | None = None
+    expected_column_count: int | None = None
     validation_rules: dict[str, bool] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "TrainingPolicy":
+    def from_dict(cls, data: dict[str, Any]) -> TrainingPolicy:
         """Build a TrainingPolicy from a plain dict (e.g. config)."""
         if data is None:
             return cls()
@@ -283,7 +283,7 @@ class ReadinessEngine:
                 "no created_at on dataset version",
             )
         if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
+            created_at = created_at.replace(tzinfo=UTC)
         age = now - created_at
         max_age = timedelta(hours=float(policy.freshness_hours))
         if age <= max_age:
@@ -509,7 +509,7 @@ def _metadata(version: DatasetVersion) -> dict[str, Any]:
     return meta if isinstance(meta, dict) else {}
 
 
-def _missing_ratio(version: DatasetVersion) -> Optional[float]:
+def _missing_ratio(version: DatasetVersion) -> float | None:
     meta = _metadata(version)
     if "missing_ratio" in meta:
         try:

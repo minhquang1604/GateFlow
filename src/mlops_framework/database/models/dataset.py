@@ -1,10 +1,14 @@
 """Dataset ORM model."""
 
+from typing import TYPE_CHECKING
+
 from sqlalchemy import String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.orm import relationship
 
 from mlops_framework.database.base import Base, TimestampMixin
+
+if TYPE_CHECKING:
+    from mlops_framework.database.models.dataset_version import DatasetVersion
 
 
 class Dataset(Base, TimestampMixin):

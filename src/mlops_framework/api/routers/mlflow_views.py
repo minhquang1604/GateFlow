@@ -20,7 +20,7 @@ import mimetypes
 import posixpath
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -81,7 +81,7 @@ def list_experiments() -> ExternalPanel:
 )
 def experiment_runs(
     experiment_id: str,
-    order_by: Optional[str] = Query(
+    order_by: str | None = Query(
         default=None,
         description="Metric to rank by, e.g. 'average_precision'. "
         "Defaults to start time.",
@@ -301,7 +301,7 @@ def get_run_artifact_by_mlflow_id(
 # ---------------------------------------------------------------------- #
 
 
-def _find_mlmodel_in_run(client: Any, mlflow_run_id: str) -> Optional[str]:
+def _find_mlmodel_in_run(client: Any, mlflow_run_id: str) -> str | None:
     """Locate an ``MLmodel`` descriptor among a run's own artifacts.
 
     This is the MLflow 2.x layout, which the deployed tracking server

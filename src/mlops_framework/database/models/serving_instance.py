@@ -5,11 +5,10 @@ ModelVersion. Updated by the serving bridge when a reload succeeds.
 """
 
 from sqlalchemy import (
+    Boolean,
+    ForeignKey,
     String,
     Text,
-    Integer,
-    ForeignKey,
-    Boolean,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 

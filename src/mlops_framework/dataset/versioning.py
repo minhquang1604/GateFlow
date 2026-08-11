@@ -2,7 +2,8 @@
 
 import hashlib
 import json
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 
 class ColumnSpec:
@@ -77,15 +78,15 @@ def calculate_pandas_schema_hash(df: Any) -> str:
     """
     try:
         import pandas as pd  # type: ignore[import]
-    except ImportError:
-        raise ImportError("pandas is required for pandas schema hashing")
+    except ImportError as exc:
+        raise ImportError("pandas is required for pandas schema hashing") from exc
 
     if not isinstance(df, pd.DataFrame):
         raise ValueError("df must be a pandas DataFrame")
 
     columns = [
         ColumnSpec(name=str(name), dtype=str(dtype))
-        for name, dtype in zip(df.columns, df.dtypes)
+        for name, dtype in zip(df.columns, df.dtypes, strict=True)
     ]
     return calculate_schema_hash(columns)
 
