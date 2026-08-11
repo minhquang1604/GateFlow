@@ -177,6 +177,8 @@ class RetrainingWorkflow:
         reference_data: dict[str, list[float]] | None = None,
         current_data: dict[str, list[float]] | None = None,
         pipeline_id: str = "tests._pipelines.e2e_training:main",
+        training_entrypoint: str | None = None,
+        training_timeout: float = 60.0,
         evaluate_model: Callable[[ModelVersion], dict[str, Any]] | None = None,
         force: bool = False,
     ) -> RetrainingOutcome:
@@ -192,7 +194,31 @@ class RetrainingWorkflow:
                 drift detector. If both are provided, drift detection
                 runs; otherwise the eligibility step treats drift as
                 *unknown* (its drift-related gates become no-ops).
-            pipeline_id: The orchestrator pipeline to trigger.
+            pipeline_id: The orchestrator pipeline to trigger. With
+                :class:`~mlops_framework.orchestration.local.LocalDockerOrchestrator`
+                this is the "module:callable" import path — leave
+                ``training_entrypoint`` unset. With
+                :class:`~mlops_framework.orchestration.airflow.AirflowOrchestrator`
+                this is the Airflow DAG id, and the real Python callable
+                must be passed separately via ``training_entrypoint`` (see
+                that parameter, and "AirflowOrchestrator vs
+                LocalDockerOrchestrator" in the README).
+            training_entrypoint: The "module:callable" the training pipeline
+                actually runs — only meaningful with
+                ``AirflowOrchestrator``, whose DAG reads it back over HTTP
+                from ``TrainingRun.metadata["training_entrypoint"]``
+                (``infrastructure/airflow/dags/mlops_training_pipeline.py``'s
+                ``_resolve_entrypoint``). Leave unset for
+                ``LocalDockerOrchestrator``, which imports ``pipeline_id``
+                directly and has no use for this.
+            training_timeout: Seconds to wait for the training execution.
+                The 60s default is generous for
+                ``LocalDockerOrchestrator``'s in-process subprocess; a real
+                multi-task Airflow DAG run (scheduling latency across
+                resolve_context/train/validate_*/report_status/
+                register_and_promote, on top of the training itself) needs
+                much longer — the demo scripts default to 600s for the
+                same DAG.
             evaluate_model: Optional callable that computes the metrics
                 of a freshly-trained :class:`ModelVersion`. If not
                 provided, the workflow uses the metrics that the
@@ -301,14 +327,39 @@ class RetrainingWorkflow:
         # Use the dataset manager from the existing service if any.
         dm = DatasetManager(self._session)
         tm = TrainingManager(self._session, dm)
+        # owned_by_workflow tells an Airflow-side pipeline (see
+        # infrastructure/airflow/dags/mlops_training_pipeline.py) that this
+        # run's governance — closing the run out, registering a
+        # ModelVersion, promoting it — is owned end-to-end by this
+        # workflow, not by the DAG's own register_and_promote /
+        # report_status tasks. Without it, both sides would race to
+        # complete_run() the same TrainingRun and create+promote two
+        # separate ModelVersions for the same training run. Harmless (and
+        # unread) with LocalDockerOrchestrator, which has no such tasks.
+        run_metadata: dict[str, Any] = {"owned_by_workflow": True}
+        if training_entrypoint:
+            run_metadata["training_entrypoint"] = training_entrypoint
         run = self._service.create_run(
             dataset_version_id=dataset_version.id,
             pipeline_id=pipeline_id,
             trigger_type="DRIFT" if drift_result is not None and drift_result.drift_detected else "SCHEDULED",
+            metadata=run_metadata,
         )
         try:
             self._service.start_run(run.id)
-            self._service.wait_for_completion(run.id, timeout=60.0)
+            # AirflowOrchestrator's trigger really did just hand this run
+            # to an external process (the DAG's own webserver/scheduler
+            # containers), which resolves the run by querying
+            # GET /internal/training-runs/{id}/context over HTTP — a
+            # separate connection, in a separate transaction, that cannot
+            # see this session's writes until they're committed.
+            # LocalDockerOrchestrator's subprocess never queries the
+            # database at all (its config is handed to it directly), so
+            # committing here changes nothing for that path — but without
+            # it, a real Airflow run 404s the instant resolve_context asks
+            # for a TrainingRun this transaction hasn't published yet.
+            self._session.commit()
+            self._service.wait_for_completion(run.id, timeout=training_timeout)
         except Exception as exc:
             tm.fail_run(run.id, error_message=str(exc))
             steps.append(
@@ -476,9 +527,17 @@ class RetrainingWorkflow:
         Order of preference:
             1. Caller-supplied ``evaluate_model`` hook.
             2. Explicit ``metrics`` key on the run's metadata.
-            3. The orchestrator's execution-status metadata (where the
-               pipeline's stdout payload is captured).
-            4. Empty dict.
+            3. ``metadata["orchestrator_result"]["metrics"]`` — where
+               POST /internal/training-runs/{id}/finish stores what an
+               Airflow-side pipeline reported (see
+               mlops_training_pipeline.py's ``report_status``);
+               LocalDockerOrchestrator's own wait_for_completion() writes
+               the same shape directly, so this also covers it without a
+               live requery.
+            4. The orchestrator's execution-status metadata, freshly
+               queried (a live fallback for anything that reached SUCCESS
+               without going through either path above).
+            5. Empty dict.
         """
         if evaluate_model is not None:
             # The caller is responsible for instantiating a ModelVersion
@@ -496,6 +555,11 @@ class RetrainingWorkflow:
             meta_blob = {}
         if "metrics" in meta_blob and isinstance(meta_blob["metrics"], dict):
             return dict(meta_blob["metrics"])
+        orchestrator_result = meta_blob.get("orchestrator_result")
+        if isinstance(orchestrator_result, dict) and isinstance(
+            orchestrator_result.get("metrics"), dict
+        ):
+            return dict(orchestrator_result["metrics"])
         # Fall back to the orchestrator's recorded metadata.
         execution_id = meta_blob.get("orchestrator_execution_id")
         if execution_id:

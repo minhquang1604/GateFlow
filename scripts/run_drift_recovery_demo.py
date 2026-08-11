@@ -43,17 +43,23 @@ Two phases, one continuous V1 → V2 story:
 
 Why Phase 1 and Phase 2 use different orchestrators
 ─────────────────────────────────────────────────────
-``RetrainingWorkflow.run()`` forwards ``pipeline_id`` straight to
-``TrainingService.create_run()`` with no way to also set
-``metadata["training_entrypoint"]`` — the split
-``AirflowOrchestrator`` needs (see mlops_training_pipeline.py's
-``_resolve_entrypoint``). So Phase 1 (``run_initial_training``) uses
-``AirflowOrchestrator`` for the rich Airflow-side detail; Phase 2
-(driven by ``RetrainingWorkflow``) uses ``LocalDockerOrchestrator`` — a
+Not a framework gap anymore — ``RetrainingWorkflow.run()`` takes a
+``training_entrypoint`` parameter now, and works with
+``AirflowOrchestrator`` (see the README's "Automated retraining
+workflow" section). Phase 2 still uses ``LocalDockerOrchestrator`` — a
 real local subprocess, not Docker despite the name (see
-orchestration/local.py) — the same pattern already proven in
-scripts/run_fraud_detection_e2e.py's real-XGBoost leg. This is a known
-framework gap, not a workaround; see the demo write-up's Phụ lục B.
+orchestration/local.py) — for a narrower, script-specific reason:
+``phase2_inject_drift`` registers V2's ``DatasetVersion`` with
+``storage_uri=str(V2_CSV_LOCAL)``, a path on the host this script runs
+on. That's correct for a local subprocess reading it directly, but not
+a path that exists inside the Airflow containers, which bake
+``case_studies/`` in at build time under ``/opt/case_studies/...`` (see
+"One-time setup" below) — training V2 through Airflow would need a
+second baked-in path the way V1 already has one
+(``AIRFLOW_V1_CSV_PATH``), plus a rebuild. Out of scope for this demo
+script; see ``scripts/run_fraud_detection_e2e.py``'s real-XGBoost leg
+for the same ``LocalDockerOrchestrator`` pattern used deliberately,
+not as a workaround.
 
 One-time setup before Phase 1 will work
 ─────────────────────────────────────────

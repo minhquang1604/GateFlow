@@ -19,12 +19,16 @@ the same way an operator passing ``force=True`` is elsewhere (see
 comes out ``SCHEDULED`` rather than ``DRIFT`` — see
 ``RetrainingWorkflow.run()``.
 
-Uses :class:`LocalDockerOrchestrator`, not :class:`AirflowOrchestrator`
-— the same choice Phase 2 of the drift-recovery demo makes and for the
-same documented reason: ``RetrainingWorkflow.run()`` has no way to also
-set ``metadata["training_entrypoint"]``, which ``AirflowOrchestrator``
-needs (see ``mlops_training_pipeline.py``'s ``_resolve_entrypoint``).
-Known framework gap, not new to this feature.
+Uses :class:`LocalDockerOrchestrator`, not :class:`AirflowOrchestrator`.
+``RetrainingWorkflow.run()`` can drive either now — pass
+``training_entrypoint="module:callable"`` alongside an Airflow
+``pipeline_id`` (the dag_id) to use the real orchestrator instead; see
+its docstring and "AirflowOrchestrator vs LocalDockerOrchestrator" in
+the README. Local was kept here because a scheduled retrain has no
+operator watching it fire the way the demo scripts' human-driven runs
+do, and the local orchestrator's subprocess result is available
+synchronously — switching this loop to Airflow is a separate,
+deliberate change, not a gap being worked around.
 """
 
 from __future__ import annotations

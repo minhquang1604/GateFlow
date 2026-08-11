@@ -288,7 +288,23 @@ class TrainingManager:
         return list(self._session.execute(query).scalars().all())
 
     def get_run_metadata(self, run_id: int) -> dict[str, Any]:
-        """Get parsed metadata for a training run."""
+        """Get parsed metadata for a training run.
+
+        Expires the row's metadata_json first and lets the ``get_run``
+        below reload it. The session this manager was built on has
+        ``expire_on_commit=False`` (see database/session.py), and this
+        run's row may just have been written by a completely different
+        session — e.g. an Airflow-side pipeline's POST
+        .../training-runs/{id}/finish, on its own connection, while this
+        session was blocked polling the orchestrator for the same run.
+        Without this, ``self._session.get(TrainingRun, run_id)`` inside
+        ``get_run`` returns this session's now-stale cached copy instead
+        of ever re-querying — every caller of this method exists
+        specifically to observe state written elsewhere, so staleness
+        here is never the right default.
+        """
+        run = self.get_run(run_id)
+        self._session.expire(run, ["metadata_json"])
         run = self.get_run(run_id)
         if run.metadata_json:
             return json.loads(run.metadata_json)

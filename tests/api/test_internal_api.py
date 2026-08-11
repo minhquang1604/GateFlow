@@ -456,6 +456,48 @@ class TestWriteEndpoints:
         finally:
             s.close()
 
+    def test_run_finish_with_skip_lifecycle_transition_records_metrics_only(
+        self, client, session_factory
+    ):
+        """What mlops_training_pipeline.py's report_status sends for a run
+        owned by RetrainingWorkflow: the pipeline's result must still be
+        recorded (RetrainingWorkflow's own metrics resolution reads it
+        back), but the run's own status must be untouched — that run
+        closes itself out via TrainingService.wait_for_completion()
+        instead. Calling complete_run() here too would 409 the moment
+        wait_for_completion() also tried it against an already-terminal
+        row."""
+        ids = _seed(session_factory)
+        run_id = client.post(
+            "/api/internal/training-runs",
+            json={
+                "dataset_version_id": ids["dataset_version_id"],
+                "pipeline_id": "mlops_training_pipeline",
+            },
+        ).json()["id"]
+
+        response = client.post(
+            f"/api/internal/training-runs/{run_id}/finish",
+            json={
+                "status": "SUCCESS",
+                "result": {"metrics": {"f1": 0.83}, "params": {"n_estimators": 200}},
+                "skip_lifecycle_transition": True,
+            },
+        )
+        assert response.status_code == 200
+        # Still PENDING — this call never touched the lifecycle.
+        assert response.json()["status"] == "PENDING"
+
+        s = session_factory()
+        try:
+            run = s.get(TrainingRun, run_id)
+            assert run.status == RunStatus.PENDING
+            assert run.completed_at is None
+            meta = json.loads(run.metadata_json)
+            assert meta["orchestrator_result"]["metrics"] == {"f1": 0.83}
+        finally:
+            s.close()
+
     def test_run_finish_rejects_an_unknown_status(self, client, session_factory):
         ids = _seed(session_factory)
         run_id = client.post(

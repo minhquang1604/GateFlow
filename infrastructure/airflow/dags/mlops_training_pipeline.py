@@ -311,6 +311,19 @@ def report_status(**context: Any) -> dict[str, Any]:
             ),
         }
 
+    # A run created by RetrainingWorkflow closes itself out via its own
+    # wait_for_completion() poll loop — this call still records
+    # metrics/params/artifact_path (register_and_promote and
+    # RetrainingWorkflow's own metric resolution both read them back from
+    # here), it just must not also transition the run's status, or
+    # whichever of the two calls loses the race hits an
+    # InvalidStatusTransitionError against an already-terminal row. See
+    # _resolve_entrypoint's owned_by_workflow check below for the other
+    # half of this.
+    owned_by_workflow = bool((ctx_payload.get("metadata") or {}).get("owned_by_workflow"))
+    if owned_by_workflow:
+        body["skip_lifecycle_transition"] = True
+
     response = httpx.post(
         f"{APP_BASE_URL}/api/internal/training-runs/{run_id}/finish",
         json=body,
@@ -328,6 +341,15 @@ def register_and_promote(**context: Any) -> dict[str, Any]:
     see ``mlops_framework.api.routers.internal.promote_model``) —
     Airflow just applies the framework's verdict and, on approval,
     publishes an event so the bridge reloads.
+
+    Skipped entirely when the run's metadata carries "owned_by_workflow"
+    (set by RetrainingWorkflow — see workflow/retraining.py): that
+    workflow registers and promotes its own ModelVersion in-process after
+    this DAG run reaches a terminal state, using its own promotion_config.
+    Calling this endpoint too would register a *second*, independent
+    CANDIDATE ModelVersion for the same TrainingRun and evaluate it
+    against this endpoint's own (looser, min_f1-only) policy instead —
+    two different governance decisions racing on the same model.
     """
     import httpx
 
@@ -337,8 +359,14 @@ def register_and_promote(**context: Any) -> dict[str, Any]:
     if not train_payload or not ctx_payload:
         raise RuntimeError("missing XCom from upstream tasks")
 
-    conf = (context.get("dag_run") or {}).conf or {}
     pipeline_meta = ctx_payload.get("metadata") or {}
+    if pipeline_meta.get("owned_by_workflow"):
+        print(
+            "[airflow] owned_by_workflow — skipping register_and_promote, "
+            "RetrainingWorkflow handles promotion for this run"
+        )
+        return {"promoted": False, "skipped": True, "reason": "owned_by_workflow"}
+
     model_name = pipeline_meta.get("model_name", "fraud-xgboost")
     tracker_run_id = pipeline_meta.get("tracker_run_id")
 

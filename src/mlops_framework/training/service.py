@@ -247,10 +247,20 @@ class TrainingService:
         # orchestrator surfaces them on ExecutionStatus.metadata, but
         # nothing was reading it, so there was no way to register a
         # ModelVersion from a completed run.
+        #
+        # Merged, not replaced: for AirflowOrchestrator, status.metadata is
+        # only DAG-run-level info (logical_date/conf/...) — it never
+        # carries the pipeline's metrics/params/artifact_path the way
+        # LocalDockerOrchestrator's does. Those already landed here from
+        # POST /internal/training-runs/{id}/finish (mlops_training_pipeline
+        # .py's report_status task, run as part of the same DAG, before it
+        # reaches the terminal state this loop is waiting for). A blind
+        # overwrite would discard that the moment this loop noticed
+        # completion.
         if status is not None and status.metadata:
-            self._manager.update_metadata(
-                run_id, {"orchestrator_result": status.metadata}
-            )
+            existing = self._manager.get_run_metadata(run_id)
+            merged = {**(existing.get("orchestrator_result") or {}), **status.metadata}
+            self._manager.update_metadata(run_id, {"orchestrator_result": merged})
         # Sync DB state with orchestrator.
         if last_state == ExecutionState.SUCCESS.value:
             self.complete_run(run_id)

@@ -533,6 +533,16 @@ class FinishTrainingRunRequest(BaseModel):
     status: str = Field(description="SUCCESS or FAILED")
     error_message: str | None = None
     result: dict[str, Any] = Field(default_factory=dict)
+    # Set by mlops_training_pipeline.py's report_status task when the
+    # TrainingRun's own metadata carries "owned_by_workflow" — i.e. it was
+    # created by RetrainingWorkflow, whose wait_for_completion() polls the
+    # orchestrator itself and calls complete_run()/fail_run() when it sees
+    # a terminal state. Without this flag both this endpoint and
+    # wait_for_completion would race to close out the same run — whichever
+    # loses hits an InvalidStatusTransitionError against an already-
+    # terminal row. Metadata (metrics/params/artifact_path) is still
+    # recorded either way; only the status transition is skipped.
+    skip_lifecycle_transition: bool = False
 
 
 @router.post("/internal/training-runs/{run_id}/finish", response_model=TrainingRunOut)
@@ -558,21 +568,24 @@ def finish_training_run(
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    # The lifecycle has no PENDING -> SUCCESS/FAILED edge, by design. A DAG
-    # that blew up in its first task still executed, though, so move the run
-    # through RUNNING rather than rejecting the report and leaving it PENDING
-    # forever — which is the exact failure this endpoint exists to end.
-    status = getattr(run.status, "value", run.status)
-    if status == "PENDING":
-        tm.start_run(run_id)
-
     try:
         if request.result:
             tm.update_metadata(run_id, {"orchestrator_result": request.result})
-        if wanted == "SUCCESS":
-            run = tm.complete_run(run_id)
+        if request.skip_lifecycle_transition:
+            run = tm.get_run(run_id)
         else:
-            run = tm.fail_run(run_id, error_message=request.error_message)
+            # The lifecycle has no PENDING -> SUCCESS/FAILED edge, by
+            # design. A DAG that blew up in its first task still
+            # executed, though, so move the run through RUNNING rather
+            # than rejecting the report and leaving it PENDING forever —
+            # which is the exact failure this endpoint exists to end.
+            status = getattr(run.status, "value", run.status)
+            if status == "PENDING":
+                tm.start_run(run_id)
+            if wanted == "SUCCESS":
+                run = tm.complete_run(run_id)
+            else:
+                run = tm.fail_run(run_id, error_message=request.error_message)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _run_out(run, tm)

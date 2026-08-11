@@ -200,3 +200,42 @@ class TestResultPersistence:
         assert out.metrics == {"f1": 0.86}
         assert out.parameters == {"n_estimators": 200}
         assert out.duration_seconds is not None and out.duration_seconds >= 0
+
+    def test_does_not_clobber_a_result_already_reported(self, session):
+        """AirflowOrchestrator's real shape: ExecutionStatus.metadata is only
+        DAG-run-level info (logical_date/conf/...), never the pipeline's own
+        metrics/params — those already landed in orchestrator_result via
+        POST /internal/training-runs/{id}/finish (mlops_training_pipeline
+        .py's report_status task, which runs as part of the same DAG,
+        before this poll loop ever sees a terminal state). A blind
+        overwrite here would discard that the instant it noticed
+        completion — this pins the merge instead.
+        """
+        tm = TrainingManager(session)
+        # No "metrics" key — exactly what AirflowOrchestrator._to_status()
+        # actually returns.
+        orch = _RecordingOrchestrator(result_metadata={"logical_date": "2026-08-11T00:00:00Z"})
+        svc = _service(session, orch)
+        run = svc.create_run(dataset_version_id=1, pipeline_id="pkg.mod:train")
+        svc.start_run(run.id)
+        # Simulates report_status's POST /finish having already run.
+        tm.update_metadata(
+            run.id,
+            {
+                "orchestrator_result": {
+                    "metrics": {"f1": 0.83},
+                    "params": {"n_estimators": 200},
+                    "artifact_path": "s3://bucket/model.json",
+                }
+            },
+        )
+
+        svc.wait_for_completion(run.id, timeout=5.0, poll_interval=0.01)
+
+        meta = tm.get_run_metadata(run.id)
+        result = meta["orchestrator_result"]
+        assert result["metrics"] == {"f1": 0.83}
+        assert result["artifact_path"] == "s3://bucket/model.json"
+        # The orchestrator's own (metrics-less) status is merged in too,
+        # not dropped.
+        assert result["logical_date"] == "2026-08-11T00:00:00Z"

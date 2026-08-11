@@ -493,13 +493,27 @@ if outcome.promoted:
     print(outcome.steps)   # every step's pass/fail + explainable detail
 ```
 
-> **Known gap:** `RetrainingWorkflow.run()` forwards `pipeline_id`
-> straight through and has no parameter for
-> `metadata["training_entrypoint"]` — so it only works with
-> `LocalDockerOrchestrator` today, not `AirflowOrchestrator` (see
-> [pipeline_id means different things](#airfloworchestrator-vs-localdockerorchestrator--pipeline_id-means-different-things)
-> above). `scripts/run_drift_recovery_demo.py` trains the reactive
-> retrain through `LocalDockerOrchestrator` for exactly this reason.
+Works with `AirflowOrchestrator` too — pass the DAG id as `pipeline_id`
+and the real callable separately as `training_entrypoint` (see
+[pipeline_id means different things](#airfloworchestrator-vs-localdockerorchestrator--pipeline_id-means-different-things)
+above):
+
+```python
+outcome = workflow.run(
+    dataset_version=dv, model=model,
+    training_policy=TrainingPolicy(required_size=1000),
+    promotion_config=PromotionConfig(min_metrics={"f1": 0.85}),
+    pipeline_id="mlops_training_pipeline",   # the Airflow dag_id
+    training_entrypoint="my_pkg.pipelines:train",
+    training_timeout=600.0,   # a real DAG run needs far longer than the 60s default
+)
+```
+
+The framework side of this — surfacing the pipeline's metrics back to
+the workflow, and not racing the DAG's own callbacks to close out the
+run — is handled automatically; see
+[Known limitations](#known-limitations) for the one thing that still
+needs the DAG itself to cooperate.
 
 ### Serving bridge
 
@@ -569,7 +583,7 @@ present in `.env.example` — `cp .env.example .env` covers a host run).
 |---|---|---|
 | `scripts/run_end_to_end_demo.py` | The full governance chain — dataset → readiness → eligibility → training → promotion → serving reload → lineage — on a synthetic dataset | `AirflowOrchestrator` (real DAG) |
 | `scripts/run_fraud_detection_e2e.py` | The same chain on the **real** 284,807-row Kaggle credit-card-fraud dataset; gates promotion on `average_precision` (the metric that actually matters at a 0.17% positive rate) | `LocalDockerOrchestrator` (training) + `AirflowOrchestrator` (adapter proof only) |
-| `scripts/run_drift_recovery_demo.py` | **Drift & self-healing**, two phases: (1) a rich, Airflow-driven initial training; (2) inject a real covariate shift, detect it with a real KS-test, and watch `RetrainingWorkflow` retrain and auto-promote a recovered model — all one call | Phase 1: `AirflowOrchestrator`. Phase 2: `LocalDockerOrchestrator` (see the known gap above) |
+| `scripts/run_drift_recovery_demo.py` | **Drift & self-healing**, two phases: (1) a rich, Airflow-driven initial training; (2) inject a real covariate shift, detect it with a real KS-test, and watch `RetrainingWorkflow` retrain and auto-promote a recovered model — all one call | Phase 1: `AirflowOrchestrator`. Phase 2: `LocalDockerOrchestrator` — a deliberate choice now (`RetrainingWorkflow` + `AirflowOrchestrator` both work, see [Automated retraining workflow](#automated-retraining-workflow)), not a forced one: Phase 2's `DatasetVersion` is registered with a host-local `storage_uri`, valid for a local subprocess but not for a path inside the Airflow containers |
 
 ```bash
 # 1. Full governance chain (synthetic data, ~5s)
@@ -791,27 +805,30 @@ opt-in — see `tests/integration/test_airflow_live.py`.
    name carries forward compatibility with a future real Docker-based
    implementation; the `Orchestrator` interface is identical, so a
    `DockerOrchestrator` would be a drop-in.
-2. **`RetrainingWorkflow` only works with `LocalDockerOrchestrator`.**
-   It has no parameter to thread `metadata["training_entrypoint"]`
-   through to an Airflow-triggered run — see
-   [the note above](#automated-retraining-workflow).
+2. **`RetrainingWorkflow` + `AirflowOrchestrator` needs the DAG's
+   cooperation, not just `training_entrypoint`.** The framework side is
+   handled — metrics reported out-of-band survive
+   `wait_for_completion()`'s own status merge (see
+   `TrainingService.wait_for_completion`), and `RetrainingWorkflow`
+   itself never races anyone to close out the run. But
+   `mlops_training_pipeline.py`'s `register_and_promote` and
+   `report_status` tasks own registration/promotion by default (that is
+   the right behavior for the demo scripts, which call the DAG
+   directly, not through `RetrainingWorkflow`) — they only step back
+   when the run's metadata carries `owned_by_workflow` (set
+   automatically by `RetrainingWorkflow.run()`). A custom DAG that
+   doesn't check that flag would double-register a ModelVersion and
+   evaluate it against two different promotion policies. See that DAG's
+   module docstring.
 3. **Airflow "cancel" deletes the DAG run.** Airflow 2.x has no clean
    REST endpoint to cancel a running DAG run; deletion is the
    documented workaround (`AirflowOrchestrator.cancel_execution`).
 4. **`TrainingService.wait_for_completion` polls** rather than using a
    callback/event bus.
-5. **No database-level uniqueness on "one PRODUCTION per Model".**
-   `RetrainingWorkflow`/promotion code archives the prior production
-   version on every new promotion, but nothing stops a concurrent writer
-   from creating two.
-6. **MLflow is optional.** The framework never requires it to import or
+5. **MLflow is optional.** The framework never requires it to import or
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
-7. **The MLflow *client* needs S3 credentials directly** — see the
-   `MLFLOW_S3_ENDPOINT_URL` row in [Configuration](#configuration).
-   Missing them fails artifact upload/download silently (caught by a
-   broad `except` in the case-study pipelines), not loudly.
 
 ## License
 
