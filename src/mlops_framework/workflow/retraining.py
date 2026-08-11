@@ -402,10 +402,14 @@ class RetrainingWorkflow:
             )
 
         mm.transition_state(mv.id, ModelState.APPROVED)
-        mm.transition_state(mv.id, ModelState.PRODUCTION)
-        # Archive prior production version (if any).
+        # Archive the prior production version (if any) *before* promoting
+        # the new one. Promoting first, archiving second (the old order)
+        # left a window — however brief — with two PRODUCTION versions for
+        # the same model at once; nothing downstream should ever be able to
+        # observe that.
         if production is not None and production.id != mv.id:
             mm.transition_state(production.id, ModelState.ARCHIVED)
+        mm.transition_state(mv.id, ModelState.PRODUCTION)
         regsync.sync_production(model.name, mlflow_version)
 
         steps.append(

@@ -24,9 +24,11 @@ from sqlalchemy import (
 )
 from sqlalchemy import (
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -70,6 +72,24 @@ class ModelVersion(Base, TimestampMixin):
     """
 
     __tablename__ = "model_versions"
+    __table_args__ = (
+        # At most one PRODUCTION version per model. Kept in sync with
+        # alembic/versions/006_one_production_per_model.py, which is what
+        # actually applies it against a real (migrated) database — this
+        # declaration exists so Base.metadata.create_all() (what the test
+        # suite uses) creates the identical constraint, not just a real
+        # deployment. Deliberately not enforced anywhere else in Python:
+        # validate_transition() only checks a single row's own state
+        # machine, so this partial index is the only thing stopping two
+        # concurrent promotions of the same model.
+        Index(
+            "uq_model_versions_one_production_per_model",
+            "model_id",
+            unique=True,
+            postgresql_where=text("state = 'PRODUCTION'"),
+            sqlite_where=text("state = 'PRODUCTION'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     model_id: Mapped[int] = mapped_column(

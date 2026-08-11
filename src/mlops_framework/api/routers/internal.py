@@ -205,9 +205,11 @@ def promote_model(
         )
 
     mm.transition_state(candidate.id, ModelState.APPROVED)
-    mm.transition_state(candidate.id, ModelState.PRODUCTION)
+    # Archive the prior production version *before* promoting the new one —
+    # see workflow/retraining.py's promotion step for why the order matters.
     if production is not None and production.id != candidate.id:
         mm.transition_state(production.id, ModelState.ARCHIVED)
+    mm.transition_state(candidate.id, ModelState.PRODUCTION)
     regsync.sync_production(model_row.name, mlflow_version)
 
     return PromoteModelResponse(

@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from mlops_framework.database.models.model import Model
@@ -25,6 +26,7 @@ from mlops_framework.database.models.model_version import (
     ModelVersion,
 )
 from mlops_framework.exceptions import (
+    ConcurrentPromotionError,
     DuplicateModelNameError,
     ModelNotFoundError,
     ModelVersionNotFoundError,
@@ -140,7 +142,25 @@ class ModelManager:
             target = new_state
         validate_transition(version.state, target)
         version.state = target
-        self._session.flush()
+        try:
+            self._session.flush()
+        except IntegrityError as exc:
+            # validate_transition only checks this row's own state machine —
+            # it cannot see a concurrent writer promoting a different
+            # version of the same model in another transaction. The
+            # database's partial unique index
+            # (uq_model_versions_one_production_per_model) is the actual
+            # guarantee; surface it as a clear framework error instead of a
+            # raw IntegrityError. Session cleanup (rollback) is the caller's
+            # responsibility — see database/session.py's get_session() and
+            # api/deps.py — managers only ever flush().
+            if target == ModelState.PRODUCTION:
+                raise ConcurrentPromotionError(
+                    f"model_version {version_id} could not be promoted to "
+                    "PRODUCTION: another version of this model was promoted "
+                    "concurrently"
+                ) from exc
+            raise
         return version
 
     def update_metrics(self, version_id: int, metrics: dict[str, Any]) -> ModelVersion:

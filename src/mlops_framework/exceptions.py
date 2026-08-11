@@ -142,6 +142,19 @@ class InvalidModelStateTransitionError(ModelError):
     pass
 
 
+class ConcurrentPromotionError(ModelError):
+    """Raised when promoting a ModelVersion to PRODUCTION loses a race.
+
+    The transition was valid in isolation (``validate_transition`` passed),
+    but another writer promoted a different version of the same model to
+    PRODUCTION first — caught via the database's
+    ``uq_model_versions_one_production_per_model`` partial unique index
+    rather than left as a raw ``IntegrityError``.
+    """
+
+    pass
+
+
 # --- Readiness / Eligibility / Drift / Promotion ---------------------- #
 
 

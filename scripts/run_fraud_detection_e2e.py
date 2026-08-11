@@ -268,10 +268,12 @@ def register_and_promote(session, run, version, metrics: dict) -> Any:
 
     if decision.approved:
         mm.transition_state(candidate.id, ModelState.APPROVED)
-        mm.transition_state(candidate.id, ModelState.PRODUCTION)
+        # Archive the prior production version *before* promoting the new
+        # one — see workflow/retraining.py's promotion step for why.
         if production is not None and production.id != candidate.id:
             mm.transition_state(production.id, ModelState.ARCHIVED)
             _detail(f"archived previous production v{production.version_number}")
+        mm.transition_state(candidate.id, ModelState.PRODUCTION)
         _detail(f"=> APPROVED — v{candidate.version_number} is now PRODUCTION")
     else:
         mm.transition_state(candidate.id, ModelState.REJECTED)

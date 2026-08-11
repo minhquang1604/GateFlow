@@ -4,6 +4,7 @@ import pytest
 
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.exceptions import (
+    ConcurrentPromotionError,
     DuplicateModelNameError,
     InvalidModelStateTransitionError,
     ModelNotFoundError,
@@ -202,3 +203,64 @@ class TestLineage:
         assert version.training_run is not None
         assert version.training_run.id == run.id
         assert version.training_run.dataset_version_id == dv.id
+
+
+class TestOnlyOneProductionPerModel:
+    """validate_transition() only checks a single row's own state machine —
+    APPROVED -> PRODUCTION is valid regardless of what any other version of
+    the same model is doing. Nothing in Python stops two versions reaching
+    PRODUCTION at once; the database's partial unique index
+    (uq_model_versions_one_production_per_model) is the only thing that
+    does. These promote the second version *without* archiving the first,
+    which application code (RetrainingWorkflow, the internal promote
+    route) never actually does — this is deliberately exercising the
+    constraint, not the convention around it.
+    """
+
+    def test_second_promotion_without_archiving_first_is_blocked(self, db_session):
+        dm, ds, dv = _setup_dataset_version(db_session)
+        mgr = ModelManager(db_session)
+        model = mgr.create_model(name="fraud-model")
+        v1 = mgr.create_model_version(
+            model_id=model.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+        v2 = mgr.create_model_version(
+            model_id=model.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+
+        mgr.transition_state(v1.id, ModelState.PRODUCTION)
+
+        with pytest.raises(ConcurrentPromotionError):
+            mgr.transition_state(v2.id, ModelState.PRODUCTION)
+
+    def test_archiving_first_then_promoting_second_succeeds(self, db_session):
+        dm, ds, dv = _setup_dataset_version(db_session)
+        mgr = ModelManager(db_session)
+        model = mgr.create_model(name="fraud-model")
+        v1 = mgr.create_model_version(
+            model_id=model.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+        v2 = mgr.create_model_version(
+            model_id=model.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+
+        mgr.transition_state(v1.id, ModelState.PRODUCTION)
+        mgr.transition_state(v1.id, ModelState.ARCHIVED)
+        promoted = mgr.transition_state(v2.id, ModelState.PRODUCTION)
+
+        assert promoted.state == ModelState.PRODUCTION
+
+    def test_two_different_models_can_each_have_a_production_version(self, db_session):
+        dm, ds, dv = _setup_dataset_version(db_session)
+        mgr = ModelManager(db_session)
+        model_a = mgr.create_model(name="fraud-model-a")
+        model_b = mgr.create_model(name="fraud-model-b")
+        va = mgr.create_model_version(
+            model_id=model_a.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+        vb = mgr.create_model_version(
+            model_id=model_b.id, dataset_version_id=dv.id, state=ModelState.APPROVED
+        )
+
+        mgr.transition_state(va.id, ModelState.PRODUCTION)
+        mgr.transition_state(vb.id, ModelState.PRODUCTION)  # must not raise
