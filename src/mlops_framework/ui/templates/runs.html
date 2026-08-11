@@ -1,11 +1,15 @@
     <nav class="breadcrumbs" aria-label="Breadcrumbs">
-      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Training runs</span>
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Runs</span>
     </nav>
 
     <div class="page-header">
       <div>
-        <h1 class="page-title">Training runs</h1>
-        <p class="page-desc">Select two or more runs to compare their parameters and metrics.</p>
+        <h1 class="page-title">Runs</h1>
+        <p class="page-desc">
+          Every training run this framework started. Pick an experiment
+          below to switch to MLflow's own view of it — ranked by any
+          metric, including runs this framework never started.
+        </p>
       </div>
       <div class="page-actions">
         <button id="refresh" class="btn">Refresh</button>
@@ -18,7 +22,7 @@
         <h2>Runs</h2>
       </div>
       <div class="toolbar">
-        <input type="search" id="search" placeholder="Filter by id, pipeline, orchestrator&hellip;" size="34">
+        <input type="search" id="search" placeholder="Filter by id, pipeline, orchestrator&hellip;" size="28">
         <select id="status-filter" aria-label="Filter by status">
           <option value="">All statuses</option>
           <option value="PENDING">Pending</option>
@@ -27,9 +31,19 @@
           <option value="FAILED">Failed</option>
           <option value="CANCELLED">Cancelled</option>
         </select>
+        <label class="faint" for="experiment-filter">Experiment</label>
+        <select id="experiment-filter" aria-label="Switch to an MLflow experiment's own view">
+          <option value="">All runs (framework)</option>
+        </select>
+        <label class="faint" id="rank-by-label" for="rank-by" hidden>Rank by</label>
+        <select id="rank-by" aria-label="Metric to rank by" hidden></select>
+        <select id="rank-dir" aria-label="Sort direction" hidden>
+          <option value="DESC">highest first</option>
+          <option value="ASC">lowest first</option>
+        </select>
+        <input type="search" id="filter-string" size="30" hidden
+               placeholder="MLflow filter, e.g. params.max_depth = '6'">
       </div>
-      <div class="table-wrap">
-        <table><thead><tr></tr></thead><tbody></tbody></table>
-      </div>
+      <div id="runs-out"></div>
     </section>
 <script>initRuns();</script>

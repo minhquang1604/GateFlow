@@ -157,8 +157,7 @@ def get_run_tasks(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
     return airflow_gateway.panel(query)
 
 
-@router.get("/training-runs/{run_id}/mlflow", response_model=ExternalPanel)
-def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
+def _run_mlflow_panel(mlflow_run_id: str) -> ExternalPanel:
     """Everything MLflow holds about a run, in one call.
 
     Renamed from ``/metric-history``: that endpoint already fetched the
@@ -171,12 +170,14 @@ def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
     Metric *history* is the part the framework cannot reproduce on its own:
     it stores each metric's final value, while MLflow keeps the whole
     series, which is what makes a training curve renderable.
-    """
-    run = _run_or_404(db, run_id)
-    if not run.mlflow_run_id:
-        return ExternalPanel(available=False, reason="run has no MLflow run id")
 
-    mlflow_run_id = str(run.mlflow_run_id)
+    Shared by both routes below — the framework-run-scoped
+    ``/training-runs/{run_id}/mlflow`` and ``/mlflow/runs/{mlflow_run_id}``,
+    which takes the raw MLflow run id directly for a run this framework
+    has no TrainingRun row for at all (a sweep's child run, a run
+    started outside this framework) — every such run in the Experiments
+    list was previously a dead end with nothing to click into.
+    """
 
     def query(client: Any) -> dict[str, Any]:
         mlflow_run = client.get_run(mlflow_run_id)
@@ -224,3 +225,20 @@ def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
         }
 
     return panel(query)
+
+
+@router.get("/training-runs/{run_id}/mlflow", response_model=ExternalPanel)
+def get_run_mlflow(run_id: int, db: Session = Depends(get_db)) -> ExternalPanel:
+    """Everything MLflow holds about a run, in one call — by framework
+    run id."""
+    run = _run_or_404(db, run_id)
+    if not run.mlflow_run_id:
+        return ExternalPanel(available=False, reason="run has no MLflow run id")
+    return _run_mlflow_panel(str(run.mlflow_run_id))
+
+
+@router.get("/mlflow/runs/{mlflow_run_id}", response_model=ExternalPanel)
+def get_mlflow_run(mlflow_run_id: str) -> ExternalPanel:
+    """Everything MLflow holds about a run, in one call — by raw MLflow
+    run id, for a run with no framework TrainingRun row at all."""
+    return _run_mlflow_panel(mlflow_run_id)

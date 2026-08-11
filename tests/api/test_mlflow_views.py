@@ -21,6 +21,7 @@ import pytest
 from mlops_framework.api import mlflow_gateway
 from mlops_framework.api.routers import mlflow_views
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
+from mlops_framework.tracking import mlflow_client
 
 
 MLFLOW_RUN_ID = "abc123def456"
@@ -195,10 +196,13 @@ class TestDegradesWithoutMlflow:
         assert "connection refused" in result.reason
 
     def test_http_limits_are_bounded_but_overridable(self, monkeypatch):
-        """MLflow's defaults hang for minutes; the gateway must cap them."""
+        """MLflow's defaults hang for minutes; the client builder must cap
+        them. Lives in mlops_framework.tracking.mlflow_client now — the
+        gateway (read side) and mlflow_registry (write side) both build
+        their client through it, see mlflow_gateway's module docstring."""
         monkeypatch.delenv("MLFLOW_HTTP_REQUEST_TIMEOUT", raising=False)
         monkeypatch.delenv("MLFLOW_HTTP_REQUEST_MAX_RETRIES", raising=False)
-        mlflow_gateway._apply_http_limits()
+        mlflow_client._apply_http_limits()
         import os
 
         assert int(os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"]) <= 10
@@ -206,7 +210,7 @@ class TestDegradesWithoutMlflow:
 
         # An operator's own value wins.
         monkeypatch.setenv("MLFLOW_HTTP_REQUEST_TIMEOUT", "45")
-        mlflow_gateway._apply_http_limits()
+        mlflow_client._apply_http_limits()
         assert os.environ["MLFLOW_HTTP_REQUEST_TIMEOUT"] == "45"
 
 

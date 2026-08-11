@@ -62,6 +62,7 @@ from mlops_framework.governance.promotion import (
 )
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy
+from mlops_framework.tracking import mlflow_registry as regsync
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
 
@@ -370,6 +371,11 @@ class RetrainingWorkflow:
             state=ModelState.CANDIDATE,
             metrics=candidate_metrics,
         )
+        # Registered on MLflow's side the moment the candidate exists,
+        # same as the Airflow-DAG path (api/routers/internal.py's
+        # promote_model) — never blocks or fails this workflow; see
+        # mlflow_registry's module docstring.
+        mlflow_version = regsync.sync_candidate(model.name, run.mlflow_run_id)
 
         # 6. Promotion policy ----------------------------------------------
         production = self._production_for_model(model.id)
@@ -401,6 +407,7 @@ class RetrainingWorkflow:
         # Archive prior production version (if any).
         if production is not None and production.id != mv.id:
             mm.transition_state(production.id, ModelState.ARCHIVED)
+        regsync.sync_production(model.name, mlflow_version)
 
         steps.append(
             StepResult(

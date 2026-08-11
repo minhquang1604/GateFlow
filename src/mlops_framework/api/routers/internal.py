@@ -54,6 +54,7 @@ from mlops_framework.governance.promotion import (
 )
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy
+from mlops_framework.tracking import mlflow_registry as regsync
 from mlops_framework.training.manager import TrainingManager
 
 _log = logging.getLogger("mlops_framework.api.internal")
@@ -167,6 +168,16 @@ def promote_model(
         metrics=request.metrics,
         artifact_uri=request.artifact_uri,
     )
+    # Registered on MLflow's side the moment the candidate exists — not
+    # only once/if it is promoted — so MLflow's registry reflects every
+    # training attempt the framework recorded, same as its own table
+    # does. Never blocks or fails this request; see mlflow_registry_sync's
+    # module docstring.
+    mlflow_version = regsync.sync_candidate(
+        model_row.name,
+        request.mlflow_run_id,
+        regsync.artifact_filename_from_uri(request.artifact_uri),
+    )
 
     production = db.execute(
         select(ModelVersion)
@@ -197,6 +208,7 @@ def promote_model(
     mm.transition_state(candidate.id, ModelState.PRODUCTION)
     if production is not None and production.id != candidate.id:
         mm.transition_state(production.id, ModelState.ARCHIVED)
+    regsync.sync_production(model_row.name, mlflow_version)
 
     return PromoteModelResponse(
         promoted=True,

@@ -176,15 +176,9 @@ def _safe_artifact_path(path: str) -> str:
     return "" if normalised == "." else normalised
 
 
-@router.get("/training-runs/{run_id}/artifacts", response_model=ExternalPanel)
-def list_run_artifacts(
-    run_id: int,
-    path: str = Query(default="", description="Directory within the run's artifacts"),
-    db: Session = Depends(get_db),
-) -> ExternalPanel:
-    """List one directory of a run's artifacts."""
-    mlflow_run_id = _mlflow_run_id(db, run_id)
-    safe = _safe_artifact_path(path)
+def _artifacts_panel(mlflow_run_id: str, safe: str) -> ExternalPanel:
+    """List one directory of a run's artifacts. Shared by both the
+    framework-run-scoped and raw-mlflow-run-id-scoped routes below."""
 
     def query(client: Any) -> dict[str, Any]:
         entries = client.list_artifacts(mlflow_run_id, safe or None)
@@ -207,20 +201,37 @@ def list_run_artifacts(
     return panel(query)
 
 
-@router.get("/training-runs/{run_id}/artifacts/raw")
-def get_run_artifact(
+@router.get("/training-runs/{run_id}/artifacts", response_model=ExternalPanel)
+def list_run_artifacts(
     run_id: int,
-    path: str = Query(..., description="File within the run's artifacts"),
+    path: str = Query(default="", description="Directory within the run's artifacts"),
     db: Session = Depends(get_db),
-) -> FileResponse:
+) -> ExternalPanel:
+    """List one directory of a run's artifacts, by framework run id."""
+    mlflow_run_id = _mlflow_run_id(db, run_id)
+    return _artifacts_panel(mlflow_run_id, _safe_artifact_path(path))
+
+
+@router.get("/mlflow/runs/{mlflow_run_id}/artifacts", response_model=ExternalPanel)
+def list_run_artifacts_by_mlflow_id(
+    mlflow_run_id: str,
+    path: str = Query(default="", description="Directory within the run's artifacts"),
+) -> ExternalPanel:
+    """List one directory of a run's artifacts, by raw MLflow run id —
+    for a run the framework has no TrainingRun row for at all (a sweep's
+    child run, a run started outside this framework...). See
+    ``get_run_summary`` for why this sibling route exists."""
+    return _artifacts_panel(mlflow_run_id, _safe_artifact_path(path))
+
+
+def _artifact_file_response(mlflow_run_id: str, safe: str) -> FileResponse:
     """Stream a single artifact through the app.
 
     Not an :class:`ExternalPanel`: the browser consumes this directly as an
     ``<img>`` source or a download, so it answers with the bytes or an HTTP
-    error rather than a wrapped payload.
+    error rather than a wrapped payload. Shared by both artifact-download
+    routes below.
     """
-    mlflow_run_id = _mlflow_run_id(db, run_id)
-    safe = _safe_artifact_path(path)
     if not safe:
         raise HTTPException(status_code=400, detail="path is required")
 
@@ -263,6 +274,26 @@ def get_run_artifact(
         media_type=media_type or "application/octet-stream",
         filename=resolved.name,
     )
+
+
+@router.get("/training-runs/{run_id}/artifacts/raw")
+def get_run_artifact(
+    run_id: int,
+    path: str = Query(..., description="File within the run's artifacts"),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    """Stream a single artifact through the app, by framework run id."""
+    mlflow_run_id = _mlflow_run_id(db, run_id)
+    return _artifact_file_response(mlflow_run_id, _safe_artifact_path(path))
+
+
+@router.get("/mlflow/runs/{mlflow_run_id}/artifacts/raw")
+def get_run_artifact_by_mlflow_id(
+    mlflow_run_id: str,
+    path: str = Query(..., description="File within the run's artifacts"),
+) -> FileResponse:
+    """Stream a single artifact through the app, by raw MLflow run id."""
+    return _artifact_file_response(mlflow_run_id, _safe_artifact_path(path))
 
 
 # ---------------------------------------------------------------------- #
@@ -343,13 +374,9 @@ def _mlmodel_spec(client: Any, mlflow_run_id: str) -> tuple[dict[str, Any], str,
     return {}, "", "none"
 
 
-@router.get("/training-runs/{run_id}/model-info", response_model=ExternalPanel)
-def get_run_model_info(
-    run_id: int,
-    db: Session = Depends(get_db),
-) -> ExternalPanel:
-    """Return the logged model's signature, flavors and environment."""
-    mlflow_run_id = _mlflow_run_id(db, run_id)
+def _model_info_panel(mlflow_run_id: str) -> ExternalPanel:
+    """Return the logged model's signature, flavors and environment.
+    Shared by both model-info routes below."""
 
     def query(client: Any) -> dict[str, Any]:
         spec, location, layout = _mlmodel_spec(client, mlflow_run_id)
@@ -401,6 +428,23 @@ def get_run_model_info(
         }
 
     return panel(query)
+
+
+@router.get("/training-runs/{run_id}/model-info", response_model=ExternalPanel)
+def get_run_model_info(
+    run_id: int,
+    db: Session = Depends(get_db),
+) -> ExternalPanel:
+    """Return the logged model's signature, flavors and environment, by
+    framework run id."""
+    return _model_info_panel(_mlflow_run_id(db, run_id))
+
+
+@router.get("/mlflow/runs/{mlflow_run_id}/model-info", response_model=ExternalPanel)
+def get_run_model_info_by_mlflow_id(mlflow_run_id: str) -> ExternalPanel:
+    """Return the logged model's signature, flavors and environment, by
+    raw MLflow run id."""
+    return _model_info_panel(mlflow_run_id)
 
 
 # ---------------------------------------------------------------------- #
@@ -598,18 +642,14 @@ def reconcile_model_registry(
 # ---------------------------------------------------------------------- #
 
 
-@router.get("/training-runs/{run_id}/nested", response_model=ExternalPanel)
-def get_nested_runs(
-    run_id: int,
-    db: Session = Depends(get_db),
-) -> ExternalPanel:
+def _nested_runs_panel(mlflow_run_id: str) -> ExternalPanel:
     """Return this run's place in an MLflow parent/child sweep.
 
     A hyperparameter sweep logs one parent run and a child per trial, tied
     together by the ``mlflow.parentRunId`` tag. Without reading that tag the
-    console shows a sweep as a flat list of unrelated runs.
+    console shows a sweep as a flat list of unrelated runs. Shared by both
+    nested-run routes below.
     """
-    mlflow_run_id = _mlflow_run_id(db, run_id)
 
     def query(client: Any) -> dict[str, Any]:
         this = client.get_run(mlflow_run_id)
@@ -655,3 +695,18 @@ def get_nested_runs(
         }
 
     return panel(query)
+
+
+@router.get("/training-runs/{run_id}/nested", response_model=ExternalPanel)
+def get_nested_runs(
+    run_id: int,
+    db: Session = Depends(get_db),
+) -> ExternalPanel:
+    """This run's place in an MLflow parent/child sweep, by framework run id."""
+    return _nested_runs_panel(_mlflow_run_id(db, run_id))
+
+
+@router.get("/mlflow/runs/{mlflow_run_id}/nested", response_model=ExternalPanel)
+def get_nested_runs_by_mlflow_id(mlflow_run_id: str) -> ExternalPanel:
+    """This run's place in an MLflow parent/child sweep, by raw MLflow run id."""
+    return _nested_runs_panel(mlflow_run_id)

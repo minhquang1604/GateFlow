@@ -30,6 +30,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# MLflow's default local tracking store — created if MLFLOW_TRACKING_URI
+# isn't set when something touches the SDK from the repo root (e.g. an
+# ad-hoc script or REPL session).
+mlruns/
+
 # IDE
 .vscode/
 .idea/

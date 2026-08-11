@@ -4,9 +4,13 @@ Every MLflow-backed endpoint shares two concerns: MLflow may not be
 installed or configured at all, and the tracking server may be down. This
 module answers both once so the routers stay about their own data.
 
-Nothing here writes to MLflow. The framework logs through
-``mlops_framework.tracking.mlflow.MLflowTracker``; these views only read
-what is already there.
+Nothing here writes to MLflow. The framework logs runs through
+``mlops_framework.tracking.mlflow.MLflowTracker`` and syncs the model
+registry through ``mlops_framework.tracking.mlflow_registry``; these
+views only read what is already there. ``client_or_reason`` itself now
+lives in ``mlops_framework.tracking.mlflow_client`` (re-exported below)
+so both the read and write sides share one client constructor without
+the write side having to depend on this ``api`` package.
 
 The ``mlflow`` import stays inside the functions on purpose. It costs
 ~14s of CPU (it drags in pandas, sqlalchemy, alembic), and the framework
@@ -17,59 +21,12 @@ background when a tracking URI is configured.
 
 from __future__ import annotations
 
-import os
-from typing import Any, Callable, Optional, Tuple
+from typing import Any, Callable
 
 from mlops_framework.api.schemas import ExternalPanel
-from mlops_framework.config.settings import get_settings
+from mlops_framework.tracking.mlflow_client import client_or_reason, tracking_uri
 
-# MLflow's client defaults to a 120s timeout and 7 retries with an
-# exponential backoff, which is sized for a training job that must not lose
-# its metrics. These endpoints are the opposite case: they render
-# supplementary panels while someone waits on a page. Measured against a
-# tracking server that was simply down, the defaults left a request hanging
-# for over three minutes — worse than an error, because it pins a worker and
-# the browser just spins.
-#
-# These are applied as *defaults*: an operator who exports the variables
-# keeps their own values.
-_HTTP_LIMITS = {
-    "MLFLOW_HTTP_REQUEST_TIMEOUT": "6",
-    "MLFLOW_HTTP_REQUEST_MAX_RETRIES": "1",
-    "MLFLOW_HTTP_REQUEST_BACKOFF_FACTOR": "1",
-}
-
-
-def _apply_http_limits() -> None:
-    for key, value in _HTTP_LIMITS.items():
-        os.environ.setdefault(key, value)
-
-
-def tracking_uri() -> Optional[str]:
-    """Return the configured tracking URI, if any."""
-    return get_settings().mlflow_tracking_uri
-
-
-def client_or_reason() -> Tuple[Any, Optional[str]]:
-    """Build an ``MlflowClient``, or explain why one is not available.
-
-    Returns:
-        ``(client, None)`` on success, ``(None, reason)`` otherwise. The
-        reason is user-facing text that lands in
-        :attr:`ExternalPanel.reason`.
-    """
-    uri = tracking_uri()
-    if not uri:
-        return None, "MLFLOW_TRACKING_URI is not configured"
-    _apply_http_limits()
-    try:
-        from mlflow.tracking import MlflowClient
-    except Exception as exc:  # noqa: BLE001 - optional dependency
-        return None, f"mlflow is not installed: {exc}"
-    try:
-        return MlflowClient(tracking_uri=uri), None
-    except Exception as exc:  # noqa: BLE001 - never fail the page
-        return None, f"MLflow unavailable: {exc}"
+__all__ = ["client_or_reason", "tracking_uri", "panel"]
 
 
 def panel(fn: Callable[[Any], Any]) -> ExternalPanel:
