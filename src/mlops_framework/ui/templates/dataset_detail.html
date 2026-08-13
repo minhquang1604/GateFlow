@@ -1,3 +1,16 @@
     <div id="ds-head"></div>
+
+    <div class="toolbar" id="ds-toolbar" hidden>
+      <label class="faint" for="version-select">Version</label>
+      <select id="version-select" aria-label="Select dataset version to view"></select>
+
+      <label class="faint" id="compare-label" for="compare-a" style="margin-left:10px">Compare</label>
+      <select id="compare-a" aria-label="Compare — first version"></select>
+      <span class="faint" id="compare-vs">vs</span>
+      <select id="compare-b" aria-label="Compare — second version"></select>
+      <button id="compare-btn" class="btn">Compare</button>
+      <button id="compare-close" class="btn" hidden>Back to version</button>
+    </div>
+
     <div id="ds-body"></div>
 <script>initDatasetDetail(location.pathname.split('/').pop());</script>

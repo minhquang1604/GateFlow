@@ -28,6 +28,7 @@ from mlops_framework.api.routers import (
     readiness,
     runs,
     schedules,
+    settings as settings_router,
 )
 
 _log = logging.getLogger("mlops_framework.api.scheduler")
@@ -76,6 +77,7 @@ def create_app(
     app.include_router(drift.router, prefix="/api", tags=["drift"])
     app.include_router(schedules.router, prefix="/api", tags=["scheduling"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
+    app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 
     if mount_ui:
         from mlops_framework.ui.mount import mount_ui as _mount_ui

@@ -98,6 +98,23 @@
   --violet: #6f42c1;
   --violet-bg: #f4f0fe;
 
+  /* Categorical series palette — run identity in an overlay chart
+   * (runs_compare.html), never a status. Fixed hue order, not cycled —
+   * see the dataviz skill's color-formula: assigning by index keeps a
+   * run's colour stable as other runs are added/removed from a
+   * comparison. Validated (scripts/validate_palette.js) against this
+   * file's own --surface, both modes: CVD ΔE >= 8.4, normal-vision
+   * ΔE >= 19.3 on every adjacent pair. Never reuse --ok/--err/--warn/
+   * --run's hues here — a series swatch must not look like a status. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+
   --radius: 12px;
   --radius-sm: 10px;
   --radius-pill: 20px;
@@ -114,78 +131,107 @@
  * and duplicating 30 declarations is cheaper than adding a build step. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0f1b2a;
-    --surface: #192534;
-    --surface-2: #1b2938;
-    --surface-3: #232f3e;
-    --border: #414d5c;
-    --border-strong: #5f6b7a;
-    --text: #d1d5db;
-    --text-muted: #b4b4bb;
-    --text-faint: #8d99a8;
+    /* Neutral charcoal, not navy — a flat gray scale (ChatGPT-style)
+     * rather than the blue-tinted dark that used to live here. Blue is
+     * reserved for --accent/--run, which is now the *only* thing on
+     * the page carrying that hue. */
+    --bg: #212121;
+    --surface: #2f2f2f;
+    --surface-2: #2a2a2a;
+    --surface-3: #383838;
+    --border: #3f3f3f;
+    --border-strong: #565656;
+    --text: #ececec;
+    --text-muted: #b4b4b4;
+    --text-faint: #8e8ea0;
 
-    --accent: #42b4ff;
-    --accent-hover: #89bdee;
-    --accent-soft: #12293b;
-    --accent-border: #1f4a68;
+    --accent: #4a9eff;
+    --accent-hover: #7ab8ff;
+    --accent-soft: #1e2b3d;
+    --accent-border: #2c3f57;
 
     /* The artwork navy vanishes against a dark canvas. */
-    --logo-accent: #4f9ee8;
-    --logo-deep: #9cc0e8;
+    --logo-accent: #5aa8f0;
+    --logo-deep: #b8d4f5;
 
-    --ok: #29ad32;
-    --ok-bg: #12261a;
-    --err: #eb6f6f;
-    --err-bg: #2b1616;
-    --warn: #e0ca57;
-    --warn-bg: #2b2410;
-    --run: #42b4ff;
-    --run-bg: #12293b;
-    --idle: #8d99a8;
-    --idle-bg: #232f3e;
-    --violet: #b39bf5;
-    --violet-bg: #221d38;
+    --ok: #34d399;
+    --ok-bg: #16241c;
+    --err: #f87171;
+    --err-bg: #2a1c1c;
+    --warn: #fbbf24;
+    --warn-bg: #2a2416;
+    --run: #4a9eff;
+    --run-bg: #1e2b3d;
+    --idle: #9a9a9a;
+    --idle-bg: #303030;
+    --violet: #c4b5fd;
+    --violet-bg: #241f36;
 
-    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 20px rgba(0, 0, 0, .35);
-    --shadow-nav: 0 2px 5px rgba(0, 0, 0, .45);
+    /* Same eight hues, stepped for the dark surface — see the :root
+     * block's comment. Validated against this file's dark --surface
+     * (#2f2f2f): CVD ΔE >= 8.4, normal-vision ΔE >= 19.3 adjacent. */
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+    --series-5: #d55181;
+    --series-6: #008300;
+    --series-7: #9085e9;
+    --series-8: #e66767;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 20px rgba(0, 0, 0, .4);
+    --shadow-nav: 0 2px 5px rgba(0, 0, 0, .5);
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #0f1b2a;
-  --surface: #192534;
-  --surface-2: #1b2938;
-  --surface-3: #232f3e;
-  --border: #414d5c;
-  --border-strong: #5f6b7a;
-  --text: #d1d5db;
-  --text-muted: #b4b4bb;
-  --text-faint: #8d99a8;
+  /* Neutral charcoal, not navy — a flat gray scale (ChatGPT-style)
+   * rather than the blue-tinted dark that used to live here. Blue is
+   * reserved for --accent/--run, which is now the *only* thing on the
+   * page carrying that hue. */
+  --bg: #212121;
+  --surface: #2f2f2f;
+  --surface-2: #2a2a2a;
+  --surface-3: #383838;
+  --border: #3f3f3f;
+  --border-strong: #565656;
+  --text: #ececec;
+  --text-muted: #b4b4b4;
+  --text-faint: #8e8ea0;
 
-  --accent: #42b4ff;
-  --accent-hover: #89bdee;
-  --accent-soft: #12293b;
-  --accent-border: #1f4a68;
+  --accent: #4a9eff;
+  --accent-hover: #7ab8ff;
+  --accent-soft: #1e2b3d;
+  --accent-border: #2c3f57;
 
   /* The artwork navy vanishes against a dark canvas. */
-  --logo-accent: #4f9ee8;
-  --logo-deep: #9cc0e8;
+  --logo-accent: #5aa8f0;
+  --logo-deep: #b8d4f5;
 
-  --ok: #29ad32;
-  --ok-bg: #12261a;
-  --err: #eb6f6f;
-  --err-bg: #2b1616;
-  --warn: #e0ca57;
-  --warn-bg: #2b2410;
-  --run: #42b4ff;
-  --run-bg: #12293b;
-  --idle: #8d99a8;
-  --idle-bg: #232f3e;
-  --violet: #b39bf5;
-  --violet-bg: #221d38;
+  --ok: #34d399;
+  --ok-bg: #16241c;
+  --err: #f87171;
+  --err-bg: #2a1c1c;
+  --warn: #fbbf24;
+  --warn-bg: #2a2416;
+  --run: #4a9eff;
+  --run-bg: #1e2b3d;
+  --idle: #9a9a9a;
+  --idle-bg: #303030;
+  --violet: #c4b5fd;
+  --violet-bg: #241f36;
 
-  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 20px rgba(0, 0, 0, .35);
-  --shadow-nav: 0 2px 5px rgba(0, 0, 0, .45);
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, .5), 0 8px 20px rgba(0, 0, 0, .4);
+  --shadow-nav: 0 2px 5px rgba(0, 0, 0, .5);
 }
 
 * { box-sizing: border-box; }
@@ -696,6 +742,10 @@ tbody td {
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--surface-2); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12.5px; }
+/* A header over an entirely-numeric column (Runs Compare's Metrics/
+ * Parameters tables) — thead th is left-aligned by default, which reads
+ * as a mismatch when every cell below it is right-aligned. */
+th.num { text-align: right; }
 
 .empty { padding: 44px 16px; text-align: center; color: var(--text-muted); }
 
@@ -1033,6 +1083,28 @@ details[open] > summary:before { transform: rotate(90deg); }
 .chart .line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; }
 .chart .point { fill: var(--accent); }
 .chart .bar { fill: var(--accent); }
+
+/* Multi-series overlay (runs_compare.html's per-metric training-curve
+ * chart) — a CSS class per slot rather than an inline stroke: SVG
+ * presentation attributes lose to any matching class rule, so `.line`'s
+ * own stroke above would otherwise win regardless of what a path's
+ * `stroke="..."` attribute said. See --series-* in the :root tokens. */
+.chart .line.s1 { stroke: var(--series-1); }
+.chart .line.s2 { stroke: var(--series-2); }
+.chart .line.s3 { stroke: var(--series-3); }
+.chart .line.s4 { stroke: var(--series-4); }
+.chart .line.s5 { stroke: var(--series-5); }
+.chart .line.s6 { stroke: var(--series-6); }
+.chart .line.s7 { stroke: var(--series-7); }
+.chart .line.s8 { stroke: var(--series-8); }
+.chart .point.s1 { fill: var(--series-1); }
+.chart .point.s2 { fill: var(--series-2); }
+.chart .point.s3 { fill: var(--series-3); }
+.chart .point.s4 { fill: var(--series-4); }
+.chart .point.s5 { fill: var(--series-5); }
+.chart .point.s6 { fill: var(--series-6); }
+.chart .point.s7 { fill: var(--series-7); }
+.chart .point.s8 { fill: var(--series-8); }
 
 /* The dashboard's run strip lives in a card with its own caption. */
 .card > .chart-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }

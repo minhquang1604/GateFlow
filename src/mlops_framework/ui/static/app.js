@@ -269,6 +269,69 @@ function lineChart(title, points, opts = {}) {
   return wrap;
 }
 
+// An overlay of several {step, value} series on one shared scale — one
+// training curve per run, so "who learned faster/better" is a shape
+// comparison, not just a table of final numbers. Colour is assigned by
+// each series' fixed index (--series-1.. in app.css, see its comment),
+// never by rank, so a run keeps its colour if another run is added to
+// or removed from the comparison. Always paired with a text legend
+// (below) and the caller's own metrics table (compareTable in
+// initRunsCompare) — identity is never colour-alone. Caps at 8 series,
+// the palette's validated slot count; a 9th run's series is dropped
+// rather than assigned a repeated or unvalidated hue.
+function multiLineChart(title, series) {
+  const W = 320, H = 140, P = { t: 8, r: 8, b: 20, l: 38 };
+  const wrap = el("div", { class: "chart" }, el("div", { class: "chart-title" }, title));
+  const plotted = series.filter((s) => s.points && s.points.length).slice(0, 8);
+  if (!plotted.length) {
+    wrap.appendChild(el("div", { class: "empty" }, "No history"));
+    return wrap;
+  }
+
+  const allPoints = plotted.flatMap((s) => s.points);
+  const xs = allPoints.map((p) => p.step);
+  const ys = allPoints.map((p) => p.value);
+  const xMin = Math.min(...xs), xMax = Math.max(...xs);
+  let yMin = Math.min(...ys), yMax = Math.max(...ys);
+  if (yMin === yMax) { yMin -= Math.abs(yMin) * 0.1 || 0.5; yMax += Math.abs(yMax) * 0.1 || 0.5; }
+  const pad = (yMax - yMin) * 0.08;
+  yMin -= pad; yMax += pad;
+
+  const sx = (x) => P.l + ((x - xMin) / (xMax - xMin || 1)) * (W - P.l - P.r);
+  const sy = (y) => H - P.b - ((y - yMin) / (yMax - yMin || 1)) * (H - P.t - P.b);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": title });
+  for (let i = 0; i <= 3; i++) {
+    const v = yMin + ((yMax - yMin) * i) / 3;
+    const y = sy(v);
+    svg.appendChild(svgEl("line", { class: "gridline", x1: P.l, y1: y, x2: W - P.r, y2: y }));
+    svg.appendChild(svgEl("text", { class: "tick-label", x: P.l - 5, y: y + 3, "text-anchor": "end" }, v.toFixed(3)));
+  }
+  svg.appendChild(svgEl("line", { class: "axis", x1: P.l, y1: H - P.b, x2: W - P.r, y2: H - P.b }));
+
+  plotted.forEach((s, i) => {
+    const slot = i + 1;
+    const d = s.points.map((p, j) => `${j ? "L" : "M"}${sx(p.step).toFixed(2)},${sy(p.value).toFixed(2)}`).join(" ");
+    svg.appendChild(svgEl("path", { class: `line s${slot}`, d }));
+    if (s.points.length <= 40) {
+      for (const p of s.points) {
+        svg.appendChild(svgEl("circle", { class: `point s${slot}`, cx: sx(p.step), cy: sy(p.value), r: 2 }));
+      }
+    }
+  });
+  svg.appendChild(svgEl("text", { class: "tick-label", x: P.l, y: H - 6 }, String(xMin)));
+  svg.appendChild(svgEl("text", { class: "tick-label", x: W - P.r, y: H - 6, "text-anchor": "end" }, String(xMax)));
+  wrap.appendChild(svg);
+
+  wrap.appendChild(el("div", { class: "legend", style: "margin-top:8px" },
+    ...plotted.map((s, i) =>
+      el("span", { class: "legend-item" },
+        el("span", { class: "dot", style: `background:var(--series-${i + 1})` }),
+        s.label))));
+
+  return wrap;
+}
+
 // Horizontal bar comparison, used to compare one metric across runs or
 // model versions. Bars share a scale so lengths are directly comparable.
 function barChart(title, entries) {
@@ -475,119 +538,267 @@ async function initDatasets() {
   }
 }
 
+// One version's facts/readiness/drift/schema panel — used both for the
+// single-version view (the default) and reused nowhere else, since the
+// two-version compare below needs its fields side by side, not stacked.
+async function datasetVersionSection(v) {
+  const meta = v.metadata || {};
+  let readiness = null;
+  try { readiness = await api(`/readiness/${v.id}`); } catch { /* optional */ }
+  let drift = null;
+  try { drift = await api(`/drift/${v.id}`); } catch { /* optional */ }
+
+  const facts = el("dl", { class: "kv" },
+    el("dt", {}, "Rows"), el("dd", {}, fmt.num(v.row_count)),
+    el("dt", {}, "Storage URI"), el("dd", {}, v.storage_uri),
+    el("dt", {}, "Content SHA-256"), el("dd", {}, meta.content_sha256 || "not recorded"),
+    el("dt", {}, "Schema hash"), el("dd", {}, v.schema_hash),
+    el("dt", {}, "Version checksum"), el("dd", {}, v.checksum),
+    el("dt", {}, "Size"), el("dd", {}, fmt.bytes(meta.size_bytes)),
+    el("dt", {}, "Immutable"), el("dd", {}, v.is_immutable ? "yes" : "no"),
+    el("dt", {}, "Created"), el("dd", {}, fmt.time(v.created_at)));
+
+  const classBalance = meta.n_fraud != null
+    ? el("div", { class: "card" },
+        el("div", { class: "chart-title" }, "Class balance"),
+        el("div", { class: "metric-grid" },
+          el("div", { class: "metric" },
+            el("div", { class: "name" }, "positive"), el("div", { class: "val" }, fmt.num(meta.n_fraud))),
+          el("div", { class: "metric" },
+            el("div", { class: "name" }, "ratio"), el("div", { class: "val" }, fmt.pct(meta.fraud_ratio))),
+          el("div", { class: "metric" },
+            el("div", { class: "name" }, "missing"), el("div", { class: "val" }, fmt.num(meta.missing_values)))))
+    : null;
+
+  const schemaRows = (meta.columns || []).map((c) =>
+    el("tr", {},
+      el("td", { class: "mono" }, c.name),
+      el("td", { class: "mono muted" }, c.dtype)));
+
+  const readinessPanel = el("div", { class: "card" },
+    el("div", { class: "chart-title" }, "Readiness"),
+    readiness
+      ? el("div", {},
+          el("div", { style: "margin-bottom:8px" }, statusBadge(readiness.status)),
+          el("div", { class: "task-grid" },
+            ...Object.entries(readiness.checks || {}).map(([name, outcome]) =>
+              el("div", { class: `task-cell ${statusKind(outcome)}` },
+                el("span", { class: "dot" }), name,
+                el("span", { class: "state" }, outcome)))),
+          (readiness.reasons || []).length
+            ? el("ul", { class: "muted", style: "margin:10px 0 0;padding-left:18px" },
+                ...readiness.reasons.map((r) => el("li", {}, r)))
+            : null)
+      : el("div", { class: "muted" }, "Not evaluated yet."));
+
+  // A version can be either side of a drift comparison — the API
+  // resolves that; here we just render whatever the latest
+  // evaluation involving this version says.
+  const driftFeatures = (drift && drift.details && drift.details.feature_results) || [];
+  const driftPanel = el("div", { class: "card" },
+    el("div", { class: "chart-title" }, "Drift"),
+    drift
+      ? el("div", {},
+          el("div", { style: "margin-bottom:8px" }, statusBadge(drift.outcome)),
+          el("div", { class: "muted", style: "margin-bottom:8px" },
+            `method: ${drift.method} · score: ${fmt.metric(drift.score)}`),
+          driftFeatures.length
+            ? el("div", { class: "task-grid" },
+                ...driftFeatures
+                  .filter((f) => f.drift_detected)
+                  .map((f) =>
+                    el("div", { class: "task-cell failed" },
+                      el("span", { class: "dot" }), f.feature,
+                      el("span", { class: "state" }, f.method))))
+            : null)
+      : el("div", { class: "muted" }, "Not evaluated yet."));
+
+  return el("section", {},
+    el("div", { class: "section-head" },
+      el("h3", {}, `Version ${v.version_number}`),
+      el("span", { class: "faint" }, fmt.ago(v.created_at))),
+    el("div", { class: "grid-2" },
+      el("div", { class: "card" }, facts),
+      el("div", {},
+        readinessPanel,
+        el("div", { style: "height:16px" }), driftPanel,
+        classBalance ? el("div", { style: "height:16px" }) : null, classBalance)),
+    schemaRows.length
+      ? el("div", {},
+          el("h3", {}, `Schema — ${schemaRows.length} columns`),
+          el("div", { class: "table-wrap" },
+            el("table", {},
+              el("thead", {}, el("tr", {}, el("th", {}, "Column"), el("th", {}, "Dtype"))),
+              el("tbody", {}, ...schemaRows))))
+      : null);
+}
+
+// Two versions' facts/schema side by side, differing rows marked ●
+// (same convention as initRunsCompare) — rendered inline in ds-body,
+// no navigation, so picking a different pair is a couple of clicks away.
+async function datasetCompareSection(vA, vB) {
+  let readinessA = null, driftA = null, readinessB = null, driftB = null;
+  try { readinessA = await api(`/readiness/${vA.id}`); } catch { /* optional */ }
+  try { driftA = await api(`/drift/${vA.id}`); } catch { /* optional */ }
+  try { readinessB = await api(`/readiness/${vB.id}`); } catch { /* optional */ }
+  try { driftB = await api(`/drift/${vB.id}`); } catch { /* optional */ }
+
+  const metaA = vA.metadata || {};
+  const metaB = vB.metadata || {};
+  const differs = (a, b) => JSON.stringify(a ?? null) !== JSON.stringify(b ?? null);
+  const colA = `Version ${vA.version_number}`;
+  const colB = `Version ${vB.version_number}`;
+
+  const fields = [
+    ["Rows", vA.row_count, vB.row_count, fmt.num],
+    ["Storage URI", vA.storage_uri, vB.storage_uri, (x) => x || "—"],
+    ["Content SHA-256", metaA.content_sha256, metaB.content_sha256, (x) => x || "not recorded"],
+    ["Schema hash", vA.schema_hash, vB.schema_hash, (x) => x],
+    ["Version checksum", vA.checksum, vB.checksum, (x) => x],
+    ["Size", metaA.size_bytes, metaB.size_bytes, fmt.bytes],
+    ["Immutable", vA.is_immutable, vB.is_immutable, (x) => (x ? "yes" : "no")],
+    ["Created", vA.created_at, vB.created_at, fmt.time],
+    ["Readiness", readinessA?.status, readinessB?.status, (x) => x || "not evaluated"],
+    ["Drift outcome", driftA?.outcome, driftB?.outcome, (x) => x || "not evaluated"],
+  ];
+  const ordered = [...fields.filter(([, a, b]) => differs(a, b)), ...fields.filter(([, a, b]) => !differs(a, b))];
+
+  const overview = el("div", {},
+    el("h3", {}, "Overview — ● marks a value that differs"),
+    el("div", { class: "table-wrap" },
+      el("table", {},
+        el("thead", {}, el("tr", {}, el("th", {}, "Field"), el("th", {}, colA), el("th", {}, colB))),
+        el("tbody", {}, ...ordered.map(([label, a, b, f]) =>
+          el("tr", {},
+            el("td", { class: "mono" }, label, differs(a, b) ? el("span", { class: "faint" }, " ●") : null),
+            el("td", {}, f(a)),
+            el("td", {}, f(b))))))));
+
+  const classFields = [
+    ["Positive (fraud) count", metaA.n_fraud, metaB.n_fraud, fmt.num],
+    ["Positive ratio", metaA.fraud_ratio, metaB.fraud_ratio, fmt.pct],
+    ["Missing values", metaA.missing_values, metaB.missing_values, fmt.num],
+  ];
+  const classBalance = (metaA.n_fraud != null || metaB.n_fraud != null)
+    ? el("div", {},
+        el("h3", {}, "Class balance"),
+        el("div", { class: "table-wrap" },
+          el("table", {},
+            el("thead", {}, el("tr", {}, el("th", {}, "Metric"), el("th", {}, colA), el("th", {}, colB))),
+            el("tbody", {}, ...classFields.map(([label, a, b, f]) =>
+              el("tr", {},
+                el("td", { class: "mono" }, label, differs(a, b) ? el("span", { class: "faint" }, " ●") : null),
+                el("td", {}, f(a)),
+                el("td", {}, f(b))))))))
+    : null;
+
+  // Every column seen on either side; one present on only one side
+  // renders "—" on the other, which reads the same as an added/removed
+  // column would in a diff.
+  const colsA = new Map((metaA.columns || []).map((c) => [c.name, c.dtype]));
+  const colsB = new Map((metaB.columns || []).map((c) => [c.name, c.dtype]));
+  const allCols = [...new Set([...colsA.keys(), ...colsB.keys()])].sort();
+  const schemaDiff = allCols.length
+    ? el("div", {},
+        el("h3", {}, `Schema — ${allCols.length} columns · ● marks added, removed, or changed`),
+        el("div", { class: "table-wrap" },
+          el("table", {},
+            el("thead", {}, el("tr", {}, el("th", {}, "Column"), el("th", {}, colA), el("th", {}, colB))),
+            el("tbody", {}, ...allCols.map((name) => {
+              const a = colsA.get(name), b = colsB.get(name);
+              return el("tr", {},
+                el("td", { class: "mono" }, name, a !== b ? el("span", { class: "faint" }, " ●") : null),
+                el("td", { class: "mono muted" }, a ?? "—"),
+                el("td", { class: "mono muted" }, b ?? "—"));
+            })))))
+    : null;
+
+  return el("div", {}, overview, classBalance, schemaDiff);
+}
+
 async function initDatasetDetail(id) {
   const head = document.getElementById("ds-head");
   const body = document.getElementById("ds-body");
+  const toolbar = document.getElementById("ds-toolbar");
+  const versionSelect = document.getElementById("version-select");
+  const compareLabel = document.getElementById("compare-label");
+  const compareVs = document.getElementById("compare-vs");
+  const compareA = document.getElementById("compare-a");
+  const compareB = document.getElementById("compare-b");
+  const compareBtn = document.getElementById("compare-btn");
+  const compareClose = document.getElementById("compare-close");
+
+  let versions;
   try {
-    const [ds, versions] = await Promise.all([
+    const [ds, vs] = await Promise.all([
       api(`/datasets/${id}`),
       api(`/datasets/${id}/versions`),
     ]);
-
+    versions = vs;
     head.replaceChildren(
       el("div", { class: "breadcrumb" }, el("a", { href: "/datasets" }, "Datasets"), " / ", ds.name),
       el("h2", {}, ds.name),
       el("p", { class: "subtitle" }, ds.description || "No description"));
-
-    const sections = [];
-
-    for (const v of versions.slice().reverse()) {
-      const meta = v.metadata || {};
-      let readiness = null;
-      try { readiness = await api(`/readiness/${v.id}`); } catch { /* optional */ }
-      let drift = null;
-      try { drift = await api(`/drift/${v.id}`); } catch { /* optional */ }
-
-      const facts = el("dl", { class: "kv" },
-        el("dt", {}, "Rows"), el("dd", {}, fmt.num(v.row_count)),
-        el("dt", {}, "Storage URI"), el("dd", {}, v.storage_uri),
-        el("dt", {}, "Content SHA-256"), el("dd", {}, meta.content_sha256 || "not recorded"),
-        el("dt", {}, "Schema hash"), el("dd", {}, v.schema_hash),
-        el("dt", {}, "Version checksum"), el("dd", {}, v.checksum),
-        el("dt", {}, "Size"), el("dd", {}, fmt.bytes(meta.size_bytes)),
-        el("dt", {}, "Immutable"), el("dd", {}, v.is_immutable ? "yes" : "no"),
-        el("dt", {}, "Created"), el("dd", {}, fmt.time(v.created_at)));
-
-      const classBalance = meta.n_fraud != null
-        ? el("div", { class: "card" },
-            el("div", { class: "chart-title" }, "Class balance"),
-            el("div", { class: "metric-grid" },
-              el("div", { class: "metric" },
-                el("div", { class: "name" }, "positive"), el("div", { class: "val" }, fmt.num(meta.n_fraud))),
-              el("div", { class: "metric" },
-                el("div", { class: "name" }, "ratio"), el("div", { class: "val" }, fmt.pct(meta.fraud_ratio))),
-              el("div", { class: "metric" },
-                el("div", { class: "name" }, "missing"), el("div", { class: "val" }, fmt.num(meta.missing_values)))))
-        : null;
-
-      const schemaRows = (meta.columns || []).map((c) =>
-        el("tr", {},
-          el("td", { class: "mono" }, c.name),
-          el("td", { class: "mono muted" }, c.dtype)));
-
-      const readinessPanel = el("div", { class: "card" },
-        el("div", { class: "chart-title" }, "Readiness"),
-        readiness
-          ? el("div", {},
-              el("div", { style: "margin-bottom:8px" }, statusBadge(readiness.status)),
-              el("div", { class: "task-grid" },
-                ...Object.entries(readiness.checks || {}).map(([name, outcome]) =>
-                  el("div", { class: `task-cell ${statusKind(outcome)}` },
-                    el("span", { class: "dot" }), name,
-                    el("span", { class: "state" }, outcome)))),
-              (readiness.reasons || []).length
-                ? el("ul", { class: "muted", style: "margin:10px 0 0;padding-left:18px" },
-                    ...readiness.reasons.map((r) => el("li", {}, r)))
-                : null)
-          : el("div", { class: "muted" }, "Not evaluated yet."));
-
-      // A version can be either side of a drift comparison — the API
-      // resolves that; here we just render whatever the latest
-      // evaluation involving this version says.
-      const driftFeatures = (drift && drift.details && drift.details.feature_results) || [];
-      const driftPanel = el("div", { class: "card" },
-        el("div", { class: "chart-title" }, "Drift"),
-        drift
-          ? el("div", {},
-              el("div", { style: "margin-bottom:8px" }, statusBadge(drift.outcome)),
-              el("div", { class: "muted", style: "margin-bottom:8px" },
-                `method: ${drift.method} · score: ${fmt.metric(drift.score)}`),
-              driftFeatures.length
-                ? el("div", { class: "task-grid" },
-                    ...driftFeatures
-                      .filter((f) => f.drift_detected)
-                      .map((f) =>
-                        el("div", { class: "task-cell failed" },
-                          el("span", { class: "dot" }), f.feature,
-                          el("span", { class: "state" }, f.method))))
-                : null)
-          : el("div", { class: "muted" }, "Not evaluated yet."));
-
-      sections.push(
-        el("section", {},
-          el("div", { class: "section-head" },
-            el("h3", {}, `Version ${v.version_number}`),
-            el("span", { class: "faint" }, fmt.ago(v.created_at))),
-          el("div", { class: "grid-2" },
-            el("div", { class: "card" }, facts),
-            el("div", {},
-              readinessPanel,
-              el("div", { style: "height:16px" }), driftPanel,
-              classBalance ? el("div", { style: "height:16px" }) : null, classBalance)),
-          schemaRows.length
-            ? el("div", {},
-                el("h3", {}, `Schema — ${schemaRows.length} columns`),
-                el("div", { class: "table-wrap" },
-                  el("table", {},
-                    el("thead", {}, el("tr", {}, el("th", {}, "Column"), el("th", {}, "Dtype"))),
-                    el("tbody", {}, ...schemaRows))))
-            : null));
-    }
-
-    mount(body, ...(sections.length ? sections : [banner("No versions registered yet.")]));
   } catch (e) {
     setError(body, e);
+    return;
   }
+
+  if (!versions.length) {
+    mount(body, banner("No versions registered yet."));
+    return;
+  }
+
+  // Newest first — a reader lands on a dataset's page to see what
+  // changed most recently, not to scroll past every prior version to
+  // reach it (which is what showing all of them, oldest-first-reversed,
+  // used to do here).
+  const newest = versions.slice().reverse();
+  const label = (v) => `Version ${v.version_number} — ${fmt.ago(v.created_at)}`;
+  const byId = new Map(versions.map((v) => [String(v.id), v]));
+  const optionList = () => newest.map((v) => el("option", { value: String(v.id) }, label(v)));
+
+  versionSelect.replaceChildren(...optionList());
+  compareA.replaceChildren(...optionList());
+  compareB.replaceChildren(...optionList());
+  versionSelect.value = String(newest[0].id);
+  compareA.value = String(newest[0].id);
+  compareB.value = String((newest[1] || newest[0]).id);
+  toolbar.hidden = false;
+
+  const hasCompare = versions.length > 1;
+  for (const e of [compareLabel, compareVs, compareA, compareB, compareBtn]) e.hidden = !hasCompare;
+
+  async function showVersion(versionId) {
+    const v = byId.get(String(versionId));
+    if (!v) return;
+    mount(body, el("div", { class: "muted" }, "Loading…"));
+    mount(body, await datasetVersionSection(v));
+  }
+
+  versionSelect.addEventListener("change", () => {
+    compareClose.hidden = true;
+    showVersion(versionSelect.value);
+  });
+
+  compareBtn.addEventListener("click", async () => {
+    if (compareA.value === compareB.value) {
+      mount(body, banner("Pick two different versions to compare."));
+    } else {
+      mount(body, el("div", { class: "muted" }, "Loading…"));
+      mount(body, await datasetCompareSection(byId.get(compareA.value), byId.get(compareB.value)));
+    }
+    compareClose.hidden = false;
+    versionSelect.disabled = true;
+  });
+
+  compareClose.addEventListener("click", () => {
+    versionSelect.disabled = false;
+    compareClose.hidden = true;
+    showVersion(versionSelect.value);
+  });
+
+  await showVersion(versionSelect.value);
 }
 
 /* ------------------------------------------------------------------ */
@@ -766,12 +977,25 @@ async function initRuns() {
 
     const table = el("table", {},
       el("thead", {}, el("tr", {},
-        el("th", {}, "#"), el("th", {}, "Run"), el("th", {}, "Status"),
+        el("th", {}, ""), el("th", {}, "#"), el("th", {}, "Run"), el("th", {}, "Status"),
         ...shown.map((k) => el("th", {}, k)),
         el("th", {}, "Training run"), el("th", {}, "Started"))),
       el("tbody", {}, ...(runs.length ? runs.map((r, i) => {
         const fwId = byMlflowId.get(r.run_id);
+        // Compare only knows framework training runs (initRunsCompare fetches
+        // /training-runs/{id}) — a run this framework never started has no
+        // such id to select, so its checkbox cell stays empty rather than
+        // disabled-and-confusing.
+        const cb = fwId ? el("input", { type: "checkbox" }) : null;
+        if (cb) {
+          cb.checked = selected.has(fwId);
+          cb.addEventListener("change", () => {
+            if (cb.checked) selected.add(fwId); else selected.delete(fwId);
+            updateCompare();
+          });
+        }
         return el("tr", {},
+          el("td", { class: "checkbox-cell" }, cb),
           el("td", { class: "num" }, String(i + 1)),
           el("td", {}, el("a", {
             class: "mono", title: r.run_id,
@@ -787,7 +1011,8 @@ async function initRuns() {
           el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
                             : el("span", { class: "faint" }, "—")),
           el("td", { class: "muted nowrap" }, fmt.ago(r.start_time)));
-      }) : [emptyRow(shown.length + 5, "No runs matched.")])));
+      }) : [emptyRow(shown.length + 6, "No runs matched.")])));
+    updateCompare();
 
     const headline = rankBy.value || METRIC_PRIORITY.find((m) => shown.includes(m));
     const chart = headline && runs.length > 1
@@ -845,16 +1070,76 @@ function bestMetric(run) {
   return first ? { name: first[0], value: first[1] } : null;
 }
 
+// The console has no login, so there is nothing to attach a write token
+// to but the browser tab: cached in sessionStorage (cleared with the
+// tab, never sent anywhere but this origin) so a user fixing several
+// tasks in one sitting is only prompted once. Not real auth — see
+// api/security.py's module docstring — just where the one shared secret
+// that gate expects has to come from on this side.
+function writeToken(forcePrompt = false) {
+  if (forcePrompt) sessionStorage.removeItem("gateflow-write-token");
+  let t = sessionStorage.getItem("gateflow-write-token");
+  if (!t) {
+    t = window.prompt("Console write token (CONSOLE_WRITE_TOKEN) — required to clear or retry an Airflow task:");
+    if (t) sessionStorage.setItem("gateflow-write-token", t);
+  }
+  return t || null;
+}
+
+// POSTs to the gated clear/retry route (see airflow_views.py). On a 401/403
+// the cached token is dropped and the prompt fires once more — covers both
+// "never set one" and "operator rotated CONSOLE_WRITE_TOKEN since last time".
+async function taskAction(runId, taskId, action, _retried = false) {
+  const token = writeToken();
+  if (!token) throw new Error("Write token required — action cancelled.");
+  try {
+    return await api(`/training-runs/${runId}/tasks/${encodeURIComponent(taskId)}/${action}`, {
+      method: "POST",
+      headers: { "X-Console-Token": token },
+    });
+  } catch (e) {
+    if (!_retried && /^40[13]/.test(e.message)) {
+      writeToken(true);
+      return taskAction(runId, taskId, action, true);
+    }
+    throw e;
+  }
+}
+
 // Fetches one task attempt's log and renders it as plain text below the
-// task grid. Not an api()-wrapped call: the endpoint answers with the log
-// body directly (mirroring how mlflow_views.get_run_artifact serves raw
-// bytes), including a 200 whose *body* is Airflow's own error message
-// when it could not reach where the log actually lives — that text is
-// shown as-is, since it is the accurate answer, not a failure to hide.
+// task grid, plus Clear/Retry buttons scoped to that one task — see
+// taskAction() and airflow_views.py's clear_task/retry_task routes. Not
+// an api()-wrapped call for the log fetch itself: the endpoint answers
+// with the log body directly (mirroring how mlflow_views.get_run_artifact
+// serves raw bytes), including a 200 whose *body* is Airflow's own error
+// message when it could not reach where the log actually lives — that
+// text is shown as-is, since it is the accurate answer, not a failure to
+// hide.
 function showTaskLog(host, runId, taskId, tryNumber) {
+  const msg = el("span", { class: "faint" });
+  const clearBtn = el("button", { class: "btn" }, "Clear");
+  const retryBtn = el("button", { class: "btn" }, "Retry");
+
+  async function run(action, btn) {
+    btn.disabled = true;
+    msg.textContent = "Working…";
+    try {
+      const result = await taskAction(runId, taskId, action);
+      msg.textContent = `${action === "clear" ? "Cleared" : "Retried"} — ` +
+        `${result.cleared_task_instances} task instance(s) reset. Reload the page to see the updated state.`;
+    } catch (e) {
+      msg.textContent = `Failed: ${e.message}`;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  clearBtn.addEventListener("click", () => run("clear", clearBtn));
+  retryBtn.addEventListener("click", () => run("retry", retryBtn));
+
   host.replaceChildren(
     el("div", { class: "section-head", style: "margin-top:12px" },
-      el("div", { class: "chart-title" }, `Log — ${taskId} (attempt ${tryNumber})`)),
+      el("div", { class: "chart-title" }, `Log — ${taskId} (attempt ${tryNumber})`),
+      clearBtn, retryBtn, msg),
     el("pre", { class: "log" }, "Loading…"));
   const pre = host.querySelector("pre");
   fetch(`${API}/training-runs/${runId}/tasks/${encodeURIComponent(taskId)}/log?try_number=${tryNumber}`)
@@ -1457,7 +1742,7 @@ async function initRunsCompare() {
         el("table", {},
           el("thead", {}, el("tr", {},
             el("th", {}, "Key"),
-            ...runs.map((r) => el("th", {}, el("a", { href: `/runs/${r.id}` }, `#${r.id}`))))),
+            ...runs.map((r) => el("th", { class: "num" }, el("a", { href: `/runs/${r.id}` }, `#${r.id}`))))),
           el("tbody", {}, ...(rows.length ? rows : [emptyRow(runs.length + 1, "Nothing recorded.")])))));
   }
 
@@ -1484,9 +1769,33 @@ async function initRunsCompare() {
       })))
     : null;
 
+  // Training curves — best-effort on top of everything above, which
+  // already renders from the framework's own final-value metrics alone.
+  // MLflow's per-step history is what makes a *curve* possible (see
+  // runs.py::_run_mlflow_panel's docstring); a run with no MLflow panel
+  // (unconfigured, unreachable, or this run never logged to it) just
+  // contributes nothing to these charts rather than blocking the page —
+  // same degrade-a-card contract every other MLflow-backed view follows.
+  const curvesHost = el("div", {});
+  Promise.all(runs.map((r) => api(`/training-runs/${r.id}/mlflow`).catch(() => ({ available: false }))))
+    .then((panels) => {
+      const historyByRun = panels.map((p) => (p.available ? p.data.history || {} : {}));
+      const curveMetrics = [...new Set(historyByRun.flatMap((h) => Object.keys(h)))]
+        .filter((m) => historyByRun.some((h) => (h[m] || []).length > 1))
+        .sort();
+      if (!curveMetrics.length) return;
+      const charts = curveMetrics.map((m) =>
+        multiLineChart(m, runs.map((r, i) => ({ label: `#${r.id}`, points: historyByRun[i][m] || [] }))));
+      mount(curvesHost,
+        el("h3", {}, "Training curves"),
+        el("div", { class: "grid-3" }, ...charts));
+    })
+    .catch(() => {});
+
   mount(body,
     overview,
     chart ? el("div", { style: "margin-top:16px;max-width:520px" }, chart) : null,
+    curvesHost,
     compareTable("Metrics — ● marks a value that differs", metricKeys, (r) => r.metrics || {}),
     compareTable("Parameters — ● marks a value that differs", paramKeys, (r) => r.parameters || {}));
 }
@@ -1797,6 +2106,62 @@ async function initSchedules() {
   }
 
   newBtn.addEventListener("click", showForm);
+  document.getElementById("refresh").addEventListener("click", load);
+  await load();
+}
+
+/* ------------------------------------------------------------------ */
+/* Settings                                                            */
+/* ------------------------------------------------------------------ */
+
+// A reachability badge distinct from statusBadge()'s run/model vocabulary:
+// "not configured" (no URL set) reads differently from "configured but
+// unreachable" (URL set, ping failed) — collapsing them into one grey
+// badge would hide the more actionable of the two states.
+function reachabilityBadge(system) {
+  if (!system.configured) return el("span", { class: "badge plain" }, "not configured");
+  return system.reachable
+    ? el("span", { class: "badge success" }, "reachable")
+    : el("span", { class: "badge failed" }, "unreachable");
+}
+
+function settingsCard(title, system) {
+  const rows = Object.entries(system.fields).flatMap(([k, v]) => [
+    el("dt", {}, k.replace(/_/g, " ")),
+    el("dd", {}, v == null || v === "" ? "—" : String(v)),
+  ]);
+  return el("div", { class: "card" },
+    el("div", { class: "chart-title", style: "display:flex;align-items:center;justify-content:space-between" },
+      title, reachabilityBadge(system)),
+    system.reason ? el("p", { class: "muted", style: "margin:0 0 10px" }, system.reason) : null,
+    el("dl", { class: "kv" }, ...rows));
+}
+
+async function initSettings() {
+  const out = document.getElementById("settings-out");
+
+  async function load() {
+    let s;
+    try {
+      s = await api("/settings");
+    } catch (e) {
+      setError(out, e);
+      return;
+    }
+    out.replaceChildren(
+      el("div", { class: "grid-2" },
+        settingsCard("Database", s.database),
+        settingsCard("MLflow", s.mlflow),
+        settingsCard("Airflow", s.airflow),
+        el("div", { class: "card" },
+          el("div", { class: "chart-title" }, "Application"),
+          el("dl", { class: "kv" },
+            el("dt", {}, "name"), el("dd", {}, s.app_name),
+            el("dt", {}, "version"), el("dd", {}, s.app_version),
+            el("dt", {}, "scheduler enabled"), el("dd", {}, String(s.scheduler.enabled)),
+            el("dt", {}, "scheduler poll seconds"), el("dd", {}, String(s.scheduler.poll_seconds))))));
+  }
+
   document.getElementById("refresh").addEventListener("click", load);
   await load();
 }

@@ -24,6 +24,18 @@ this adapter hands back — and that callers persist and pass to
 composite ``"{dag_id}/{dag_run_id}"``. Airflow restricts ``dag_id`` to
 ``[A-Za-z0-9_.-]``, so the first ``/`` is an unambiguous separator.
 
+Task control (write)
+---------------------
+
+:meth:`clear_task`/:meth:`retry_task` are this adapter's only write path
+besides :meth:`trigger_pipeline`/:meth:`cancel_execution`. Unlike those
+two — called from the training-service call path, which has always been
+allowed to mutate Airflow — these exist so ``api/routers/airflow_views.py``
+can expose "fix a stuck task" from Gateflow itself. That router route is
+gated by ``api/security.py``'s ``require_write_token``; this adapter layer
+has no opinion on auth and will happily call either method for anyone who
+reaches it directly.
+
 Live coverage
 -------------
 
@@ -609,6 +621,64 @@ class AirflowOrchestrator(Orchestrator):
             finished_at=status.finished_at or _now(),
             message="DAG run marked failed via REST (Airflow has no cancelled state)",
             metadata=status.metadata,
+        )
+
+    def _clear_task_instances(
+        self, dag_id: str, dag_run_id: str, task_id: str, *, reset_dag_run: bool
+    ) -> dict[str, Any]:
+        """Reset one task instance's state via Airflow's
+        ``clearTaskInstances`` endpoint — the same operation the Airflow
+        UI's own "Clear" button performs, and the only REST mechanism
+        Airflow 2.x offers to make a task run again (there is no separate
+        "retry" endpoint). ``dry_run: False`` actually applies the clear;
+        scoping to one ``dag_run_id`` and one ``task_ids`` entry keeps this
+        from touching any other run or task.
+        """
+        url = f"/api/v1/dags/{quote(dag_id, safe='')}/clearTaskInstances"
+        body = {
+            "dry_run": False,
+            "task_ids": [task_id],
+            "dag_run_id": dag_run_id,
+            "reset_dag_runs": reset_dag_run,
+        }
+        response = self._client.post(url, json=body)
+        if response.status_code == 404:
+            raise ExecutionNotFoundError(
+                f"Airflow task {task_id!r} on {dag_id}/{dag_run_id} not found"
+            )
+        if response.status_code != 200:
+            raise OrchestratorConfigError(
+                f"Airflow clear failed: {response.status_code} {response.text}"
+            )
+        return response.json()
+
+    def clear_task(self, execution_id: str, task_id: str) -> dict[str, Any]:
+        """Reset one task instance so it runs again, without touching the
+        dag run's own state.
+
+        For a task inside a dag run that has not reached a terminal state
+        yet (e.g. one task failed but the run is still ``running`` because
+        others are unaffected) — the scheduler picks a cleared task back up
+        on its own once its upstream dependencies are satisfied.
+        """
+        dag_id, dag_run_id = self._split_execution_id(execution_id)
+        return self._clear_task_instances(
+            dag_id, dag_run_id, task_id, reset_dag_run=False
+        )
+
+    def retry_task(self, execution_id: str, task_id: str) -> dict[str, Any]:
+        """Clear one task instance *and* reset the dag run's own state.
+
+        For a dag run that has already reached a terminal state (typically
+        ``failed``) — clearing the task alone would not resume anything,
+        since the scheduler only progresses dag runs that are not yet
+        terminal. ``reset_dag_runs: True`` puts the run itself back to
+        ``running`` in the same call, which is what actually makes the
+        scheduler pick the cleared task up.
+        """
+        dag_id, dag_run_id = self._split_execution_id(execution_id)
+        return self._clear_task_instances(
+            dag_id, dag_run_id, task_id, reset_dag_run=True
         )
 
     # ------------------------------------------------------------------ #

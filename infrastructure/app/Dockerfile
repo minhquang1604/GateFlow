@@ -16,7 +16,9 @@ FROM python:3.11-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -25,9 +27,32 @@ RUN apt-get update \
         curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . /opt/framework
 WORKDIR /opt/framework
 
+# Dependencies before source. `pip install -e .` pulls in every package
+# in [project.dependencies] — several of them large (xgboost, mlflow,
+# scikit-learn, the nvidia CUDA wheels xgboost drags in) — regardless
+# of whether the local package's own source changed. With a single
+# `COPY . .` ahead of the install, editing so much as one template
+# invalidates Docker's cache for that layer and forces a full
+# re-download of all of them on every rebuild.
+#
+# hatchling's default src-layout detection only needs pyproject.toml,
+# the README it points at (`readme = "README.md"`), and something at
+# src/mlops_framework to resolve the package — not real source — so an
+# empty stub is enough to install every dependency and cache that as
+# its own layer, independent of source edits.
+COPY pyproject.toml README.md ./
+RUN mkdir -p src/mlops_framework \
+    && touch src/mlops_framework/__init__.py \
+    && pip install --no-cache-dir -e . \
+    && rm -rf src
+
+COPY . /opt/framework
+
+# Re-run against the real source. Every dependency is already
+# installed by the layer above, so this is a fast, network-free step
+# that just re-registers the editable package against its actual code.
 RUN pip install --no-cache-dir -e .
 
 # The base image sets no PYTHONPATH, so this is the full value

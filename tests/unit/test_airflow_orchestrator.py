@@ -269,6 +269,62 @@ class TestCancel:
             orch.cancel_execution(f"{DAG_ID}/nope")
 
 
+class TestClearAndRetryTask:
+    def test_clear_task_scopes_to_one_task_and_run_without_resetting_dag_run(self):
+        orch, client = _make({
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances"):
+                _resp({"task_instances": [{"task_id": "train", "state": None}]}),
+        })
+        result = orch.clear_task(f"{DAG_ID}/run-x", "train")
+        assert result["task_instances"][0]["task_id"] == "train"
+        assert client.calls == [
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances", {
+                "dry_run": False,
+                "task_ids": ["train"],
+                "dag_run_id": "run-x",
+                "reset_dag_runs": False,
+            })
+        ]
+
+    def test_retry_task_resets_the_dag_run_too(self):
+        """The only difference from clear_task: reset_dag_runs=True — this
+        is what actually resumes a dag run already in a terminal state."""
+        orch, client = _make({
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances"):
+                _resp({"task_instances": [{"task_id": "train", "state": None}]}),
+        })
+        orch.retry_task(f"{DAG_ID}/run-x", "train")
+        assert client.calls == [
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances", {
+                "dry_run": False,
+                "task_ids": ["train"],
+                "dag_run_id": "run-x",
+                "reset_dag_runs": True,
+            })
+        ]
+
+    def test_clear_task_unknown_raises(self):
+        orch, _ = _make({
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances"):
+                _resp({"detail": "not found"}, status=404),
+        })
+        with pytest.raises(ExecutionNotFoundError):
+            orch.clear_task(f"{DAG_ID}/run-x", "no-such-task")
+
+    def test_retry_task_server_error_raises_config_error(self):
+        orch, _ = _make({
+            ("POST", f"/api/v1/dags/{DAG_ID}/clearTaskInstances"):
+                _resp({"detail": "boom"}, status=500),
+        })
+        with pytest.raises(OrchestratorConfigError):
+            orch.retry_task(f"{DAG_ID}/run-x", "train")
+
+    def test_clear_task_bare_execution_id_raises(self):
+        orch, _ = _make()
+        with pytest.raises(ExecutionNotFoundError):
+            orch.clear_task("not-composite", "train")
+
+
 class TestConfiguration:
     def test_missing_base_url_raises(self):
         with pytest.raises(OrchestratorConfigError):

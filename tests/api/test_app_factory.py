@@ -47,14 +47,14 @@ class TestFullAppBoot:
         # UI
         for path in (
             "/", "/dashboard", "/datasets", "/runs", "/models", "/schedules",
-            "/lineage", "/experiments", "/pipelines",
+            "/lineage", "/experiments", "/pipelines", "/settings",
         ):
             assert client.get(path).status_code == 200
         # Static assets
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/favicon.svg").status_code == 200
-        # OpenAPI exposes 47 distinct /api paths: 16 read endpoints over the
+        # OpenAPI exposes 50 distinct /api paths: 16 read endpoints over the
         # framework's own rows (readiness + drift included), 19 that proxy
         # the systems a run executed on (Airflow: health/import-errors/pools,
         # DAG list, DAG detail, per-run tasks, per-task log; MLflow: the
@@ -65,15 +65,22 @@ class TestFullAppBoot:
         # summary, artifact listing, artifact download, the model
         # descriptor, and the sweep tree), 3 for cron scheduling
         # (api/routers/schedules.py — list/create, get/update/delete,
-        # run-now), and 9 under /internal
+        # run-now), 9 under /internal
         # (mlops_framework.api.routers.internal) — the DAG's callbacks plus
         # the write endpoints, which are the only route into the deployed
-        # database from outside the VPC.
+        # database from outside the VPC — 1 for
+        # api/routers/settings.py's single read-only config/reachability
+        # pane (GET /api/settings) — and 2 for airflow_views.py's gated
+        # task-control writes (POST .../tasks/{task_id}/clear and
+        # .../retry — see api/security.py's require_write_token).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 47, f"Expected 47, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 50, f"Expected 50, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
+        # The read-only proxy count stays 19: clear/retry are a distinct
+        # write path (see the module docstring above), not part of the
+        # "read a view of another system" family this filter enumerates.
         external = [
             p
             for p in api_paths

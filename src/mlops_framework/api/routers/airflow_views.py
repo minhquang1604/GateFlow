@@ -1,16 +1,23 @@
-"""Airflow-backed read-only views.
+"""Airflow-backed views: mostly read-only, plus a small, gated write path.
 
 The framework's own tables answer "what ran and what came of it". Airflow
 holds the other half — what is scheduled to run, whether the scheduler
 itself is healthy, and why a DAG might not be running at all. Every
-endpoint here returns :class:`ExternalPanel`, so a missing or unreachable
-Airflow degrades a card instead of failing a page — the same contract
-``mlflow_views.py`` follows for MLflow.
+read-only endpoint here returns :class:`ExternalPanel`, so a missing or
+unreachable Airflow degrades a card instead of failing a page — the same
+contract ``mlflow_views.py`` follows for MLflow.
 
-Nothing here writes to Airflow. The console has no auth layer in front of
-it (see ``mlops_framework.api.app``), so exposing trigger/clear/pause
-here would let anyone who can reach the console act on production
-pipelines; that is out of scope until an auth layer exists.
+Task control (write)
+---------------------
+
+``clear_task``/``retry_task`` are the one exception to "nothing here
+writes to Airflow" — added so a stuck or failed task can be fixed from
+Gateflow instead of Airflow's own UI. Both routes require
+``Depends(require_write_token)`` (see ``api/security.py``): the console
+still has no user/session/RBAC concept, and that dependency is the
+specific, minimal thing standing between "anyone who can reach the
+console" and "can act on production pipelines" that this module's
+docstring used to cite as the reason these routes did not exist.
 """
 
 from __future__ import annotations
@@ -20,13 +27,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.airflow_gateway import client_or_reason, panel
 from mlops_framework.api.deps import get_db
 from mlops_framework.api.schemas import ExternalPanel
+from mlops_framework.api.security import require_write_token
 from mlops_framework.database.models.training_run import TrainingRun
-from mlops_framework.exceptions import ExecutionNotFoundError
+from mlops_framework.exceptions import ExecutionNotFoundError, OrchestratorConfigError
 
 router = APIRouter()
 
@@ -164,3 +173,71 @@ def get_task_log(
     finally:
         orchestrator.close()
     return PlainTextResponse(text)
+
+
+# ---------------------------------------------------------------------- #
+# Task control (write — gated, see module docstring)
+# ---------------------------------------------------------------------- #
+
+
+class TaskActionResult(BaseModel):
+    task_id: str
+    action: str
+    cleared_task_instances: int
+
+
+def _run_task_action(
+    run_id: int, task_id: str, db: Session, *, action: str
+) -> TaskActionResult:
+    execution_id = _execution_id_or_error(db, run_id)
+
+    orchestrator, reason = client_or_reason()
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail=reason)
+    try:
+        method = orchestrator.clear_task if action == "clear" else orchestrator.retry_task
+        result = method(execution_id, task_id)
+    except ExecutionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except OrchestratorConfigError as exc:
+        raise HTTPException(status_code=502, detail=f"Airflow error: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - surface as a clean error
+        raise HTTPException(status_code=502, detail=f"Airflow error: {exc}") from exc
+    finally:
+        orchestrator.close()
+    return TaskActionResult(
+        task_id=task_id,
+        action=action,
+        cleared_task_instances=len(result.get("task_instances", []) or []),
+    )
+
+
+@router.post(
+    "/training-runs/{run_id}/tasks/{task_id}/clear",
+    response_model=TaskActionResult,
+    dependencies=[Depends(require_write_token)],
+)
+def clear_task(
+    run_id: int, task_id: str, db: Session = Depends(get_db)
+) -> TaskActionResult:
+    """Reset one task instance so the scheduler runs it again, without
+    resetting the dag run's own state — for a task in a run that has not
+    reached a terminal state yet. See ``AirflowOrchestrator.clear_task``.
+    """
+    return _run_task_action(run_id, task_id, db, action="clear")
+
+
+@router.post(
+    "/training-runs/{run_id}/tasks/{task_id}/retry",
+    response_model=TaskActionResult,
+    dependencies=[Depends(require_write_token)],
+)
+def retry_task(
+    run_id: int, task_id: str, db: Session = Depends(get_db)
+) -> TaskActionResult:
+    """Clear one task instance *and* reset the dag run's own state — for a
+    dag run already in a terminal state (typically ``failed``), where
+    clearing the task alone would not resume anything. See
+    ``AirflowOrchestrator.retry_task``.
+    """
+    return _run_task_action(run_id, task_id, db, action="retry")

@@ -1,0 +1,20 @@
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Settings</span>
+    </nav>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Settings</h1>
+        <p class="page-desc">
+          What Gateflow is pointed at right now — database, MLflow, Airflow —
+          and whether each one actually answered, without opening a
+          <code>.env</code> file or either tool's own UI.
+        </p>
+      </div>
+      <div class="page-actions">
+        <button id="refresh" class="btn">Refresh</button>
+      </div>
+    </div>
+
+    <div id="settings-out"></div>
+<script>initSettings();</script>

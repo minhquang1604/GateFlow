@@ -83,6 +83,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Write-gate for the small set of Gateflow endpoints that mutate an
+    # external system (Airflow retry/clear — see api/security.py). Unset by
+    # default: those endpoints stay disabled until an operator opts in, so
+    # adding this setting does not by itself open anything up. Not real
+    # authentication — see api/security.py's module docstring.
+    console_write_token: str | None = Field(
+        default=None,
+        description=(
+            "Shared secret required in the X-Console-Token header for "
+            "Gateflow's write endpoints (e.g. Airflow task retry/clear). "
+            "Unset disables those endpoints entirely."
+        ),
+    )
+
     # FastAPI ServingBridge (used by the HTTP event publisher)
     serving_bridge_url: str | None = Field(
         default=None,

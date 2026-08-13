@@ -32,6 +32,8 @@ Pages:
 * ``/schedules`` — cron-triggered automatic retraining (create, edit,
   run-now); see ``scheduling/runner.py``
 * ``/lineage`` — lineage explorer
+* ``/settings`` — effective MLflow/Airflow/database config, secrets
+  masked, plus a live reachability ping for MLflow and Airflow
 
 The static folder (CSS + JS) is mounted at ``/static``.
 """
@@ -90,10 +92,6 @@ _ICONS: dict[str, str] = {
         '<path d="M1.5 12.5l3.5-4.5 3 3 4-6 4.5 7.5"/>'
         '<circle cx="5" cy="8" r="1.3"/><circle cx="8" cy="11" r="1.3"/>'
     ),
-    "compare": (
-        '<path d="M9 2v14"/><rect x="2" y="5" width="4.5" height="9" rx="1"/>'
-        '<rect x="11.5" y="8" width="4.5" height="6" rx="1"/>'
-    ),
     "models": (
         '<path d="M9 1.8l6.5 3.6v7.2L9 16.2 2.5 12.6V5.4z"/>'
         '<path d="M2.5 5.4L9 9l6.5-3.6M9 9v7.2"/>'
@@ -110,6 +108,11 @@ _ICONS: dict[str, str] = {
         '<circle cx="3.2" cy="3.2" r="1.7"/><circle cx="14.8" cy="3.2" r="1.7"/>'
         '<circle cx="9" cy="14.8" r="1.7"/>'
         '<path d="M4.7 4.3L8 13.4M13.3 4.3L10 13.4M4.9 3.2h9.2"/>'
+    ),
+    "settings": (
+        '<circle cx="9" cy="9" r="2.6"/>'
+        '<path d="M9 2.5v2.1M9 13.4v2.1M15.5 9h-2.1M4.6 9H2.5'
+        'M13.4 4.6l-1.5 1.5M6.1 11.9l-1.5 1.5M13.4 13.4l-1.5-1.5M6.1 6.1 4.6 4.6"/>'
     ),
 }
 
@@ -140,7 +143,6 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
             ("dashboard", "/dashboard", "Dashboard"),
             ("datasets", "/datasets", "Datasets"),
             ("runs", "/runs", "Runs"),
-            ("compare", "/runs/compare", "Compare runs"),
             ("models", "/models", "Model registry"),
             ("scheduling", "/schedules", "Scheduling"),
             ("lineage", "/lineage", "Lineage"),
@@ -150,6 +152,12 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
         "Orchestration",
         [
             ("pipelines", "/pipelines", "Pipelines"),
+        ],
+    ),
+    (
+        "System",
+        [
+            ("settings", "/settings", "Settings"),
         ],
     ),
 ]
@@ -196,9 +204,14 @@ def mount_ui(
 
     # Registered before /runs/{run_id} so "compare" is not swallowed by the
     # int path converter (which would 422 on a non-numeric segment).
+    #
+    # active="runs", not a "compare" key of its own: this page is only
+    # reached via the Compare button on /runs (see initRuns()'s
+    # compareBtn), not its own sidebar entry, so the sidebar should keep
+    # highlighting Runs rather than nothing.
     @app.get("/runs/compare", response_class=HTMLResponse)
     def runs_compare() -> str:
-        return _page(pages, "runs_compare.html", "Compare runs", "compare")
+        return _page(pages, "runs_compare.html", "Compare runs", "runs")
 
     @app.get("/runs/{run_id}", response_class=HTMLResponse)
     def run_detail(run_id: int) -> str:
@@ -259,6 +272,10 @@ def mount_ui(
     @app.get("/pipelines/{dag_id}", response_class=HTMLResponse)
     def pipeline_detail(dag_id: str) -> str:
         return _page(pages, "pipeline_detail.html", f"Pipeline {dag_id}", "pipelines")
+
+    @app.get("/settings", response_class=HTMLResponse)
+    def settings_page() -> str:
+        return _page(pages, "settings.html", "Settings", "settings")
 
 
 # ---------------------------------------------------------------------- #

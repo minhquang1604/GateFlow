@@ -551,10 +551,11 @@ the same FastAPI app as the API, at `/`.
 |---|---|---|
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
 | Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
-| Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid |
+| Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
 | Models | `/models/{id}` | Versions, metrics, production state |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
 | Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
+| Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
 
 ### API reference
 
@@ -647,6 +648,7 @@ Environment variables (`.env` for host runs / Alembic, `.env.docker` for
 | `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | MinIO/S3 credentials the MLflow **client** needs directly — it talks to the artifact store, bypassing the mlflow server. Missing these fails `log_artifact`/`download_artifacts` with a silent `AccessDenied`, not a crash | unset |
 | `AIRFLOW_BASE_URL` / `AIRFLOW_USERNAME` / `AIRFLOW_PASSWORD` | `AirflowOrchestrator` REST credentials | unset / `airflow` / `airflow` |
 | `SERVING_BRIDGE_URL` | Used by `HttpEventPublisher` | unset |
+| `CONSOLE_WRITE_TOKEN` | Shared secret required in the `X-Console-Token` header for Gateflow's write endpoints (Airflow task Clear/Retry — see `api/security.py`). Unset disables those endpoints entirely | unset |
 | `APP_NAME` / `APP_VERSION` | Application metadata | `mlops-framework` / `0.1.0` |
 | `DEBUG` | Debug mode | `false` |
 

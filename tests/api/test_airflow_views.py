@@ -86,6 +86,17 @@ class _FakeOrchestrator:
             raise ExecutionNotFoundError("no such log")
         return f"log for {task_id} attempt {try_number}"
 
+    def clear_task(self, execution_id, task_id):
+        assert execution_id == EXECUTION_ID
+        if task_id == "missing":
+            from mlops_framework.exceptions import ExecutionNotFoundError
+
+            raise ExecutionNotFoundError("no such task")
+        return {"task_instances": [{"task_id": task_id, "state": None}]}
+
+    def retry_task(self, execution_id, task_id):
+        return self.clear_task(execution_id, task_id)
+
 
 @pytest.fixture()
 def fake_airflow(monkeypatch):
@@ -288,4 +299,93 @@ class TestTaskLog:
 
     def test_unknown_run_is_404(self, client, fake_airflow):
         r = client.get("/api/training-runs/9999/tasks/train/log")
+        assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------- #
+# Task control (write — gated by require_write_token)
+# ---------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def write_token(monkeypatch):
+    """Configure CONSOLE_WRITE_TOKEN so the gate lets a matching header
+    through, same fixture role as tests/unit/test_security.py's env setup."""
+    from mlops_framework.config.settings import get_settings
+
+    monkeypatch.setenv("CONSOLE_WRITE_TOKEN", "test-token")
+    get_settings.cache_clear()
+    yield "test-token"
+    get_settings.cache_clear()
+
+
+class TestTaskControl:
+    def test_clear_requires_token_when_none_configured(
+        self, client, fake_airflow, run_on_airflow, monkeypatch
+    ):
+        from mlops_framework.config.settings import get_settings
+
+        monkeypatch.delenv("CONSOLE_WRITE_TOKEN", raising=False)
+        get_settings.cache_clear()
+        r = client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
+        assert r.status_code == 503
+        get_settings.cache_clear()
+
+    def test_clear_rejects_missing_header(self, client, fake_airflow, run_on_airflow, write_token):
+        r = client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
+        assert r.status_code == 401
+
+    def test_clear_rejects_wrong_token(self, client, fake_airflow, run_on_airflow, write_token):
+        r = client.post(
+            f"/api/training-runs/{run_on_airflow}/tasks/train/clear",
+            headers={"X-Console-Token": "nope"},
+        )
+        assert r.status_code == 403
+
+    def test_clear_succeeds_with_correct_token(
+        self, client, fake_airflow, run_on_airflow, write_token
+    ):
+        r = client.post(
+            f"/api/training-runs/{run_on_airflow}/tasks/train/clear",
+            headers={"X-Console-Token": write_token},
+        )
+        assert r.status_code == 200
+        assert r.json() == {"task_id": "train", "action": "clear", "cleared_task_instances": 1}
+
+    def test_retry_succeeds_with_correct_token(
+        self, client, fake_airflow, run_on_airflow, write_token
+    ):
+        r = client.post(
+            f"/api/training-runs/{run_on_airflow}/tasks/train/retry",
+            headers={"X-Console-Token": write_token},
+        )
+        assert r.status_code == 200
+        assert r.json()["action"] == "retry"
+
+    def test_clear_missing_task_is_404(
+        self, client, fake_airflow, run_on_airflow, write_token
+    ):
+        r = client.post(
+            f"/api/training-runs/{run_on_airflow}/tasks/missing/clear",
+            headers={"X-Console-Token": write_token},
+        )
+        assert r.status_code == 404
+
+    def test_clear_unconfigured_airflow_is_503(
+        self, client, run_on_airflow, write_token, monkeypatch
+    ):
+        monkeypatch.setattr(
+            airflow_views, "client_or_reason", lambda: (None, "not configured")
+        )
+        r = client.post(
+            f"/api/training-runs/{run_on_airflow}/tasks/train/clear",
+            headers={"X-Console-Token": write_token},
+        )
+        assert r.status_code == 503
+
+    def test_clear_unknown_run_is_404(self, client, fake_airflow, write_token):
+        r = client.post(
+            "/api/training-runs/9999/tasks/train/clear",
+            headers={"X-Console-Token": write_token},
+        )
         assert r.status_code == 404
