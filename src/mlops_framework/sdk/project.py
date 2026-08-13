@@ -528,3 +528,31 @@ class MLOpsProject:
     @property
     def lineage(self) -> MLOpsLineage:
         return MLOpsLineage(_project=self)
+
+    def report(self, model_version_id: int, *, format: str = "markdown") -> str:
+        """Build a self-contained reproducibility report for a ModelVersion.
+
+        Composes the full lineage chain, the dataset version's content
+        hash, metrics/params (DB + live MLflow when available), and the
+        readiness/drift/promotion decision trail plus the audit/alert
+        rows touching this model version — everything needed to
+        reproduce or cite this result in a paper. See ``sdk/report.py``
+        for what each section pulls from and why.
+
+        Args:
+            model_version_id: The ModelVersion to report on.
+            format: ``"markdown"`` (default) or ``"html"``.
+
+        Returns:
+            The report as a plain string — write it to a file yourself
+            (``pathlib.Path(...).write_text(...)``); this method has no
+            opinion on where a report belongs.
+        """
+        from mlops_framework.exceptions import ModelVersionNotFoundError
+        from mlops_framework.sdk.report import build_report
+
+        with self._session_scope() as s:
+            try:
+                return build_report(s, model_version_id, format=format)
+            except ModelVersionNotFoundError as exc:
+                raise NotFoundError(str(exc)) from exc

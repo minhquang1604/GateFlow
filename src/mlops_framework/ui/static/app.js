@@ -1150,6 +1150,12 @@ function showTaskLog(host, runId, taskId, tryNumber) {
     .catch(() => { pre.textContent = "Could not load log."; });
 }
 
+// PENDING/RUNNING runs are the only ones worth a live connection —
+// listRuns()'s own polling of the whole table stays out of scope here
+// (this is a single-run detail page); a run already terminal on load
+// gets a normal one-shot fetch, no EventSource at all.
+const LIVE_RUN_STATUSES = new Set(["PENDING", "RUNNING"]);
+
 async function initRunDetail(id) {
   const head = document.getElementById("run-head");
   const body = document.getElementById("run-body");
@@ -1161,9 +1167,55 @@ async function initRunDetail(id) {
     return;
   }
 
+  renderRunDetail(head, body, id, run);
+
+  if (LIVE_RUN_STATUSES.has(run.status)) {
+    subscribeToRunEvents(id, async (status) => {
+      // The SSE payload already carries the framework row; re-fetching
+      // isn't required for the status itself, but every other panel
+      // this page renders (metrics, the Airflow task grid, MLflow
+      // curves) is easiest to keep correct by re-running the exact same
+      // render path a manual reload would take, rather than hand-
+      // patching a dozen DOM fragments in two places that could drift
+      // apart. One extra GET per transition is cheap next to that.
+      let fresh;
+      try {
+        fresh = await api(`/training-runs/${id}`);
+      } catch {
+        return;
+      }
+      renderRunDetail(head, body, id, fresh);
+    });
+  }
+}
+
+// EventSource wrapper for one run's SSE stream (see
+// api/routers/runs.py::stream_run_events). Calls `onStatus(status)` for
+// every "status" event the server sends and closes the connection itself
+// once the server says the run reached a terminal state or the stream
+// times out — nothing here needs to inspect the payload to know when to
+// stop, the server's own close is authoritative.
+function subscribeToRunEvents(id, onStatus) {
+  const source = new EventSource(`${API}/training-runs/${id}/events`);
+  source.addEventListener("status", (e) => {
+    const data = JSON.parse(e.data);
+    onStatus(data.status);
+    if (!LIVE_RUN_STATUSES.has(data.status)) source.close();
+  });
+  source.addEventListener("timeout", () => source.close());
+  source.addEventListener("error", () => source.close());
+  // A dropped connection (server restart, network blip) falls back to
+  // native EventSource reconnect for anything transient; nothing to do
+  // here beyond letting that default behaviour run.
+}
+
+function renderRunDetail(head, body, id, run) {
   head.replaceChildren(
     el("div", { class: "breadcrumb" }, el("a", { href: "/runs" }, "Runs"), " / ", `#${run.id}`),
-    el("h2", {}, `Training run #${run.id} `, statusBadge(run.status)),
+    el("h2", {}, `Training run #${run.id} `, statusBadge(run.status),
+      LIVE_RUN_STATUSES.has(run.status)
+        ? el("span", { class: "faint", style: "font-size:12px;margin-left:8px" }, "● live")
+        : null),
     el("p", { class: "subtitle mono" }, run.pipeline_id || "no pipeline"));
 
   const sections = [];
@@ -1873,7 +1925,8 @@ async function initModelDetail(id) {
         el("thead", {}, el("tr", {},
           el("th", {}, "Version"), el("th", {}, "State"),
           ...metricKeys.map((k) => el("th", {}, k)),
-          el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"))),
+          el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"),
+          el("th", {}, "Report"))),
         el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
           const best = {};
           for (const k of metricKeys) {
@@ -1895,8 +1948,13 @@ async function initModelDetail(id) {
             }),
             el("td", {}, v.training_run_id ? el("a", { href: `/runs/${v.training_run_id}` }, `#${v.training_run_id}`) : "—"),
             el("td", { class: "muted" }, v.dataset_version_id ? `#${v.dataset_version_id}` : "—"),
-            el("td", { class: "muted nowrap" }, fmt.ago(v.created_at)));
-        }) : [emptyRow(metricKeys.length + 5, "No versions registered yet.")])));
+            el("td", { class: "muted nowrap" }, fmt.ago(v.created_at)),
+            // Content-Disposition: attachment on the endpoint itself
+            // triggers a real browser download — no download="" attribute
+            // needed here (and Artifact-style sandboxes don't apply to
+            // this deployed app, only to claude.ai's own preview).
+            el("td", {}, el("a", { href: `${API}/model-versions/${v.id}/report` }, "report")));
+        }) : [emptyRow(metricKeys.length + 6, "No versions registered yet.")])));
       tableHost.replaceChildren(table);
     }
 

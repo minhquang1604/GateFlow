@@ -54,8 +54,12 @@ class TestFullAppBoot:
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/favicon.svg").status_code == 200
-        # OpenAPI exposes 52 distinct /api paths: 16 read endpoints over the
-        # framework's own rows (readiness + drift included), 19 that proxy
+        # OpenAPI exposes 54 distinct /api paths: 18 read endpoints over the
+        # framework's own rows (readiness + drift included, plus
+        # api/routers/models.py's reproducibility-report download — see
+        # sdk/report.py — and runs.py's SSE status stream, GET
+        # /training-runs/{id}/events — see run_detail.html's
+        # subscribeToRunEvents()), 19 that proxy
         # the systems a run executed on (Airflow: health/import-errors/pools,
         # DAG list, DAG detail, per-run tasks, per-task log; MLflow: the
         # per-run view, experiments, the leaderboard, the registered-model
@@ -79,7 +83,7 @@ class TestFullAppBoot:
         # /api/alerts — see events/store.py::GovernanceEventStore).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 52, f"Expected 52, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 54, f"Expected 54, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
         # The read-only proxy count stays 19: clear/retry are a distinct

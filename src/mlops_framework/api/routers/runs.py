@@ -13,18 +13,22 @@ the run it belongs to.
 
 from __future__ import annotations
 
+import asyncio
 import json
+from collections.abc import AsyncIterator
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api import airflow_gateway
-from mlops_framework.api.deps import get_db
+from mlops_framework.api.deps import get_db, get_db_manager_dep
 from mlops_framework.api.mlflow_gateway import panel, tracking_uri
 from mlops_framework.api.schemas import ExternalPanel, TrainingRunOut
 from mlops_framework.database.models.training_run import TrainingRun
+from mlops_framework.database.session import DatabaseManager
 
 router = APIRouter()
 
@@ -59,6 +63,104 @@ def get_run(
     if run is None:
         raise HTTPException(status_code=404, detail=f"TrainingRun {run_id} not found")
     return TrainingRunOut.from_orm_with_json(run)
+
+
+# ---------------------------------------------------------------------- #
+# Live status — Server-Sent Events
+# ---------------------------------------------------------------------- #
+
+# Polled *inside the server*, not by the browser — see run_detail.html's
+# subscribeToRunEvents(). The alternative (the browser itself polling
+# GET /training-runs/{id} on a setInterval) works too, but every open tab
+# would independently hit the database on its own timer; this way there
+# is exactly one query per tick per open stream, and the query itself
+# never touches the request-scoped session (see _read_status below) so a
+# slow client holding a connection open can't pin a pooled session for
+# the run's entire lifetime.
+_SSE_POLL_SECONDS = 2.0
+# Bounds a stream against a run that enters RUNNING and then never
+# reaches a terminal state (an orchestrator that died without ever
+# calling back /internal/training-runs/{id}/finish) — without this, a
+# forgotten browser tab holds its connection (and the asyncio task behind
+# it) open forever.
+_SSE_MAX_SECONDS = 1800.0
+
+
+def _sse_event(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _read_run_status(db: DatabaseManager, run_id: int) -> TrainingRunOut | None:
+    """A standalone read, deliberately not using the request's own
+    ``Depends(get_db)`` session — that session lives and dies with the
+    request, but this function is called repeatedly across a stream that
+    can run for many minutes. Opens and closes its own short-lived
+    session per call, same pattern as ``api/app.py``'s scheduler loop.
+
+    ``db`` still comes from ``Depends(get_db_manager_dep)`` in the route
+    below, not the global ``get_db_manager()`` directly — the former is
+    what ``app.dependency_overrides`` (every test's isolated in-memory
+    database) actually replaces; calling the global getter here would
+    silently read past a test's override and hit whatever `DATABASE_URL`
+    happens to be set to."""
+    with db.get_session() as session:
+        run = session.get(TrainingRun, run_id)
+        return TrainingRunOut.from_orm_with_json(run) if run is not None else None
+
+
+@router.get("/training-runs/{run_id}/events")
+async def stream_run_events(
+    run_id: int,
+    request: Request,
+    db: DatabaseManager = Depends(get_db_manager_dep),
+) -> StreamingResponse:
+    """Server-Sent Events stream of one TrainingRun's status.
+
+    Emits a ``status`` event every time the status changes (including
+    once immediately on connect, whatever the current status is), then
+    closes the stream itself once that status is terminal
+    (SUCCESS/FAILED/CANCELLED) — a run already finished when the client
+    connects gets exactly one event and an immediate close, not a
+    dangling open connection. Also closes on ``_SSE_MAX_SECONDS`` (a
+    ``timeout`` event first) and as soon as the client disconnects.
+    """
+    initial = await asyncio.to_thread(_read_run_status, db, run_id)
+    if initial is None:
+        raise HTTPException(status_code=404, detail=f"TrainingRun {run_id} not found")
+
+    async def event_stream() -> AsyncIterator[str]:
+        last_status: str | None = None
+        elapsed = 0.0
+        while True:
+            if await request.is_disconnected():
+                return
+            run = await asyncio.to_thread(_read_run_status, db, run_id)
+            if run is None:
+                yield _sse_event("error", {"detail": f"TrainingRun {run_id} not found"})
+                return
+            if run.status != last_status:
+                last_status = run.status
+                yield _sse_event("status", json.loads(run.model_dump_json()))
+            if run.status in ("SUCCESS", "FAILED", "CANCELLED"):
+                return
+            if elapsed >= _SSE_MAX_SECONDS:
+                yield _sse_event("timeout", {"status": run.status})
+                return
+            await asyncio.sleep(_SSE_POLL_SECONDS)
+            elapsed += _SSE_POLL_SECONDS
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # nginx (and similar proxies) buffer a proxied response by
+            # default, which would hold every event until the buffer
+            # filled or the stream closed — defeating the point. Not
+            # meaningful outside such a proxy, but harmless to always send.
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------- #

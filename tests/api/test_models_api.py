@@ -121,3 +121,36 @@ class TestModels:
     def test_get_model_version_404(self, client):
         r = client.get("/api/model-versions/9999")
         assert r.status_code == 404
+
+
+class TestModelVersionReport:
+    """The HTTP side of sdk/report.py — content assembly itself is
+    covered by tests/sdk/test_report.py; these pin the wire behaviour
+    (media type, download headers, error mapping)."""
+
+    def test_markdown_is_served_as_a_download(self, client, session_factory):
+        _seed(session_factory)
+        r = client.get("/api/model-versions/2/report")
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/markdown")
+        assert "attachment" in r.headers["content-disposition"]
+        assert "model-version-2-report.md" in r.headers["content-disposition"]
+        assert "# Reproducibility report — m1 v2" in r.text
+        # The dataset content hash is what makes the report reproducible.
+        assert "a" * 64 in r.text
+
+    def test_html_format(self, client, session_factory):
+        _seed(session_factory)
+        r = client.get("/api/model-versions/2/report", params={"format": "html"})
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/html")
+        assert "model-version-2-report.html" in r.headers["content-disposition"]
+        assert r.text.startswith("<!doctype html>")
+
+    def test_unknown_version_is_404(self, client):
+        assert client.get("/api/model-versions/9999/report").status_code == 404
+
+    def test_bad_format_is_422(self, client, session_factory):
+        _seed(session_factory)
+        r = client.get("/api/model-versions/2/report", params={"format": "pdf"})
+        assert r.status_code == 422

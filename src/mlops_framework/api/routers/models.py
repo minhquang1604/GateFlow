@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,8 +17,9 @@ from mlops_framework.database.models.model_version import (
     ModelState,
     ModelVersion,
 )
-from mlops_framework.exceptions import ModelNotFoundError
+from mlops_framework.exceptions import ModelNotFoundError, ModelVersionNotFoundError
 from mlops_framework.model.manager import ModelManager
+from mlops_framework.sdk.report import build_report
 
 router = APIRouter()
 
@@ -113,3 +115,38 @@ def get_model_version(
             status_code=404, detail=f"ModelVersion {version_id} not found"
         )
     return ModelVersionOut.from_orm_with_metrics(mv)
+
+
+@router.get("/model-versions/{version_id}/report")
+def get_model_version_report(
+    version_id: int,
+    format: str = Query(default="markdown", pattern="^(markdown|html)$"),
+    db: Session = Depends(get_db),
+) -> Response:
+    """Download a self-contained reproducibility report for one ModelVersion.
+
+    Thin wrapper over ``sdk/report.py::build_report`` — the same
+    function ``MLOpsProject.report()`` calls — so Gateflow's "Download
+    report" button (``model_detail.html``) works without a Python
+    process running the SDK. ``Content-Disposition: attachment`` makes
+    the browser save it rather than navigate to it.
+    """
+    try:
+        content = build_report(db, version_id, format=format)
+    except ModelVersionNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if format == "html":
+        media_type, ext = "text/html", "html"
+    else:
+        media_type, ext = "text/markdown", "md"
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="model-version-{version_id}-report.{ext}"'
+            )
+        },
+    )

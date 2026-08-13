@@ -252,6 +252,14 @@ for mv in model.versions:
 # Lineage
 graph = project.lineage.for_dataset_version(version.id)
 # graph["nodes"] / graph["edges"] — ready for any visualisation lib
+
+# Reproducibility report — everything needed to cite or reproduce one
+# model version: lineage chain, the dataset version's content hash,
+# metrics/params (DB + live MLflow), and the full readiness / drift /
+# promotion / audit / alert trail. See src/mlops_framework/sdk/report.py.
+from pathlib import Path
+Path("report.md").write_text(project.report(model_version_id=42))
+Path("report.html").write_text(project.report(42, format="html"))
 ```
 
 `MLOpsProject.with_defaults(name)` wires `LocalDockerOrchestrator` +
@@ -552,7 +560,7 @@ the same FastAPI app as the API, at `/`.
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
 | Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
-| Models | `/models/{id}` | Versions, metrics, production state |
+| Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
 | Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
 | Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
@@ -560,7 +568,7 @@ the same FastAPI app as the API, at `/`.
 
 ### API reference
 
-52 REST endpoints under `/api`, grouped by what they front:
+53 REST endpoints under `/api`, grouped by what they front:
 
 | Group | Examples | Purpose |
 |---|---|---|
@@ -572,6 +580,7 @@ the same FastAPI app as the API, at `/`.
 | Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
+| Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
 | Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network |
 
 Full list at `/docs` (OpenAPI) once the app is running.
