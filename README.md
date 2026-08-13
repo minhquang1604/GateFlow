@@ -556,17 +556,22 @@ the same FastAPI app as the API, at `/`.
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
 | Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
 | Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
+| Activity | `/activity` | Two tabs: **Audit trail** (who/what triggered a schedule or promotion decision — see `audit/manager.py`) and **Alerts** (what the framework itself detected — training failures, drift, blocked retrains — see `events/store.py`) |
 
 ### API reference
 
-39 REST endpoints under `/api`, grouped by what they front:
+52 REST endpoints under `/api`, grouped by what they front:
 
 | Group | Examples | Purpose |
 |---|---|---|
 | Framework rows | `/api/dashboard`, `/api/datasets`, `/api/training-runs/{id}`, `/api/models/{id}`, `/api/readiness/{version_id}`, `/api/drift/{version_id}` | Thin façades over the managers — zero new business logic |
 | Lineage | `/api/lineage/{dataset-version\|model-version\|training-run}/{id}` | Lineage graph JSON |
 | Airflow proxy | `/api/airflow/health`, `/api/airflow/dags/{id}`, `/api/training-runs/{id}/tasks` | Live DAG/task state for the pipeline detail page |
+| Airflow task control | `/api/training-runs/{id}/tasks/{task_id}/clear`, `.../retry` | Gated write endpoints (`api/security.py::require_write_token`) — fix a stuck task without leaving Gateflow |
 | MLflow proxy | `/api/training-runs/{id}/mlflow`, `/api/mlflow/experiments`, `/api/mlflow/registered-models` | Live run/experiment data for the run detail page |
+| Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
+| Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
+| Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
 | Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network |
 
 Full list at `/docs` (OpenAPI) once the app is running.

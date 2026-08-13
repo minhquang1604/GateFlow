@@ -47,9 +47,12 @@ from mlops_framework.api.deps import (
 )
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
+from mlops_framework.database.models.governance_event import GovernanceEventSeverity
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.dataset.manager import DatasetManager
+from mlops_framework.events.publisher import RunBlockedEvent, TrainingFailedEvent
+from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.governance.promotion import (
     ModelPromotionPolicy,
     PromotionConfig,
@@ -407,6 +410,20 @@ def evaluate_readiness(
 
     policy = TrainingPolicy.from_dict(request.policy) if request.policy else TrainingPolicy()
     result = ReadinessEngine(db).evaluate(version, policy=policy)
+    if not result.is_ready:
+        GovernanceEventStore(db).record(
+            RunBlockedEvent(
+                reason="readiness_blocked",
+                dataset_version_id=version_id,
+                reasons=list(result.reasons),
+            ),
+            message=(
+                f"Dataset version #{version_id} blocked — "
+                f"{'; '.join(result.reasons) or 'not ready'}"
+            ),
+            entity_type="DatasetVersion",
+            entity_id=version_id,
+        )
     return ReadinessOut(
         dataset_version_id=version_id,
         status=result.status.value,
@@ -572,6 +589,7 @@ def finish_training_run(
     run_id: int,
     request: FinishTrainingRunRequest,
     tm: TrainingManager = Depends(get_training_manager),
+    db: Session = Depends(get_db),
 ) -> TrainingRunOut:
     """Close out a run from the orchestrator that executed it.
 
@@ -610,4 +628,19 @@ def finish_training_run(
                 run = tm.fail_run(run_id, error_message=request.error_message)
     except Exception as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if wanted == "FAILED":
+        GovernanceEventStore(db).record(
+            TrainingFailedEvent(
+                training_run_id=run_id,
+                pipeline_id=getattr(run, "pipeline_id", None),
+                error_message=request.error_message,
+            ),
+            message=(
+                f"Training run #{run_id} reported FAILED"
+                + (f": {request.error_message}" if request.error_message else "")
+            ),
+            severity=GovernanceEventSeverity.CRITICAL,
+            entity_type="TrainingRun",
+            entity_id=run_id,
+        )
     return _run_out(run, tm)

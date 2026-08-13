@@ -11,9 +11,18 @@ This module provides:
     * :class:`InMemoryEventPublisher` — in-process; used by tests.
     * :class:`HttpEventPublisher` — POST a JSON payload to a webhook.
 
-The :class:`ModelPromotedEvent` dataclass is the framework-level
-event type. Callers may publish other event types via
-:meth:`EventPublisher.publish_raw` for future expansion.
+:class:`ModelPromotedEvent`, :class:`TrainingFailedEvent`,
+:class:`DriftDetectedEvent` and :class:`RunBlockedEvent` are the
+framework's typed event kinds. The latter three are also persisted to
+the ``governance_events`` table by
+:class:`mlops_framework.events.store.GovernanceEventStore` regardless
+of whether an :class:`EventPublisher` is configured — see that
+module's docstring for why persistence and webhook fan-out are
+deliberately independent here, unlike :class:`ModelPromotedEvent`
+(persisted to ``model_promotion_events`` only when a publisher exists;
+see ``workflow/retraining.py::_publish_promotion``). Callers may
+publish still other event types via :meth:`EventPublisher.publish_raw`
+for future expansion.
 """
 
 from __future__ import annotations
@@ -92,6 +101,92 @@ class ModelPromotedEvent(Event):
             payload["metrics"] = dict(metrics)
         super().__init__(
             event_type="MODEL_PROMOTED",
+            timestamp=timestamp or _now_iso(),
+            payload=payload,
+        )
+
+
+@dataclass
+class TrainingFailedEvent(Event):
+    """Emitted when a TrainingRun ends in FAILED — either the pipeline
+    itself raised, or it finished in a non-SUCCESS state. See
+    ``workflow/retraining.py`` (the in-process path) and
+    ``api/routers/internal.py::finish_training_run`` (the Airflow-DAG
+    callback path) — the only two places a TrainingRun ever reaches
+    FAILED."""
+
+    def __init__(
+        self,
+        training_run_id: int,
+        pipeline_id: str | None = None,
+        error_message: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"training_run_id": training_run_id}
+        if pipeline_id is not None:
+            payload["pipeline_id"] = pipeline_id
+        if error_message is not None:
+            payload["error_message"] = error_message
+        super().__init__(
+            event_type="TRAINING_FAILED",
+            timestamp=timestamp or _now_iso(),
+            payload=payload,
+        )
+
+
+@dataclass
+class DriftDetectedEvent(Event):
+    """Emitted when :class:`~mlops_framework.drift.detector.DriftService`
+    evaluates a dataset version pair and finds drift. See
+    ``workflow/retraining.py``'s drift-detection step."""
+
+    def __init__(
+        self,
+        dataset_version_id: int,
+        score: float | None = None,
+        threshold: float | None = None,
+        method: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"dataset_version_id": dataset_version_id}
+        if score is not None:
+            payload["score"] = score
+        if threshold is not None:
+            payload["threshold"] = threshold
+        if method is not None:
+            payload["method"] = method
+        super().__init__(
+            event_type="DRIFT_DETECTED",
+            timestamp=timestamp or _now_iso(),
+            payload=payload,
+        )
+
+
+@dataclass
+class RunBlockedEvent(Event):
+    """Emitted when a retrain is blocked before training ever starts —
+    a dataset version that failed readiness, or a model deemed not
+    eligible to retrain. ``reason`` is a short machine code
+    (``"readiness_blocked"`` / ``"not_eligible"``); ``reasons`` carries
+    the engine's own human-readable explanation."""
+
+    def __init__(
+        self,
+        reason: str,
+        dataset_version_id: int | None = None,
+        model_id: int | None = None,
+        reasons: list[str] | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"reason": reason}
+        if dataset_version_id is not None:
+            payload["dataset_version_id"] = dataset_version_id
+        if model_id is not None:
+            payload["model_id"] = model_id
+        if reasons is not None:
+            payload["reasons"] = list(reasons)
+        super().__init__(
+            event_type="RUN_BLOCKED",
             timestamp=timestamp or _now_iso(),
             payload=payload,
         )

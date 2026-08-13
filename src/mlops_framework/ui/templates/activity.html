@@ -4,8 +4,8 @@
 
     <div class="page-header">
       <div>
-        <h1 class="page-title">Activity</h1>
-        <p class="page-desc">
+        <h1 class="page-title" id="activity-title">Audit trail</h1>
+        <p class="page-desc" id="activity-desc">
           Who — or what — triggered a schedule or model-promotion decision, and when.
           There is no login yet, so "who" is whatever the caller sent in an
           <code>X-Actor</code> header (<code>system</code> otherwise) — an honour-system
@@ -13,6 +13,8 @@
         </p>
       </div>
       <div class="page-actions">
+        <button id="tab-audit" class="btn primary">Audit trail</button>
+        <button id="tab-alerts" class="btn">Alerts</button>
         <button id="refresh" class="btn">Refresh</button>
       </div>
     </div>

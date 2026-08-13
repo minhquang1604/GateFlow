@@ -1861,12 +1861,19 @@ async function initModelDetail(id) {
     const tableHost = el("div", { class: "table-wrap" },
       el("table", {}, el("thead", {}, el("tr", {})), el("tbody", {}, emptyRow(1, "Loading…"))));
 
+    // No "MLflow" column here on purpose — the framework's own State is
+    // the one badge a reader needs per row; MLflow's registry view of
+    // the same version (its own numbering, aliases, stage) lives in the
+    // collapsed "MLflow registry" panel above instead of repeating a
+    // second status vocabulary on every row. A real disagreement still
+    // surfaces right here, inline, via the "MLflow disagrees" badge —
+    // that is the one case worth interrupting this table for.
     function renderVersionsTable(byVersionId) {
       const table = el("table", {},
         el("thead", {}, el("tr", {},
           el("th", {}, "Version"), el("th", {}, "State"),
           ...metricKeys.map((k) => el("th", {}, k)),
-          el("th", {}, "MLflow"), el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"))),
+          el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"))),
         el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
           const best = {};
           for (const k of metricKeys) {
@@ -1876,25 +1883,20 @@ async function initModelDetail(id) {
           return el("tr", {},
             el("td", {}, el("strong", {}, `v${v.version_number}`)),
             el("td", {}, statusBadge(v.state),
-              reg?.drift ? el("span", { class: "badge failed", style: "margin-left:6px", title: reg.drift_reason || "" }, "MLflow disagrees") : null),
+              reg?.drift ? el("span", {
+                class: "badge failed", style: "margin-left:6px",
+                title: reg.drift_reason || "",
+              }, "MLflow disagrees") : null),
             ...metricKeys.map((k) => {
               const val = (v.metrics || {})[k];
               const isBest = typeof val === "number" && val === best[k] && versions.length > 1;
               return el("td", { class: "num" },
                 isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(val)) : fmt.metric(val));
             }),
-            el("td", {}, reg == null
-              ? el("span", { class: "faint" }, "…")
-              : !reg.in_mlflow_registry
-              ? el("span", { class: "faint" }, "not registered")
-              : el("span", { class: "mono" },
-                  `v${reg.mlflow_version}`,
-                  reg.mlflow_aliases?.length ? ` @${reg.mlflow_aliases.join(", @")}` : "",
-                  reg.mlflow_stage && reg.mlflow_stage !== "None" ? ` (${reg.mlflow_stage})` : "")),
             el("td", {}, v.training_run_id ? el("a", { href: `/runs/${v.training_run_id}` }, `#${v.training_run_id}`) : "—"),
             el("td", { class: "muted" }, v.dataset_version_id ? `#${v.dataset_version_id}` : "—"),
             el("td", { class: "muted nowrap" }, fmt.ago(v.created_at)));
-        }) : [emptyRow(metricKeys.length + 6, "No versions registered yet.")])));
+        }) : [emptyRow(metricKeys.length + 5, "No versions registered yet.")])));
       tableHost.replaceChildren(table);
     }
 
@@ -2167,7 +2169,8 @@ async function initSettings() {
 }
 
 /* ------------------------------------------------------------------ */
-/* Activity — the audit trail                                          */
+/* Activity — audit trail (who did what) + alerts (what the framework   */
+/* itself detected) on two tabs of the same page.                       */
 /* ------------------------------------------------------------------ */
 
 // PROMOTED/CREATED read as an outcome worth calling out; REJECTED/DELETED
@@ -2181,39 +2184,88 @@ function actionBadge(action) {
   return el("span", { class: "badge plain" }, a);
 }
 
+// GovernanceEvent's own severity, not a run/model status — CRITICAL reads
+// as failed (red), WARNING as pending (amber), INFO as plain.
+function severityBadge(severity) {
+  const s = String(severity || "");
+  if (s === "CRITICAL") return el("span", { class: "badge failed" }, s);
+  if (s === "WARNING") return el("span", { class: "badge pending" }, s);
+  return el("span", { class: "badge plain" }, s);
+}
+
+function detailCell(obj) {
+  return obj && Object.keys(obj).length
+    ? el("details", {},
+        el("summary", { class: "faint" }, "detail"),
+        el("pre", { class: "log", style: "margin-top:6px" }, JSON.stringify(obj, null, 2)))
+    : el("span", { class: "faint" }, "—");
+}
+
 async function initActivity() {
   const out = document.getElementById("activity-out");
+  const title = document.getElementById("activity-title");
+  const desc = document.getElementById("activity-desc");
+  const auditBtn = document.getElementById("tab-audit");
+  const alertsBtn = document.getElementById("tab-alerts");
+
+  const TABS = {
+    audit: {
+      title: "Audit trail",
+      desc: 'Who — or what — triggered a schedule or model-promotion decision, and when. ' +
+        'There is no login yet, so "who" is whatever the caller sent in an ' +
+        '<code>X-Actor</code> header (<code>system</code> otherwise) — an honour-system ' +
+        "record, not verified identity.",
+      fetch: () => api("/audit?limit=200"),
+      columns: ["When", "Actor", "Action", "Entity", "Detail"],
+      row: (e) => el("tr", {},
+        el("td", { class: "muted nowrap" }, fmt.ago(e.created_at)),
+        el("td", { class: "mono" }, e.actor),
+        el("td", {}, actionBadge(e.action)),
+        el("td", { class: "muted" }, e.entity_type ? `${e.entity_type} #${e.entity_id}` : "—"),
+        el("td", {}, detailCell(e.metadata))),
+      empty: "No activity recorded yet.",
+    },
+    alerts: {
+      title: "Alerts",
+      desc: "Conditions the framework itself detected — a training run failing, a dataset " +
+        "drifting, a retrain blocked before it started — not something anyone triggered.",
+      fetch: () => api("/alerts?limit=200"),
+      columns: ["When", "Severity", "Type", "Entity", "Message"],
+      row: (e) => el("tr", {},
+        el("td", { class: "muted nowrap" }, fmt.ago(e.created_at)),
+        el("td", {}, severityBadge(e.severity)),
+        el("td", { class: "mono" }, e.event_type),
+        el("td", { class: "muted" }, e.entity_type ? `${e.entity_type} #${e.entity_id}` : "—"),
+        el("td", {}, e.message, e.payload ? detailCell(e.payload) : null)),
+      empty: "No alerts — nothing detected yet.",
+    },
+  };
+
+  let active = "audit";
 
   async function load() {
+    const tab = TABS[active];
+    title.textContent = tab.title;
+    desc.innerHTML = tab.desc;
+    auditBtn.className = active === "audit" ? "btn primary" : "btn";
+    alertsBtn.className = active === "alerts" ? "btn primary" : "btn";
+
     let entries;
     try {
-      entries = await api("/audit?limit=200");
+      entries = await tab.fetch();
     } catch (e) {
       setError(out, e);
       return;
     }
     const table = el("table", {},
-      el("thead", {}, el("tr", {},
-        el("th", {}, "When"), el("th", {}, "Actor"), el("th", {}, "Action"),
-        el("th", {}, "Entity"), el("th", {}, "Detail"))),
-      el("tbody", {}, ...(entries.length ? entries.map((e) =>
-        el("tr", {},
-          el("td", { class: "muted nowrap" }, fmt.ago(e.created_at)),
-          el("td", { class: "mono" }, e.actor),
-          el("td", {}, actionBadge(e.action)),
-          el("td", { class: "muted" },
-            e.entity_type ? `${e.entity_type} #${e.entity_id}` : "—"),
-          el("td", {},
-            e.metadata && Object.keys(e.metadata).length
-              ? el("details", {},
-                  el("summary", { class: "faint" }, "detail"),
-                  el("pre", { class: "log", style: "margin-top:6px" },
-                    JSON.stringify(e.metadata, null, 2)))
-              : el("span", { class: "faint" }, "—"))))
-        : [emptyRow(5, "No activity recorded yet.")])));
+      el("thead", {}, el("tr", {}, ...tab.columns.map((c) => el("th", {}, c)))),
+      el("tbody", {}, ...(entries.length ? entries.map(tab.row)
+        : [emptyRow(tab.columns.length, tab.empty)])));
     out.replaceChildren(el("div", { class: "table-wrap" }, table));
   }
 
+  auditBtn.addEventListener("click", () => { active = "audit"; load(); });
+  alertsBtn.addEventListener("click", () => { active = "alerts"; load(); });
   document.getElementById("refresh").addEventListener("click", load);
   await load();
 }
@@ -2329,6 +2381,16 @@ async function initLineage() {
 // is the point, not a second table repeating the same version numbers.
 // This function renders only the top-of-page summary banner and any
 // registry entries the framework doesn't know about at all.
+// The framework's own ModelState is the badge a reader needs on every
+// row (see renderVersionsTable) — MLflow's registry ("stage", its own
+// version numbering, aliases) is a second vocabulary for the same
+// question, worth showing only when it actually disagrees or when
+// someone deliberately goes looking, not as a permanent fixture next to
+// every version. So: a disagreement stays an open, red banner (that is
+// the one case this panel exists to catch); everything else — the
+// "agrees" confirmation, the registry name, anything registered in
+// MLflow the framework doesn't know about — lives behind a closed
+// <details>, collapsed by default.
 function renderRegistrySummary(host, modelId, onVersions) {
   api(`/models/${modelId}/registry-reconciliation`).then((p) => {
     if (!p.available) {
@@ -2340,36 +2402,43 @@ function renderRegistrySummary(host, modelId, onVersions) {
     onVersions(new Map(rows.map((v) => [v.framework_version_id, v])));
 
     const drifted = rows.filter((v) => v.drift);
+    const registryLine = el("span", { class: "faint" },
+      d.registry_names?.length
+        ? `registered as ${d.registry_names.join(", ")}`
+        : "no matching registered model");
+
+    const mlflowOnlyTable = (d.mlflow_only || []).length
+      ? el("div", { style: "margin-top:16px" },
+          el("div", { class: "chart-title", style: "margin-bottom:8px" },
+            "Registered in MLflow but unknown to this framework"),
+          el("div", { class: "table-wrap" },
+            el("table", {},
+              el("thead", {}, el("tr", {},
+                el("th", {}, "Name"), el("th", {}, "Version"),
+                el("th", {}, "Run"), el("th", {}, "Aliases"))),
+              el("tbody", {}, ...d.mlflow_only.map((m) =>
+                el("tr", {},
+                  el("td", { class: "mono" }, m.mlflow_name),
+                  el("td", { class: "mono" }, m.mlflow_version),
+                  el("td", { class: "mono truncate", title: m.run_id }, m.run_id),
+                  el("td", { class: "mono" }, (m.aliases || []).join(", ") || "—")))))))
+      : null;
+
+    if (d.drift_count) {
+      mount(host,
+        el("div", { class: "section-head" }, el("h3", {}, "MLflow registry"), registryLine),
+        banner(
+          `${d.drift_count} version${d.drift_count > 1 ? "s" : ""} disagree ` +
+          `between this framework and MLflow: ` +
+          drifted.map((v) => `v${v.framework_version_number} — ${v.drift_reason}`).join("; "),
+          "err"),
+        mlflowOnlyTable);
+      return;
+    }
     mount(host,
-      el("div", { class: "section-head" },
-        el("h3", {}, "MLflow registry"),
-        el("span", { class: "faint" },
-          d.registry_names?.length
-            ? `registered as ${d.registry_names.join(", ")}`
-            : "no matching registered model")),
-      d.drift_count
-        ? banner(
-            `${d.drift_count} version${d.drift_count > 1 ? "s" : ""} disagree ` +
-            `between this framework and MLflow: ` +
-            drifted.map((v) => `v${v.framework_version_number} — ${v.drift_reason}`).join("; "),
-            "err")
-        : banner("Framework state and MLflow registry agree on every version."),
-      (d.mlflow_only || []).length
-        ? el("div", { style: "margin-top:16px" },
-            el("div", { class: "chart-title", style: "margin-bottom:8px" },
-              "Registered in MLflow but unknown to this framework"),
-            el("div", { class: "table-wrap" },
-              el("table", {},
-                el("thead", {}, el("tr", {},
-                  el("th", {}, "Name"), el("th", {}, "Version"),
-                  el("th", {}, "Run"), el("th", {}, "Aliases"))),
-                el("tbody", {}, ...d.mlflow_only.map((m) =>
-                  el("tr", {},
-                    el("td", { class: "mono" }, m.mlflow_name),
-                    el("td", { class: "mono" }, m.mlflow_version),
-                    el("td", { class: "mono truncate", title: m.run_id }, m.run_id),
-                    el("td", { class: "mono" }, (m.aliases || []).join(", ") || "—")))))))
-        : null);
+      el("details", {},
+        el("summary", { class: "faint" }, "MLflow registry — agrees, ", registryLine),
+        el("div", { style: "margin-top:10px" }, mlflowOnlyTable)));
   }).catch(() => {});
 }
 

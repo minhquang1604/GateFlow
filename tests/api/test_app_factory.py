@@ -54,7 +54,7 @@ class TestFullAppBoot:
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/favicon.svg").status_code == 200
-        # OpenAPI exposes 51 distinct /api paths: 16 read endpoints over the
+        # OpenAPI exposes 52 distinct /api paths: 16 read endpoints over the
         # framework's own rows (readiness + drift included), 19 that proxy
         # the systems a run executed on (Airflow: health/import-errors/pools,
         # DAG list, DAG detail, per-run tasks, per-task log; MLflow: the
@@ -72,12 +72,14 @@ class TestFullAppBoot:
         # api/routers/settings.py's single read-only config/reachability
         # pane (GET /api/settings), 2 for airflow_views.py's gated
         # task-control writes (POST .../tasks/{task_id}/clear and
-        # .../retry — see api/security.py's require_write_token) — and 1
-        # for api/routers/audit.py's read-only audit-trail list (GET
-        # /api/audit — see audit/manager.py).
+        # .../retry — see api/security.py's require_write_token), 1 for
+        # api/routers/audit.py's read-only audit-trail list (GET
+        # /api/audit — see audit/manager.py), and 1 for
+        # api/routers/alerts.py's read-only governance-event list (GET
+        # /api/alerts — see events/store.py::GovernanceEventStore).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 51, f"Expected 51, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 52, f"Expected 52, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
         # The read-only proxy count stays 19: clear/retry are a distinct

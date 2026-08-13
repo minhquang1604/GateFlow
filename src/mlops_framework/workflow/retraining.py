@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
+from mlops_framework.database.models.governance_event import GovernanceEventSeverity
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_promotion_event import (
     ModelPromotionEvent,
@@ -49,9 +50,13 @@ from mlops_framework.database.models.training_run import (
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.drift.detector import DriftService
 from mlops_framework.events.publisher import (
+    DriftDetectedEvent,
     EventPublisher,
     ModelPromotedEvent,
+    RunBlockedEvent,
+    TrainingFailedEvent,
 )
+from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.governance.eligibility import (
     EligibilityConfig,
     TrainingEligibilityPolicy,
@@ -250,6 +255,20 @@ class RetrainingWorkflow:
                     data=readiness_result.to_dict(),
                 )
             )
+            GovernanceEventStore(self._session).record(
+                RunBlockedEvent(
+                    reason="readiness_blocked",
+                    dataset_version_id=dataset_version.id,
+                    model_id=model.id,
+                    reasons=list(readiness_result.reasons),
+                ),
+                message=(
+                    f"{model.name}: dataset version #{dataset_version.id} "
+                    f"blocked — {'; '.join(readiness_result.reasons) or 'not ready'}"
+                ),
+                entity_type="DatasetVersion",
+                entity_id=dataset_version.id,
+            )
             return self._finalize(
                 dataset_version,
                 model,
@@ -293,6 +312,23 @@ class RetrainingWorkflow:
                         data=drift_result.to_dict(),
                     )
                 )
+                if drift_result.drift_detected:
+                    GovernanceEventStore(self._session).record(
+                        DriftDetectedEvent(
+                            dataset_version_id=dataset_version.id,
+                            score=drift_result.score,
+                            threshold=drift_result.threshold,
+                            method=drift_result.method,
+                        ),
+                        message=(
+                            f"Drift detected on dataset version #{dataset_version.id} "
+                            f"({drift_result.method}, score={drift_result.score:.4f} "
+                            f"vs threshold {drift_result.threshold:.4f})"
+                        ),
+                        severity=GovernanceEventSeverity.CRITICAL,
+                        entity_type="DatasetVersion",
+                        entity_id=dataset_version.id,
+                    )
 
         # 3. Eligibility ---------------------------------------------------
         eligibility_ctx = self._eligibility.build_context(
@@ -313,6 +349,20 @@ class RetrainingWorkflow:
                     detail="; ".join(eligibility_decision.reasons),
                     data=eligibility_decision.to_dict(),
                 )
+            )
+            GovernanceEventStore(self._session).record(
+                RunBlockedEvent(
+                    reason="not_eligible",
+                    dataset_version_id=dataset_version.id,
+                    model_id=model.id,
+                    reasons=list(eligibility_decision.reasons),
+                ),
+                message=(
+                    f"{model.name}: not eligible to retrain — "
+                    f"{'; '.join(eligibility_decision.reasons)}"
+                ),
+                entity_type="Model",
+                entity_id=model.id,
             )
             return self._finalize(
                 dataset_version,
@@ -378,6 +428,15 @@ class RetrainingWorkflow:
                     data={"training_run_id": run.id},
                 )
             )
+            GovernanceEventStore(self._session).record(
+                TrainingFailedEvent(
+                    training_run_id=run.id, pipeline_id=pipeline_id, error_message=str(exc)
+                ),
+                message=f"Training run #{run.id} failed: {exc}",
+                severity=GovernanceEventSeverity.CRITICAL,
+                entity_type="TrainingRun",
+                entity_id=run.id,
+            )
             return self._finalize(
                 dataset_version,
                 model,
@@ -400,6 +459,17 @@ class RetrainingWorkflow:
                         "error_message": run.error_message,
                     },
                 )
+            )
+            GovernanceEventStore(self._session).record(
+                TrainingFailedEvent(
+                    training_run_id=run.id,
+                    pipeline_id=pipeline_id,
+                    error_message=run.error_message,
+                ),
+                message=f"Training run #{run.id} ended in status {run.status.value}",
+                severity=GovernanceEventSeverity.CRITICAL,
+                entity_type="TrainingRun",
+                entity_id=run.id,
             )
             return self._finalize(
                 dataset_version,

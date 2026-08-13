@@ -8,10 +8,13 @@ import httpx
 import pytest
 
 from mlops_framework.events.publisher import (
+    DriftDetectedEvent,
     Event,
     HttpEventPublisher,
     InMemoryEventPublisher,
     ModelPromotedEvent,
+    RunBlockedEvent,
+    TrainingFailedEvent,
 )
 
 
@@ -34,6 +37,52 @@ class TestModelPromotedEvent:
     def test_is_json_serializable(self):
         e = ModelPromotedEvent("m", 1, "uri")
         json.dumps(e.to_dict())
+
+
+class TestTrainingFailedEvent:
+    def test_payload_shape(self):
+        e = TrainingFailedEvent(training_run_id=42, pipeline_id="p", error_message="boom")
+        d = e.to_dict()
+        assert d["event_type"] == "TRAINING_FAILED"
+        assert d["payload"] == {
+            "training_run_id": 42, "pipeline_id": "p", "error_message": "boom",
+        }
+
+    def test_optional_fields_omitted_when_none(self):
+        e = TrainingFailedEvent(training_run_id=42)
+        assert e.to_dict()["payload"] == {"training_run_id": 42}
+
+    def test_is_json_serializable(self):
+        json.dumps(TrainingFailedEvent(training_run_id=1).to_dict())
+
+
+class TestDriftDetectedEvent:
+    def test_payload_shape(self):
+        e = DriftDetectedEvent(dataset_version_id=7, score=0.9, threshold=0.05, method="ks")
+        d = e.to_dict()
+        assert d["event_type"] == "DRIFT_DETECTED"
+        assert d["payload"] == {
+            "dataset_version_id": 7, "score": 0.9, "threshold": 0.05, "method": "ks",
+        }
+
+    def test_is_json_serializable(self):
+        json.dumps(DriftDetectedEvent(dataset_version_id=1).to_dict())
+
+
+class TestRunBlockedEvent:
+    def test_payload_shape(self):
+        e = RunBlockedEvent(
+            reason="not_eligible", dataset_version_id=3, model_id=9, reasons=["too soon"],
+        )
+        d = e.to_dict()
+        assert d["event_type"] == "RUN_BLOCKED"
+        assert d["payload"] == {
+            "reason": "not_eligible", "dataset_version_id": 3, "model_id": 9,
+            "reasons": ["too soon"],
+        }
+
+    def test_is_json_serializable(self):
+        json.dumps(RunBlockedEvent(reason="readiness_blocked").to_dict())
 
 
 class TestInMemoryEventPublisher:
