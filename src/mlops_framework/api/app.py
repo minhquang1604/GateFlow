@@ -18,6 +18,7 @@ from fastapi import FastAPI
 
 from mlops_framework.api.routers import (
     airflow_views,
+    audit,
     dashboard,
     datasets,
     drift,
@@ -28,6 +29,8 @@ from mlops_framework.api.routers import (
     readiness,
     runs,
     schedules,
+)
+from mlops_framework.api.routers import (
     settings as settings_router,
 )
 
@@ -78,6 +81,7 @@ def create_app(
     app.include_router(schedules.router, prefix="/api", tags=["scheduling"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
     app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+    app.include_router(audit.router, prefix="/api", tags=["audit"])
 
     if mount_ui:
         from mlops_framework.ui.mount import mount_ui as _mount_ui

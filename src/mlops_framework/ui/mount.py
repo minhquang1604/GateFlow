@@ -34,6 +34,8 @@ Pages:
 * ``/lineage`` — lineage explorer
 * ``/settings`` — effective MLflow/Airflow/database config, secrets
   masked, plus a live reachability ping for MLflow and Airflow
+* ``/activity`` — the audit trail: who (or what) triggered a schedule
+  or model-promotion action, and when — see ``audit/manager.py``
 
 The static folder (CSS + JS) is mounted at ``/static``.
 """
@@ -114,6 +116,9 @@ _ICONS: dict[str, str] = {
         '<path d="M9 2.5v2.1M9 13.4v2.1M15.5 9h-2.1M4.6 9H2.5'
         'M13.4 4.6l-1.5 1.5M6.1 11.9l-1.5 1.5M13.4 13.4l-1.5-1.5M6.1 6.1 4.6 4.6"/>'
     ),
+    "activity": (
+        '<path d="M2 9.5h3.2l1.8-5 2.6 9 1.8-6.5 1.4 2.5H16"/>'
+    ),
 }
 
 # (section label, [(nav key, href, label)]). The nav key is what a route
@@ -157,6 +162,7 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
     (
         "System",
         [
+            ("activity", "/activity", "Activity"),
             ("settings", "/settings", "Settings"),
         ],
     ),
@@ -276,6 +282,10 @@ def mount_ui(
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page() -> str:
         return _page(pages, "settings.html", "Settings", "settings")
+
+    @app.get("/activity", response_class=HTMLResponse)
+    def activity() -> str:
+        return _page(pages, "activity.html", "Activity", "activity")
 
 
 # ---------------------------------------------------------------------- #

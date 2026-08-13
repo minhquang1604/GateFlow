@@ -32,6 +32,7 @@ config.set_main_option("sqlalchemy.url", database_url)
 
 # Import the Base from the database models
 from mlops_framework.database.base import Base
+from mlops_framework.database.models.audit_log import AuditLog
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.drift_evaluation import DriftEvaluation

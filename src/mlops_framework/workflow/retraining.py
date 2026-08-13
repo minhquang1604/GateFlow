@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_promotion_event import (
@@ -147,6 +148,7 @@ class RetrainingWorkflow:
         drift_service: DriftService | None = None,
         event_publisher: EventPublisher | None = None,
         event_session: Session | None = None,
+        actor: str = "system:retraining-workflow",
     ) -> None:
         self._session = session
         self._service = training_service
@@ -160,6 +162,11 @@ class RetrainingWorkflow:
         # Separate session for persisting events (may be the same as
         # self._session).
         self._event_session = event_session or session
+        # Recorded on every AuditLog row this workflow writes (promotion
+        # approved/rejected) — overridable by a caller that knows a more
+        # specific actor (e.g. "schedule:12"), same idea as api/deps.py's
+        # get_actor for the HTTP-facing paths.
+        self._actor = actor
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -324,6 +331,7 @@ class RetrainingWorkflow:
 
         # 4. Training ------------------------------------------------------
         mm = ModelManager(self._session)
+        am = AuditManager(self._session)
         # Use the dataset manager from the existing service if any.
         dm = DatasetManager(self._session)
         tm = TrainingManager(self._session, dm)
@@ -435,6 +443,13 @@ class RetrainingWorkflow:
         )
         if not decision.approved:
             mm.transition_state(mv.id, ModelState.REJECTED)
+            am.record(
+                actor=self._actor,
+                action="MODEL_REJECTED",
+                entity_type="ModelVersion",
+                entity_id=mv.id,
+                metadata={"model_name": model.name, "reasons": decision.reasons},
+            )
             steps.append(
                 StepResult(
                     "promotion",
@@ -462,6 +477,13 @@ class RetrainingWorkflow:
             mm.transition_state(production.id, ModelState.ARCHIVED)
         mm.transition_state(mv.id, ModelState.PRODUCTION)
         regsync.sync_production(model.name, mlflow_version)
+        am.record(
+            actor=self._actor,
+            action="MODEL_PROMOTED",
+            entity_type="ModelVersion",
+            entity_id=mv.id,
+            metadata={"model_name": model.name, "model_version": mv.version_number},
+        )
 
         steps.append(
             StepResult(

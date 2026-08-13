@@ -8,9 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from sqlalchemy.orm import Session
 
+from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.session import (
     DatabaseManager,
     get_db_manager,
@@ -74,3 +75,19 @@ def get_model_manager(db: Session = Depends(get_db)) -> ModelManager:
 def get_schedule_manager(db: Session = Depends(get_db)) -> ScheduleManager:
     """FastAPI dependency for :class:`ScheduleManager`."""
     return ScheduleManager(db)
+
+
+def get_audit_manager(db: Session = Depends(get_db)) -> AuditManager:
+    """FastAPI dependency for :class:`AuditManager`."""
+    return AuditManager(db)
+
+
+def get_actor(x_actor: str | None = Header(default=None, alias="X-Actor")) -> str:
+    """Who the caller says is responsible for this request.
+
+    Not authentication (see ``api/security.py``'s module docstring for
+    why) — an optional, unverified ``X-Actor`` header, defaulting to
+    ``"system"``. Every audited write endpoint takes this as a
+    dependency and passes it straight to ``AuditManager.record()``.
+    """
+    return x_actor or "system"

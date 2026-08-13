@@ -1,0 +1,21 @@
+    <nav class="breadcrumbs" aria-label="Breadcrumbs">
+      <a href="/dashboard">Gateflow</a><span>/</span><span aria-current="page">Activity</span>
+    </nav>
+
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">Activity</h1>
+        <p class="page-desc">
+          Who — or what — triggered a schedule or model-promotion decision, and when.
+          There is no login yet, so "who" is whatever the caller sent in an
+          <code>X-Actor</code> header (<code>system</code> otherwise) — an honour-system
+          record, not verified identity.
+        </p>
+      </div>
+      <div class="page-actions">
+        <button id="refresh" class="btn">Refresh</button>
+      </div>
+    </div>
+
+    <div id="activity-out"></div>
+<script>initActivity();</script>

@@ -132,7 +132,9 @@ def _fire(session: Session, schedule: Any, mlflow_tracking_uri: str | None, now:
     orchestrator = LocalDockerOrchestrator()
     service = TrainingService(training_manager=tm, orchestrator=orchestrator, tracker=tracker)
 
-    workflow = RetrainingWorkflow(session, training_service=service)
+    workflow = RetrainingWorkflow(
+        session, training_service=service, actor=f"schedule:{schedule.id}"
+    )
     try:
         outcome = workflow.run(
             dataset_version=version,

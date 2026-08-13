@@ -16,8 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from mlops_framework.api.deps import get_db, get_schedule_manager
+from mlops_framework.api.deps import get_actor, get_audit_manager, get_db, get_schedule_manager
 from mlops_framework.api.schemas import ScheduleOut
+from mlops_framework.audit.manager import AuditManager
 from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import (
     DatasetNotFoundError,
@@ -63,6 +64,8 @@ class RunNowResponse(BaseModel):
 def create_schedule(
     request: CreateScheduleRequest,
     sm: ScheduleManager = Depends(get_schedule_manager),
+    am: AuditManager = Depends(get_audit_manager),
+    actor: str = Depends(get_actor),
 ) -> ScheduleOut:
     try:
         schedule = sm.create_schedule(
@@ -79,6 +82,17 @@ def create_schedule(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (ModelNotFoundError, DatasetNotFoundError) as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    am.record(
+        actor=actor,
+        action="SCHEDULE_CREATED",
+        entity_type="Schedule",
+        entity_id=schedule.id,
+        metadata={
+            "model_id": schedule.model_id,
+            "dataset_id": schedule.dataset_id,
+            "cron_expression": schedule.cron_expression,
+        },
+    )
     return ScheduleOut.from_schedule(schedule)
 
 
@@ -108,6 +122,8 @@ def update_schedule(
     schedule_id: int,
     request: UpdateScheduleRequest,
     sm: ScheduleManager = Depends(get_schedule_manager),
+    am: AuditManager = Depends(get_audit_manager),
+    actor: str = Depends(get_actor),
 ) -> ScheduleOut:
     try:
         schedule = sm.update_schedule(
@@ -122,23 +138,40 @@ def update_schedule(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except InvalidCronExpressionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    am.record(
+        actor=actor,
+        action="SCHEDULE_UPDATED",
+        entity_type="Schedule",
+        entity_id=schedule.id,
+        metadata=request.model_dump(exclude_none=True),
+    )
     return ScheduleOut.from_schedule(schedule)
 
 
 @router.delete("/schedules/{schedule_id}", status_code=204)
 def delete_schedule(
-    schedule_id: int, sm: ScheduleManager = Depends(get_schedule_manager)
+    schedule_id: int,
+    sm: ScheduleManager = Depends(get_schedule_manager),
+    am: AuditManager = Depends(get_audit_manager),
+    actor: str = Depends(get_actor),
 ) -> None:
     try:
         sm.delete_schedule(schedule_id)
     except ScheduleNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    am.record(
+        actor=actor,
+        action="SCHEDULE_DELETED",
+        entity_type="Schedule",
+        entity_id=schedule_id,
+    )
 
 
 @router.post("/schedules/{schedule_id}/run-now", response_model=RunNowResponse)
 def trigger_schedule_now(
     schedule_id: int,
     db: Session = Depends(get_db),
+    actor: str = Depends(get_actor),
 ) -> RunNowResponse:
     """Fire a schedule immediately, bypassing the cron check.
 
@@ -158,6 +191,18 @@ def trigger_schedule_now(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     outcome = result.outcome
+    AuditManager(db).record(
+        actor=actor,
+        action="SCHEDULE_RUN_NOW",
+        entity_type="Schedule",
+        entity_id=schedule_id,
+        metadata={
+            "fired": result.fired,
+            "skipped_reason": result.skipped_reason,
+            "training_run_id": outcome.training_run_id if outcome else None,
+            "promoted": outcome.promoted if outcome else None,
+        },
+    )
     return RunNowResponse(
         schedule_id=result.schedule_id,
         fired=result.fired,

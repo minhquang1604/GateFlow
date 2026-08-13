@@ -38,11 +38,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import (
+    get_actor,
+    get_audit_manager,
     get_dataset_manager,
     get_db,
     get_model_manager,
     get_training_manager,
 )
+from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
@@ -146,6 +149,8 @@ def promote_model(
     request: PromoteModelRequest,
     db: Session = Depends(get_db),
     mm: ModelManager = Depends(get_model_manager),
+    am: AuditManager = Depends(get_audit_manager),
+    actor: str = Depends(get_actor),
 ) -> PromoteModelResponse:
     """Create a CANDIDATE model version and apply the promotion policy.
 
@@ -198,6 +203,13 @@ def promote_model(
     )
     if not decision.approved:
         mm.transition_state(candidate.id, ModelState.REJECTED)
+        am.record(
+            actor=actor,
+            action="MODEL_REJECTED",
+            entity_type="ModelVersion",
+            entity_id=candidate.id,
+            metadata={"model_name": model_row.name, "reasons": decision.reasons},
+        )
         return PromoteModelResponse(
             promoted=False,
             model_version_id=candidate.id,
@@ -212,6 +224,16 @@ def promote_model(
     mm.transition_state(candidate.id, ModelState.PRODUCTION)
     regsync.sync_production(model_row.name, mlflow_version)
 
+    am.record(
+        actor=actor,
+        action="MODEL_PROMOTED",
+        entity_type="ModelVersion",
+        entity_id=candidate.id,
+        metadata={
+            "model_name": model_row.name,
+            "model_version": candidate.version_number,
+        },
+    )
     return PromoteModelResponse(
         promoted=True,
         model_version_id=candidate.id,

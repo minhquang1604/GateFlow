@@ -2167,6 +2167,58 @@ async function initSettings() {
 }
 
 /* ------------------------------------------------------------------ */
+/* Activity — the audit trail                                          */
+/* ------------------------------------------------------------------ */
+
+// PROMOTED/CREATED read as an outcome worth calling out; REJECTED/DELETED
+// as the opposite; everything else (UPDATED, RUN_NOW) is just "something
+// happened" — reuses the same three-way badge vocabulary as statusKind()
+// without forcing audit actions through its run/model-specific words.
+function actionBadge(action) {
+  const a = String(action || "");
+  if (/PROMOTED|CREATED/.test(a)) return el("span", { class: "badge success" }, a);
+  if (/REJECTED|DELETED/.test(a)) return el("span", { class: "badge failed" }, a);
+  return el("span", { class: "badge plain" }, a);
+}
+
+async function initActivity() {
+  const out = document.getElementById("activity-out");
+
+  async function load() {
+    let entries;
+    try {
+      entries = await api("/audit?limit=200");
+    } catch (e) {
+      setError(out, e);
+      return;
+    }
+    const table = el("table", {},
+      el("thead", {}, el("tr", {},
+        el("th", {}, "When"), el("th", {}, "Actor"), el("th", {}, "Action"),
+        el("th", {}, "Entity"), el("th", {}, "Detail"))),
+      el("tbody", {}, ...(entries.length ? entries.map((e) =>
+        el("tr", {},
+          el("td", { class: "muted nowrap" }, fmt.ago(e.created_at)),
+          el("td", { class: "mono" }, e.actor),
+          el("td", {}, actionBadge(e.action)),
+          el("td", { class: "muted" },
+            e.entity_type ? `${e.entity_type} #${e.entity_id}` : "—"),
+          el("td", {},
+            e.metadata && Object.keys(e.metadata).length
+              ? el("details", {},
+                  el("summary", { class: "faint" }, "detail"),
+                  el("pre", { class: "log", style: "margin-top:6px" },
+                    JSON.stringify(e.metadata, null, 2)))
+              : el("span", { class: "faint" }, "—"))))
+        : [emptyRow(5, "No activity recorded yet.")])));
+    out.replaceChildren(el("div", { class: "table-wrap" }, table));
+  }
+
+  document.getElementById("refresh").addEventListener("click", load);
+  await load();
+}
+
+/* ------------------------------------------------------------------ */
 /* Lineage                                                             */
 /* ------------------------------------------------------------------ */
 
