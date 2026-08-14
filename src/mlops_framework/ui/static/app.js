@@ -504,7 +504,11 @@ async function initDashboard() {
         el("td", {}, el("a", { href: `/runs/${r.id}` }, `#${r.id}`)),
         el("td", {}, statusBadge(r.status)),
         el("td", { class: "mono truncate", title: r.pipeline_id || "" }, r.pipeline_id || "—"),
-        el("td", { class: "num" }, fmt.dur(r.duration_seconds)),
+        // "mono", not "num" (right-aligned) — this table's headers are
+        // all left-aligned, so a lone right-aligned cell just drifts
+        // away from "Duration" above it. Same fix as the Models page's
+        // Versions/Key metric columns.
+        el("td", { class: "mono" }, fmt.dur(r.duration_seconds)),
         el("td", { class: "muted nowrap" }, fmt.ago(r.started_at || r.created_at))));
   } catch (e) {
     setError(recent, e);
@@ -530,8 +534,10 @@ async function initDatasets() {
       (ds) => el("tr", {},
         el("td", {}, el("a", { href: `/datasets/${ds.id}` }, ds.name)),
         el("td", { class: "muted" }, ds.description || "—"),
-        el("td", { class: "num" }, String(ds.version_count)),
-        el("td", { class: "num" }, fmt.num(ds.latest_version?.row_count)),
+        // "mono", not "num" — same headers-are-left-aligned mismatch as
+        // the Models table's Versions/Key metric columns.
+        el("td", { class: "mono" }, String(ds.version_count)),
+        el("td", { class: "mono" }, fmt.num(ds.latest_version?.row_count)),
         el("td", { class: "mono faint" }, fmt.hash(ds.latest_version?.schema_hash, 10))));
   } catch (e) {
     setError(table.parentElement, e);
@@ -761,7 +767,14 @@ async function initDatasetDetail(id) {
   versionSelect.replaceChildren(...optionList());
   compareA.replaceChildren(...optionList());
   compareB.replaceChildren(...optionList());
-  versionSelect.value = String(newest[0].id);
+  // Deep link: /datasets/{id}?version={dataset_version_id}, used by
+  // "Dataset version #N" links elsewhere (run detail, dataset-inputs
+  // card) that know a version id but not which of its own versions is
+  // "current" — falls back to newest for a plain /datasets/{id} visit
+  // or an id that doesn't belong to this dataset.
+  const requestedVersion = new URLSearchParams(location.search).get("version");
+  const initialId = requestedVersion && byId.has(requestedVersion) ? requestedVersion : String(newest[0].id);
+  versionSelect.value = initialId;
   compareA.value = String(newest[0].id);
   compareB.value = String((newest[1] || newest[0]).id);
   toolbar.hidden = false;
@@ -917,7 +930,8 @@ async function initRuns() {
                   class: `bar-fill ${statusKind(r.status)}`,
                   style: `width:${((r.duration_seconds || 0) / maxDur) * 100}%`,
                 })))),
-          el("td", { class: "num" }, best ? `${best.name} ${fmt.metric(best.value)}` : "—"),
+          // "mono", not "num" — this table's headers are all left-aligned.
+          el("td", { class: "mono" }, best ? `${best.name} ${fmt.metric(best.value)}` : "—"),
           el("td", { class: "muted nowrap" }, fmt.ago(r.started_at || r.created_at)));
       });
     updateCompare();
@@ -996,7 +1010,8 @@ async function initRuns() {
         }
         return el("tr", {},
           el("td", { class: "checkbox-cell" }, cb),
-          el("td", { class: "num" }, String(i + 1)),
+          // "mono", not "num" — this table's headers are all left-aligned.
+          el("td", { class: "mono" }, String(i + 1)),
           el("td", {}, el("a", {
             class: "mono", title: r.run_id,
             href: fwId ? `/runs/${fwId}` : `/mlflow-runs/${encodeURIComponent(r.run_id)}`,
@@ -1005,7 +1020,8 @@ async function initRuns() {
           ...shown.map((k) => {
             const v = (r.metrics || {})[k];
             const isBest = typeof v === "number" && v === best[k] && runs.length > 1;
-            return el("td", { class: "num" },
+            // "mono", not "num" — this table's headers are all left-aligned.
+            return el("td", { class: "mono" },
               isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v)) : fmt.metric(v));
           }),
           el("td", {}, fwId ? el("a", { href: `/runs/${fwId}` }, `#${fwId}`)
@@ -1209,6 +1225,24 @@ function subscribeToRunEvents(id, onStatus) {
   // here beyond letting that default behaviour run.
 }
 
+// A run (or an MLflow dataset-input entry) knows a dataset_version_id
+// but not which Dataset it belongs to — that takes a lookup. Used to
+// link straight to "which version is this exactly", so renders the
+// "#N" label immediately and swaps in the real link (to that version's
+// own page — /datasets/{dataset_id}?version={id}, see the deep-link
+// support in initDatasetDetail) once the lookup resolves, best-effort,
+// same pattern as renderRegistrySummary's fetch. Previously these
+// linked straight to the Lineage graph instead, which doesn't carry
+// this version's own facts (checksum, row count, schema) at all — the
+// wrong destination for "go see this dataset version".
+function datasetVersionLink(versionId) {
+  const label = el("span", {}, `#${versionId}`);
+  api(`/dataset-versions/${versionId}`).then((dv) => {
+    mount(label, el("a", { href: `/datasets/${dv.dataset_id}?version=${dv.id}` }, `#${dv.id}`));
+  }).catch(() => { /* link just stays plain text */ });
+  return label;
+}
+
 function renderRunDetail(head, body, id, run) {
   head.replaceChildren(
     el("div", { class: "breadcrumb" }, el("a", { href: "/runs" }, "Runs"), " / ", `#${run.id}`),
@@ -1247,9 +1281,7 @@ function renderRunDetail(head, body, id, run) {
         el("dt", {}, "Orchestrator"), el("dd", {}, run.orchestrator || "—"),
         el("dt", {}, "Execution id"), el("dd", {}, run.execution_id || "—"),
         el("dt", {}, "Dataset version"), el("dd", {},
-          run.dataset_version_id
-            ? el("a", { href: `/lineage?kind=dataset-version&id=${run.dataset_version_id}` }, `#${run.dataset_version_id}`)
-            : "—"),
+          run.dataset_version_id ? datasetVersionLink(run.dataset_version_id) : "—"),
         el("dt", {}, "MLflow run"), el("dd", {}, run.mlflow_run_id || "—"),
         el("dt", {}, "Started"), el("dd", {}, fmt.time(run.started_at)),
         el("dt", {}, "Completed"), el("dd", {}, fmt.time(run.completed_at)),
@@ -1534,8 +1566,7 @@ function datasetInputsCard(inputs, run) {
     run && run.dataset_version_id
       ? el("p", { class: "faint", style: "margin:10px 0 0;font-size:12.5px" },
           "Framework lineage records dataset version ",
-          el("a", { href: `/lineage?kind=dataset-version&id=${run.dataset_version_id}` },
-            `#${run.dataset_version_id}`),
+          datasetVersionLink(run.dataset_version_id),
           ". Compare the digest above against that version's checksum to " +
           "confirm the run trained on what the lineage claims.")
       : null);
@@ -1586,7 +1617,8 @@ function renderNestedRuns(host, basePath) {
               ...metricKeys.map((k) => {
                 const v = (c.metrics || {})[k];
                 const isBest = typeof v === "number" && v === best[k] && d.children.length > 1;
-                return el("td", { class: "num" },
+                // "mono", not "num" — this table's headers are all left-aligned.
+                return el("td", { class: "mono" },
                   isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(v))
                          : fmt.metric(v));
               }),
@@ -1644,7 +1676,8 @@ function renderArtifacts(host, basePath, path) {
           }
           return el("tr", {},
             nameCell,
-            el("td", { class: "num" }, e.is_dir ? "—" : fmt.bytes(e.file_size)),
+            // "mono", not "num" — "Size" is left-aligned like "Name".
+            el("td", { class: "mono" }, e.is_dir ? "—" : fmt.bytes(e.file_size)),
             el("td", {}, e.is_dir ? "" :
               el("a", { href: rawUrl(e.path), target: "_blank", rel: "noopener" }, "open")));
         }) : [emptyRow(3, "No artifacts in this directory.")]))));
@@ -1809,7 +1842,8 @@ async function initRunsCompare() {
           el("td", {}, statusBadge(r.status)),
           el("td", { class: "mono" }, r.pipeline_id || "—"),
           el("td", { class: "muted" }, r.orchestrator || "—"),
-          el("td", { class: "num" }, fmt.dur(r.duration_seconds)),
+          // "mono", not "num" — "Duration" is left-aligned like the rest.
+          el("td", { class: "mono" }, fmt.dur(r.duration_seconds)),
           el("td", { class: "muted nowrap" }, fmt.time(r.started_at)))))));
 
   const headline = METRIC_PRIORITY.find((m) => runs.some((r) => typeof (r.metrics || {})[m] === "number"));
@@ -1874,10 +1908,20 @@ async function initModels() {
         return el("tr", {},
           el("td", {}, el("a", { href: `/models/${m.id}` }, m.name)),
           el("td", { class: "muted" }, m.task || "—"),
-          el("td", { class: "num" }, String(m.version_count)),
-          el("td", {}, prod ? el("span", {}, statusBadge("PRODUCTION"), ` v${prod.version_number}`)
-                            : el("span", { class: "faint" }, "none")),
-          el("td", { class: "num" }, best ? `${best.name} ${fmt.metric(best.value)}` : "—"));
+          // "num" (right-aligned) reads fine in a column of nothing but
+          // numbers stacked under a right-aligned header — this table's
+          // headers are all left-aligned, so a right-aligned cell here
+          // just drifts away from its own header. "mono" keeps the
+          // tabular-nums/monospace look without the alignment mismatch.
+          el("td", { class: "mono" }, String(m.version_count)),
+          // Just the badge — the "Versions" column already carries the
+          // number that matters here (how many), and appending " vN"
+          // put a second, differently-scoped version number right next
+          // to it (which one is in production) that read as the same
+          // fact repeated. The specific number is one click away on the
+          // model's own page (production card + Versions table).
+          el("td", {}, prod ? statusBadge("PRODUCTION") : el("span", { class: "faint" }, "none")),
+          el("td", { class: "mono" }, best ? `${best.name} ${fmt.metric(best.value)}` : "—"));
       });
   } catch (e) {
     setError(table.parentElement, e);
@@ -1943,7 +1987,8 @@ async function initModelDetail(id) {
             ...metricKeys.map((k) => {
               const val = (v.metrics || {})[k];
               const isBest = typeof val === "number" && val === best[k] && versions.length > 1;
-              return el("td", { class: "num" },
+              // "mono", not "num" — this table's headers are all left-aligned.
+              return el("td", { class: "mono" },
                 isBest ? el("strong", { style: "color:var(--ok)" }, fmt.metric(val)) : fmt.metric(val));
             }),
             el("td", {}, v.training_run_id ? el("a", { href: `/runs/${v.training_run_id}` }, `#${v.training_run_id}`) : "—"),
@@ -2381,6 +2426,396 @@ async function renderLineagePicker(out) {
         el("tbody", {}, ...rows))));
 }
 
+// Layers lineage nodes into columns exactly like dagLevels() layers
+// tasks — level(root) = 0, level(n) = 1 + max(level(upstream)) over
+// every incoming edge — except it works off `edges` (source/target ids)
+// rather than a `downstream_task_ids` field, since that's the shape the
+// lineage API serves, and it never bails to null: an edge pointing at
+// an id not in `nodes`, or a node no root reaches, still gets placed
+// (at column 0) rather than losing the whole graph the way an
+// unrenderable pipeline DAG falls back to a plain table. Lineage graphs
+// are walked out of live foreign keys, not authored by hand, so treating
+// an odd shape as fatal would trade a usable-if-imperfect graph for a
+// blank page over something the viewer can't fix anyway.
+function lineageLevels(nodes, edges) {
+  const ids = nodes.map((n) => n.id);
+  const idSet = new Set(ids);
+  const indegree = new Map(ids.map((id) => [id, 0]));
+  const outgoing = new Map(ids.map((id) => [id, []]));
+  for (const e of edges) {
+    if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
+    outgoing.get(e.source).push(e.target);
+    indegree.set(e.target, indegree.get(e.target) + 1);
+  }
+
+  const level = new Map();
+  const remaining = new Map(indegree);
+  const placed = new Set();
+  let frontier = ids.filter((id) => (indegree.get(id) || 0) === 0);
+  frontier.forEach((id) => { level.set(id, 0); placed.add(id); });
+
+  while (frontier.length) {
+    const next = [];
+    for (const id of frontier) {
+      for (const d of outgoing.get(id)) {
+        level.set(d, Math.max(level.get(d) ?? 0, level.get(id) + 1));
+        remaining.set(d, remaining.get(d) - 1);
+        if (remaining.get(d) === 0 && !placed.has(d)) {
+          placed.add(d);
+          next.push(d);
+        }
+      }
+    }
+    frontier = next;
+  }
+  // Cycle or a node whose only incoming edges point back into one — put
+  // it at column 0 rather than dropping it silently.
+  for (const id of ids) if (!placed.has(id)) level.set(id, 0);
+
+  const columns = [];
+  for (const n of nodes) {
+    const lvl = level.get(n.id) || 0;
+    (columns[lvl] || (columns[lvl] = [])).push(n.id);
+  }
+  return columns;
+}
+
+// Second line inside a lineage node card: whatever tells the viewer the
+// most about that specific node without opening it — a status badge for
+// the things that carry framework state (TrainingRun, ModelVersion,
+// ServingInstance), a plain count for DatasetVersion, nothing for the
+// identity-only nodes (Dataset, Model) whose label already says it all.
+function lineageNodeMeta(n) {
+  const a = n.attributes || {};
+  if (n.type === "TrainingRun" && a.status) return statusBadge(a.status);
+  if (n.type === "ModelVersion" && a.state) return statusBadge(a.state);
+  if (n.type === "ServingInstance") {
+    return el("span", { class: `badge ${a.is_active ? "success" : "cancelled"}` },
+      a.is_active ? "active" : "inactive");
+  }
+  if (n.type === "DatasetVersion" && a.row_count != null) {
+    return el("span", { class: "faint" }, `${fmt.num(a.row_count)} rows`);
+  }
+  return null;
+}
+
+// The lineage chain's six node types read as four *families* — dataset
+// identity, execution, model identity, deployment — and colouring +
+// iconing by family (rather than one hue per type) is what actually
+// makes a branchy graph scannable: DatasetVersion sits right next to
+// Dataset in the chain, so giving it the same green says "still the
+// dataset thread" at a glance, where a fifth unrelated hue would just
+// be one more colour to learn. Every lookup here is total (an unknown
+// type falls through to "task"/grey) so a graph never renders a blank
+// icon.
+const LINEAGE_FAMILY = {
+  Dataset: "dataset", DatasetVersion: "dataset",
+  TrainingRun: "task",
+  Model: "model", ModelVersion: "model",
+  ServingInstance: "serving",
+};
+
+// Minimal stroke icons (feather/lucide-style paths, currentColor) — one
+// visual family per lineage family, plus a distinct mark for the
+// "version" half of a family (a small tag/commit glyph) so Dataset vs
+// DatasetVersion and Model vs ModelVersion stay tell-apart-able without
+// spending a second hue on it.
+const LINEAGE_ICON_PATHS = {
+  Dataset: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
+  DatasetVersion: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><circle cx="18.5" cy="17.5" r="3.6" fill="var(--surface)" stroke-width="1.6"/><path d="M17.1 17.5l1 1 1.8-2" stroke-width="1.6"/>',
+  TrainingRun: '<polyline points="3 12 8 12 10 18 14 6 16 12 21 12"/>',
+  Model: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/>',
+  ModelVersion: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/><circle cx="18.5" cy="17.5" r="3.6" fill="var(--surface)" stroke-width="1.6"/><path d="M17.1 17.5l1 1 1.8-2" stroke-width="1.6"/>',
+  ServingInstance: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/>',
+};
+
+function lineageIcon(type, small) {
+  const size = small ? 12 : 15;
+  const span = el("span", { class: `icon-chip family-${LINEAGE_FAMILY[type] || "task"}${small ? " sm" : ""}` });
+  const svg = svgEl("svg", {
+    viewBox: "0 0 24 24", width: String(size), height: String(size),
+    fill: "none", stroke: "currentColor", "stroke-width": "2",
+    "stroke-linecap": "round", "stroke-linejoin": "round",
+  });
+  // svgEl() has no innerHTML shortcut (only el() does, for plain HTML) —
+  // set it directly. Every path/circle above is a fixed literal from
+  // LINEAGE_ICON_PATHS, never node-supplied data, so there's nothing
+  // here an API response could inject.
+  svg.innerHTML = LINEAGE_ICON_PATHS[type] || LINEAGE_ICON_PATHS.TrainingRun;
+  span.appendChild(svg);
+  return span;
+}
+
+// The node-link graph itself: positions come straight from
+// (column, row) on a fixed grid via lineageLevels(), same approach as
+// renderDagGraph, with one SVG overlay drawing an arrowed, labelled
+// curve per edge. `rootId` gets a highlighted ring so a chain that
+// fans out in both directions (a training run reading several dataset
+// versions and feeding several model versions) still shows where the
+// walk started. Returns `{ el, width, height, positions }` — the panel
+// wrapper needs the raw geometry too, to draw the minimap in the same
+// coordinate space without recomputing the layout a second time.
+function renderLineageGraph(nodes, edges, rootId) {
+  // COL_W is double the node width plus a healthy gap (was ~1.2x) — the
+  // label-collision fixes above still left column gaps tight enough
+  // that a fan-in/fan-out group's curves stayed visually bunched right
+  // up against the node edges they left/entered, per user report on
+  // model-version=5's 3-way fan-in. Doubling the horizontal gap between
+  // columns gives every curve (and its label) real room to separate
+  // before the next node's edge starts.
+  const COL_W = 496, ROW_H = 112, NODE_W = 208, NODE_H = 64, PAD = 12;
+  const levels = lineageLevels(nodes, edges);
+  const pos = new Map();
+  const colOf = new Map();
+  levels.forEach((col, ci) => {
+    col.forEach((id, ri) => { pos.set(id, { x: PAD + ci * COL_W, y: PAD + ri * ROW_H }); colOf.set(id, ci); });
+  });
+  const maxRows = Math.max(1, ...levels.map((c) => c.length));
+  const width = PAD * 2 + Math.max(0, levels.length - 1) * COL_W + NODE_W;
+  const height = PAD * 2 + (maxRows - 1) * ROW_H + NODE_H;
+
+  const svg = svgEl("svg", {
+    style: `position:absolute;inset:0;width:${width}px;height:${height}px`,
+    viewBox: `0 0 ${width} ${height}`,
+  },
+    svgEl("defs", {},
+      svgEl("marker", {
+        id: "lineage-arrow", viewBox: "0 0 8 8", refX: "7", refY: "4",
+        markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse",
+      }, svgEl("path", { d: "M0,0 L8,4 L0,8 z", class: "lineage-edge-arrow" }))));
+
+  const validEdges = edges.filter((e) => pos.has(e.source) && pos.has(e.target));
+  for (const e of validEdges) {
+    const from = pos.get(e.source), to = pos.get(e.target);
+    const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+    const x2 = to.x, y2 = to.y + NODE_H / 2;
+    const midX = (x1 + x2) / 2;
+    svg.appendChild(svgEl("path", {
+      class: "lineage-edge", d: `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`,
+      fill: "none", "marker-end": "url(#lineage-arrow)",
+    }));
+  }
+
+  // Labels, drawn in a second pass and in two stages:
+  //
+  // 1. Every edge between the same pair of columns shares one curve
+  //    shape (both control points sit on that gap's centre line), so at
+  //    the curve's true midpoint — where a single-pass version would
+  //    always place the label — a fan of 3+ edges between the same two
+  //    columns (exactly what dataset-version=5's TrainingRun/
+  //    ModelVersion fan produces) piles every label into the same few
+  //    pixels. Grouping by column-pair and spreading each group across
+  //    a range of t instead of pinning all of them to t=0.5 moves the
+  //    point *along* the bezier (De Casteljau), which shifts x as well
+  //    as y — labels drift toward whichever end of the curve their row
+  //    has more separation, rather than collapsing at dead centre.
+  // 2. That still leaves the rarer cross-group case — an edge from a
+  //    different column pair whose t-shifted point happens to land on
+  //    top of someone else's (a long Model->ModelVersion "has version"
+  //    edge crossing paths with a short "trained with" one, say) — so
+  //    every placed label is checked against every earlier one by
+  //    simple box overlap and nudged vertically until clear. An opaque
+  //    pill behind the text (not just a stroke halo) keeps whatever
+  //    overlap survives both passes from reading as a smear.
+  const groups = new Map();
+  for (const e of validEdges) {
+    const key = `${colOf.get(e.source)}>${colOf.get(e.target)}`;
+    (groups.get(key) || groups.set(key, []).get(key)).push(e);
+  }
+  const labels = [];
+  for (const group of groups.values()) {
+    const n = group.length;
+    group.forEach((e, i) => {
+      const from = pos.get(e.source), to = pos.get(e.target);
+      const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
+      const x2 = to.x, y2 = to.y + NODE_H / 2;
+      const midX = (x1 + x2) / 2;
+      const t = n === 1 ? 0.5 : 0.3 + (0.4 * i) / (n - 1);
+      const mt = 1 - t;
+      const x = mt ** 3 * x1 + 3 * mt * mt * t * midX + 3 * mt * t * t * midX + t ** 3 * x2;
+      const y = mt ** 3 * y1 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t ** 3 * y2;
+      const text = e.type.replace(/_/g, " ");
+      labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
+    });
+  }
+  const placedBoxes = [];
+  for (const lb of labels) {
+    let y = lb.y, dir = 1, step = 0, box;
+    for (let tries = 0; tries < 14; tries++) {
+      box = { left: lb.x - lb.w / 2 - 4, right: lb.x + lb.w / 2 + 4, top: y - lb.h - 1, bottom: y + 1 };
+      const hit = placedBoxes.some((p) =>
+        box.left < p.right && box.right > p.left && box.top < p.bottom && box.bottom > p.top);
+      if (!hit) break;
+      step += 8;
+      y = lb.y + dir * step;
+      dir *= -1;
+    }
+    // Registered even on the rare exhausted-retries case (a box still
+    // overlapping something) — later labels nudging away from a known
+    // occupied spot beats them not knowing about it at all.
+    placedBoxes.push(box);
+    svg.appendChild(svgEl("rect", {
+      class: "lineage-edge-label-bg",
+      x: String(lb.x - lb.w / 2), y: String(y - lb.h - 1), width: String(lb.w), height: String(lb.h), rx: "3",
+    }));
+    svg.appendChild(svgEl("text", {
+      class: "lineage-edge-label", x: String(lb.x), y: String(y - 5), "text-anchor": "middle",
+    }, lb.text));
+  }
+
+  const nodeEls = nodes.map((n) => {
+    const p = pos.get(n.id);
+    if (!p) return null;
+    const meta = lineageNodeMeta(n);
+    return el("div", {
+      class: `lineage-node ${n.type}${n.id === rootId ? " root" : ""}`,
+      style: `position:absolute;left:${p.x}px;top:${p.y}px;width:${NODE_W}px`,
+      title: n.label || n.id,
+    },
+      lineageIcon(n.type),
+      el("div", { class: "text" },
+        el("div", { class: "type" }, n.type.replace(/([a-z])([A-Z])/g, "$1 $2")),
+        el("div", { class: "label" }, n.label || n.id),
+        meta && el("div", { class: "meta" }, meta)));
+  }).filter(Boolean);
+
+  return { el: el("div",
+    { class: "lineage-graph", style: `position:relative;width:${width}px;height:${height}px` },
+    svg, ...nodeEls), width, height, pos, nodeW: NODE_W, nodeH: NODE_H };
+}
+
+// Colour key above the graph: one icon chip per node type actually
+// present, in chain order, using the exact same family icon/colour the
+// nodes themselves use so the legend is a real key and not a second
+// vocabulary to cross-reference.
+function renderLineageLegend(nodes) {
+  const order = ["Dataset", "DatasetVersion", "TrainingRun", "Model", "ModelVersion", "ServingInstance"];
+  const present = order.filter((t) => nodes.some((n) => n.type === t));
+  return el("div", { class: "legend lineage-legend" },
+    el("span", { class: "legend-label" }, "Legend"),
+    ...present.map((t) => el("span", { class: "legend-item" },
+      lineageIcon(t, true), t.replace(/([a-z])([A-Z])/g, "$1 $2"))));
+}
+
+// A small overview in the corner of the viewport: every node scaled
+// down to a coloured dot in the same relative layout as the full graph,
+// plus a rectangle tracking the viewport's current scroll/zoom window.
+// Clicking anywhere on it re-centres the main viewport there — the
+// point of a minimap on a graph wide enough to need one is jumping
+// around without scrolling blind.
+function renderLineageMinimap(nodes, graph, viewport) {
+  const MW = 168, MH = 104, PAD = 6;
+  const scale = Math.min((MW - PAD * 2) / graph.width, (MH - PAD * 2) / graph.height);
+  const ox = (MW - graph.width * scale) / 2, oy = (MH - graph.height * scale) / 2;
+
+  const dots = nodes.map((n) => {
+    const p = graph.pos.get(n.id);
+    if (!p) return null;
+    return svgEl("rect", {
+      x: String(ox + p.x * scale), y: String(oy + p.y * scale),
+      width: String(Math.max(3, graph.nodeW * scale)), height: String(Math.max(3, graph.nodeH * scale)),
+      rx: "1.5", class: `lineage-minimap-node family-${LINEAGE_FAMILY[n.type] || "task"}`,
+    });
+  }).filter(Boolean);
+
+  const svg = svgEl("svg", { viewBox: `0 0 ${MW} ${MH}`, width: String(MW), height: String(MH) }, ...dots);
+  const viewRect = el("div", { class: "lineage-minimap-viewport" });
+  const mini = el("div", { class: "lineage-minimap" }, svg, viewRect);
+
+  function syncRect() {
+    const s = graph.el.style.transform.match(/scale\(([\d.]+)\)/);
+    const zoom = s ? +s[1] : 1;
+    const vw = Math.min(graph.width, viewport.clientWidth / zoom);
+    const vh = Math.min(graph.height, viewport.clientHeight / zoom);
+    const vx = viewport.scrollLeft / zoom;
+    const vy = viewport.scrollTop / zoom;
+    viewRect.style.left = `${ox + vx * scale}px`;
+    viewRect.style.top = `${oy + vy * scale}px`;
+    viewRect.style.width = `${Math.max(6, vw * scale)}px`;
+    viewRect.style.height = `${Math.max(6, vh * scale)}px`;
+  }
+  viewport.addEventListener("scroll", syncRect);
+  new ResizeObserver(syncRect).observe(viewport);
+  syncRect();
+
+  mini.addEventListener("click", (e) => {
+    const rect = mini.getBoundingClientRect();
+    const mx = (e.clientX - rect.left - ox) / scale;
+    const my = (e.clientY - rect.top - oy) / scale;
+    const s = graph.el.style.transform.match(/scale\(([\d.]+)\)/);
+    const zoom = s ? +s[1] : 1;
+    viewport.scrollTo({
+      left: Math.max(0, mx * zoom - viewport.clientWidth / 2),
+      top: Math.max(0, my * zoom - viewport.clientHeight / 2),
+      behavior: "smooth",
+    });
+  });
+
+  return { el: mini, syncRect };
+}
+
+// Graph + icon legend + a floating zoom/fullscreen cluster + minimap,
+// all inside one card — the same pieces the graph screenshots that
+// prompted this design carry, built out of Gateflow's own tokens rather
+// than copied wholesale. Zoom scales the graph via CSS transform (cheap,
+// keeps the SVG edges in sync for free); panning is native scroll on
+// the bordered, dot-grid viewport; the zoom/fullscreen controls float
+// over that viewport's corner (outside the scrolling element) so they
+// stay put as you pan, the way a map's own zoom controls do.
+function renderLineageGraphPanel(nodes, edges, rootId) {
+  const graph = renderLineageGraph(nodes, edges, rootId);
+  const viewport = el("div", { class: "lineage-graph-viewport" }, graph.el);
+  const minimap = renderLineageMinimap(nodes, graph, viewport);
+
+  const ZOOM_MIN = 0.15, ZOOM_MAX = 1.6;
+  let scale = 1;
+  const applyScale = () => { graph.el.style.transform = `scale(${scale})`; minimap.syncRect(); };
+  // Scales down (never up past 1:1) to whatever fits the viewport's
+  // current size, width and height both — the number a "fit to view"
+  // control computes everywhere, and also what should greet someone
+  // landing on the page rather than a 1:1 view of just its top-left
+  // corner. Columns are double-spaced now (see COL_W above), so most
+  // real graphs are wider than the page; this is what makes that
+  // still open showing the whole shape.
+  const fitToView = () => {
+    const fit = Math.min(1,
+      (viewport.clientWidth - 16) / graph.width,
+      (viewport.clientHeight - 16) / graph.height);
+    scale = Math.max(ZOOM_MIN, +fit.toFixed(2));
+    applyScale();
+  };
+  const zoomOut = el("button", {
+    class: "btn", type: "button", "aria-label": "Zoom out",
+    onclick: () => { scale = Math.max(ZOOM_MIN, +(scale - 0.15).toFixed(2)); applyScale(); },
+  }, "−");
+  const zoomIn = el("button", {
+    class: "btn", type: "button", "aria-label": "Zoom in",
+    onclick: () => { scale = Math.min(ZOOM_MAX, +(scale + 0.15).toFixed(2)); applyScale(); },
+  }, "+");
+  const fitBtn = el("button", {
+    class: "btn", type: "button", "aria-label": "Fit to view", title: "Fit to view",
+    onclick: fitToView,
+  }, "⤢");
+  const fullscreen = el("button", {
+    class: "btn", type: "button", "aria-label": "Toggle fullscreen",
+    onclick: () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else viewport.requestFullscreen?.().catch(() => {});
+    },
+  }, "⛶");
+  const controls = el("div", { class: "lineage-zoom-controls" }, zoomIn, fitBtn, zoomOut, fullscreen);
+
+  // Deferred a frame: clientWidth/clientHeight read 0 until the panel
+  // this function returns is actually attached to the document, which
+  // happens synchronously in the caller right after this returns — by
+  // the next frame it's laid out and these are real numbers.
+  requestAnimationFrame(fitToView);
+
+  return el("div", { class: "card lineage-graph-card" },
+    renderLineageLegend(nodes),
+    el("div", { class: "lineage-canvas" }, viewport, controls, minimap.el));
+}
+
 async function initLineage() {
   const params = new URLSearchParams(location.search);
   const kind = params.get("kind");
@@ -2393,31 +2828,24 @@ async function initLineage() {
   }
   try {
     const g = await api(`/lineage/${kind}/${id}`);
+    if (!g.nodes.length) {
+      out.replaceChildren(banner("No lineage found for this starting point."));
+      return;
+    }
     const byId = new Map(g.nodes.map((n) => [n.id, n]));
-    const order = ["Dataset", "DatasetVersion", "TrainingRun", "ModelVersion", "Model", "ServingInstance"];
-    const chain = g.nodes.slice().sort(
-      (a, b) => order.indexOf(a.type) - order.indexOf(b.type));
-
-    const chainEl = el("div", { class: "lineage-chain" });
-    chain.forEach((n, i) => {
-      if (i) chainEl.appendChild(el("div", { class: "lineage-arrow" }, "→"));
-      chainEl.appendChild(
-        el("div", { class: `lineage-node ${n.type}` },
-          el("div", { class: "type" }, n.type),
-          el("div", { class: "label" }, n.label || n.id)));
-    });
 
     out.replaceChildren(
-      el("div", { class: "card" }, chainEl),
-      el("h3", {}, `Edges (${g.edges.length})`),
-      el("div", { class: "table-wrap" },
-        el("table", {},
-          el("thead", {}, el("tr", {}, el("th", {}, "From"), el("th", {}, "Relation"), el("th", {}, "To"))),
-          el("tbody", {}, ...g.edges.map((e) =>
-            el("tr", {},
-              el("td", { class: "mono" }, byId.get(e.source)?.label || e.source),
-              el("td", { class: "muted" }, e.type),
-              el("td", { class: "mono" }, byId.get(e.target)?.label || e.target)))))));
+      renderLineageGraphPanel(g.nodes, g.edges, g.root_id),
+      el("details", { class: "lineage-edges-detail" },
+        el("summary", {}, `Edges (${g.edges.length})`),
+        el("div", { class: "table-wrap", style: "margin-top:10px" },
+          el("table", {},
+            el("thead", {}, el("tr", {}, el("th", {}, "From"), el("th", {}, "Relation"), el("th", {}, "To"))),
+            el("tbody", {}, ...g.edges.map((e) =>
+              el("tr", {},
+                el("td", { class: "mono" }, byId.get(e.source)?.label || e.source),
+                el("td", { class: "muted" }, e.type),
+                el("td", { class: "mono" }, byId.get(e.target)?.label || e.target))))))));
   } catch (e) {
     setError(out, e);
   }

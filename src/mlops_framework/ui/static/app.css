@@ -1031,8 +1031,15 @@ button.primary:disabled, .btn.primary:disabled {
   letter-spacing: .03em;
 }
 
-details > summary { cursor: pointer; user-select: none; }
+/* `<summary>` renders as display:list-item with its own default
+ * disclosure marker; which pseudo-selector controls it depends on the
+ * browser/version, so both are cleared and a single custom ▸ below
+ * stands in. ::-webkit-details-marker alone (Safari's older pseudo)
+ * left modern Chromium's own list-item marker showing *underneath* it
+ * — the "hai hình tam giác" bug: two markers stacked instead of one. */
+details > summary { cursor: pointer; user-select: none; list-style: none; }
 details > summary::-webkit-details-marker { display: none; }
+details > summary::marker { display: none; content: ""; }
 details > summary:before {
   content: "▸";
   display: inline-block;
@@ -1113,13 +1120,6 @@ details[open] > summary:before { transform: rotate(90deg); }
 /* 12. Lineage                                                         */
 /* ================================================================== */
 
-.lineage-chain {
-  display: flex;
-  align-items: stretch;
-  flex-wrap: wrap;
-  gap: 4px 0;
-}
-
 .lineage-node {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1146,14 +1146,6 @@ details[open] > summary:before { transform: rotate(90deg); }
 .lineage-node.ServingInstance { border-left: 3px solid var(--ok); }
 .lineage-node.Task { border-left: 3px solid var(--text-muted); }
 
-.lineage-arrow {
-  display: flex;
-  align-items: center;
-  color: var(--text-faint);
-  padding: 0 12px;
-  font-size: 18px;
-}
-
 /* Task nodes coloured by a run's state (Pipeline detail's Graph View) —
    same state vocabulary statusKind() maps everything else in the
    console to, so a node's colour always means the same thing a badge
@@ -1163,6 +1155,192 @@ details[open] > summary:before { transform: rotate(90deg); }
 .lineage-node.Task.state-running  { border-left-color: var(--run); }
 .lineage-node.Task.state-pending  { border-left-color: var(--warn); }
 .lineage-node.Task.state-cancelled{ border-left-color: var(--idle); }
+
+/* Lineage graph (Lineage page): the same node-link idea as the DAG graph
+ * below, generalised to the lineage chain's own node types instead of
+ * Task only, and styled as a self-contained canvas — dot-grid viewport,
+ * icon-chip nodes, a floating zoom/fullscreen cluster and a minimap —
+ * rather than the plain bordered card the DAG graph uses, since a
+ * lineage graph branches in both directions and is meant to be panned
+ * and explored like a map, not just read top-to-bottom. Edge styling
+ * reuses `.dag-edge`'s colour so both graphs still read as the same
+ * family; this one adds arrowheads and a relation label per edge, which
+ * the DAG view doesn't need (adjacency alone answers "what runs after
+ * what" — lineage needs the noun: reads, produced, served_by).
+ *
+ * Four families, four hues (LINEAGE_FAMILY in app.js): dataset identity
+ * (Dataset + DatasetVersion) green, execution (TrainingRun) blue, model
+ * identity (Model + ModelVersion) amber, deployment (ServingInstance)
+ * slate — one colour to learn per family rather than one per type, with
+ * the "…Version" half of a family told apart by its icon's small tag
+ * mark instead of a second hue. Same four classes drive the node icon
+ * chip, the legend chip and the minimap dot, so all three stay in sync
+ * by construction. */
+.lineage-graph-card { overflow: visible; padding-bottom: 16px; }
+
+.lineage-legend {
+  margin: 0 0 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.lineage-legend .legend-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--text-faint);
+  margin-right: 4px;
+}
+.lineage-legend .legend-item { gap: 8px; }
+
+.icon-chip {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+.icon-chip.sm { width: 20px; height: 20px; border-radius: 6px; }
+.icon-chip.family-dataset { color: var(--series-3); background: color-mix(in srgb, var(--series-3) 16%, var(--surface)); }
+.icon-chip.family-task { color: var(--run); background: var(--run-bg); }
+.icon-chip.family-model { color: var(--series-4); background: color-mix(in srgb, var(--series-4) 20%, var(--surface)); }
+.icon-chip.family-serving { color: var(--idle); background: var(--idle-bg); }
+
+.lineage-canvas { position: relative; }
+
+.lineage-graph-viewport {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background-color: var(--surface-2);
+  background-image: radial-gradient(var(--border-strong) 1px, transparent 1.5px);
+  background-size: 22px 22px;
+  /* min-height keeps a two-node graph from rendering as a cramped
+   * postage stamp; max-height is the ceiling renderLineageGraphPanel's
+   * fitToView() scales a branchy graph down to fit inside, on load and
+   * on the fit-to-view button. */
+  min-height: 340px;
+  max-height: 620px;
+  padding: 24px;
+}
+.lineage-graph-viewport:fullscreen { max-height: 100vh; background-color: var(--surface-2); }
+
+.lineage-graph { transition: transform .12s ease; transform-origin: 0 0; }
+
+/* Inside the lineage canvas only — plain hairline border (colour now
+ * lives in the icon chip, not the card edge) and a horizontal layout:
+ * icon chip on the left, type/label/meta stacked to its right. Scoped
+ * under .lineage-graph so the Pipeline detail DAG view's plain
+ * .lineage-node.Task boxes (rendered by renderDagGraph) are untouched. */
+.lineage-graph .lineage-node {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+/* The base per-type rules a few lines up (.lineage-node.Dataset etc.)
+ * give the DAG-graph's plain nodes a 3px colour bar; same specificity
+ * (two classes) as this override, so pin the win with a third class
+ * rather than relying on this block staying below them in the file. */
+.lineage-graph .lineage-node.Dataset,
+.lineage-graph .lineage-node.DatasetVersion,
+.lineage-graph .lineage-node.TrainingRun,
+.lineage-graph .lineage-node.Model,
+.lineage-graph .lineage-node.ModelVersion,
+.lineage-graph .lineage-node.ServingInstance {
+  border-left-width: 1px;
+  border-left-color: var(--border);
+}
+.lineage-graph .lineage-node .text { min-width: 0; }
+.lineage-graph .lineage-node .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lineage-graph .lineage-node.root {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.lineage-graph .lineage-node .meta { display: block; margin-top: 6px; }
+
+.lineage-edge { stroke: var(--border-strong); stroke-width: 1.5; }
+.lineage-edge-arrow { fill: var(--border-strong); }
+/* Opaque pill behind each edge label (not just a stroke halo) — app.js
+ * spreads labels along their curve when several edges share a column
+ * pair, but a busy fan can still leave two close together, and a solid
+ * background is what keeps that case reading as two separate tags
+ * instead of a smear of overlapping text and crossed lines. */
+.lineage-edge-label-bg { fill: var(--surface-2); stroke: var(--border); stroke-width: 1; }
+.lineage-edge-label {
+  fill: var(--text-muted);
+  font-size: 10px;
+  font-family: var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+/* Floating zoom/fullscreen cluster — pinned to the viewport's corner
+ * (outside the scrolling element, so it never scrolls away) rather than
+ * a toolbar row above the canvas. */
+.lineage-zoom-controls {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.lineage-zoom-controls .btn {
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 0;
+  width: 32px;
+  justify-content: center;
+  background: var(--surface);
+}
+.lineage-zoom-controls .btn:last-child { border-bottom: none; }
+
+/* Minimap — pinned to the opposite corner, same reasoning. Node dots and
+ * the viewport rectangle share the graph's own (0,0)-origin coordinate
+ * space, scaled down by renderLineageMinimap(); app.js keeps the
+ * rectangle in sync with scroll/resize/zoom. */
+.lineage-minimap {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 3;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  line-height: 0;
+}
+.lineage-minimap-node.family-dataset { fill: var(--series-3); }
+.lineage-minimap-node.family-task { fill: var(--run); }
+.lineage-minimap-node.family-model { fill: var(--series-4); }
+.lineage-minimap-node.family-serving { fill: var(--idle); }
+.lineage-minimap-viewport {
+  position: absolute;
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+  opacity: .8;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.lineage-edges-detail { margin-top: 18px; }
+.lineage-edges-detail > summary { cursor: pointer; font-weight: 600; color: var(--text-muted); }
 
 /* DAG graph (Pipeline detail): nodes are .lineage-node.Task positioned
    absolutely by app.js; this is just the positioning context and the
