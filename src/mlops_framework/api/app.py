@@ -23,6 +23,7 @@ from mlops_framework.api.routers import (
     dashboard,
     datasets,
     drift,
+    health,
     internal,
     lineage,
     mlflow_views,
@@ -69,6 +70,10 @@ def create_app(
         ),
         lifespan=_lifespan,
     )
+
+    # Probes first, and without the /api prefix — see health.py's module
+    # docstring on why they sit at the root and why there are two.
+    app.include_router(health.router)
 
     # API routers
     app.include_router(dashboard.router, prefix="/api", tags=["dashboard"])

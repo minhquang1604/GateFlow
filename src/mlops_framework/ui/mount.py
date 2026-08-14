@@ -350,7 +350,9 @@ def _sidebar(active: str) -> str:
 
     No trailing "External / API reference" section: the topnav's own
     "API" link already covers it, and duplicating it here just repeated
-    the same link twice on every page for no second purpose.
+    the same link twice on every page for no second purpose. That link
+    is load-bearing for this reasoning, so it has to stay in the topnav
+    — ``tests/api/test_ui.py::TestTopNav`` holds both halves together.
     """
     blocks: list[str] = []
     for section, items in _NAV:
@@ -414,6 +416,7 @@ def _document(title: str, active: str, fragment: str) -> str:
   <div class="topnav-spacer"></div>
 
   <nav class="topnav-util" aria-label="Utilities">
+    <a class="topnav-btn" href="/docs" target="_blank" rel="noopener">API</a>
     <a class="topnav-btn" href="https://github.com/minhquang1604/ML_Framework"
        target="_blank" rel="noopener" aria-label="View source on GitHub">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

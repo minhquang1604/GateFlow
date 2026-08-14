@@ -128,6 +128,21 @@ module "ssm" {
       special     = true
       description = "Initial Airflow admin user password."
     }
+    # Gates every write endpoint on the app — /api/internal/* (which the
+    # Airflow DAG calls back through) and the write half of
+    # /api/schedules. See src/mlops_framework/api/security.py. Generated
+    # rather than a variable so a real deployment never inherits the
+    # development value in .env.docker; the app and both Airflow
+    # containers read the same parameter below.
+    #
+    # special = false: the value travels as an HTTP header and is
+    # compared byte-for-byte, so there is nothing to gain from
+    # punctuation and something to lose if a shell ever interpolates it.
+    "console/write-token" = {
+      length      = 40
+      special     = false
+      description = "Shared secret for the app's write endpoints (X-Console-Token)."
+    }
   }
 }
 
@@ -339,6 +354,10 @@ module "ecs" {
         AIRFLOW__CORE__FERNET_KEY      = module.ssm.parameter_arns["airflow/fernet-key"]
         AIRFLOW__WEBSERVER__SECRET_KEY = module.ssm.parameter_arns["airflow/web-secret"]
         AIRFLOW_ADMIN_PASSWORD         = module.ssm.parameter_arns["airflow/admin-password"]
+        # dags/mlops_training_pipeline.py sends this as X-Console-Token
+        # on every /api/internal/* call (_internal_headers). Without it
+        # the DAG's first task gets a 401 and the run cannot report back.
+        CONSOLE_WRITE_TOKEN = module.ssm.parameter_arns["console/write-token"]
       }
       health_check_command = [
         "CMD-SHELL",
@@ -413,6 +432,9 @@ module "ecs" {
         POSTGRES_PASSWORD              = module.ssm.parameter_arns["db/password"]
         AIRFLOW__CORE__FERNET_KEY      = module.ssm.parameter_arns["airflow/fernet-key"]
         AIRFLOW__WEBSERVER__SECRET_KEY = module.ssm.parameter_arns["airflow/web-secret"]
+        # LocalExecutor runs the DAG's tasks as scheduler subprocesses,
+        # so this is the container that actually makes the calls.
+        CONSOLE_WRITE_TOKEN = module.ssm.parameter_arns["console/write-token"]
       }
     }
 
@@ -460,12 +482,18 @@ module "ecs" {
         AWS_DEFAULT_REGION      = var.aws_region
       }
       secrets = {
-        POSTGRES_PASSWORD = module.ssm.parameter_arns["db/password"]
-        AIRFLOW_PASSWORD  = module.ssm.parameter_arns["airflow/admin-password"]
+        POSTGRES_PASSWORD   = module.ssm.parameter_arns["db/password"]
+        AIRFLOW_PASSWORD    = module.ssm.parameter_arns["airflow/admin-password"]
+        CONSOLE_WRITE_TOKEN = module.ssm.parameter_arns["console/write-token"]
       }
+      # /ready, not / — the console shell at / is rendered from files on
+      # disk and never touches the database, so it answered 200 through
+      # an RDS outage and reported a container that could not serve a
+      # single domain request as healthy. /ready pings the database (see
+      # api/routers/health.py).
       health_check_command = [
         "CMD-SHELL",
-        "curl -fsS http://localhost:8000/ -o /dev/null",
+        "curl -fsS http://localhost:8000/ready -o /dev/null",
       ]
       health_check_start_period = 60
     }

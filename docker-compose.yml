@@ -275,6 +275,18 @@ services:
       CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-dev-console-token}
     ports:
       - "8000:8000"
+    # /ready, not /health: the app runs `alembic upgrade head` before
+    # uvicorn, so "the container is up" and "the app can answer a query"
+    # are minutes apart on a first boot. /ready pings the database, which
+    # is what a dependent service actually needs to be true. start_period
+    # covers the migration plus the mlflow import warm-up (see
+    # api/app.py's _warm_mlflow_import).
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -283,7 +295,7 @@ services:
       airflow-webserver:
         condition: service_healthy
       serving:
-        condition: service_started
+        condition: service_healthy
     networks:
       - mlops_network
 
@@ -308,6 +320,12 @@ services:
       AWS_SECRET_ACCESS_KEY: minioadmin
     ports:
       - "8001:8001"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     depends_on:
       postgres:
         condition: service_healthy
@@ -347,7 +365,9 @@ services:
       airflow-webserver:
         condition: service_healthy
       serving:
-        condition: service_started
+        condition: service_healthy
+      app:
+        condition: service_healthy
     networks:
       - mlops_network
 
