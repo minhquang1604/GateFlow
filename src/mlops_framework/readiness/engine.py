@@ -181,7 +181,15 @@ class ReadinessEngine:
         if isinstance(policy, dict):
             policy_obj = TrainingPolicy.from_dict(policy)
         elif policy is None:
-            policy_obj = TrainingPolicy()
+            # Deferred import: framework_settings.manager imports
+            # TrainingPolicy from this module, so importing it back at
+            # module level here would be circular. self._session is
+            # always present (constructor-mandatory).
+            from mlops_framework.framework_settings.manager import (
+                FrameworkSettingsManager,
+            )
+
+            policy_obj = FrameworkSettingsManager(self._session).get_training_policy()
         else:
             policy_obj = policy
 

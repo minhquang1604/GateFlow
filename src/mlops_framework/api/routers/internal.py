@@ -27,6 +27,7 @@ would push the retry logic into every caller.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -53,9 +54,9 @@ from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.events.publisher import RunBlockedEvent, TrainingFailedEvent
 from mlops_framework.events.store import GovernanceEventStore
+from mlops_framework.framework_settings.manager import FrameworkSettingsManager
 from mlops_framework.governance.promotion import (
     ModelPromotionPolicy,
-    PromotionConfig,
     PromotionContext,
 )
 from mlops_framework.model.manager import ModelManager
@@ -196,13 +197,19 @@ def promote_model(
         .limit(1)
     ).scalars().first()
 
+    # Persisted Settings is the base; this endpoint's own min_f1/flags
+    # are layered on top — see scheduling/runner.py's _fire() for the
+    # identical pattern and its backward-compat note (empty
+    # framework_settings ⇒ this is exactly today's PromotionConfig(...)).
+    promotion_config = dataclasses.replace(
+        FrameworkSettingsManager(db).get_promotion_config(),
+        min_metrics={"f1": request.min_f1},
+        must_beat_production=False,
+        allow_cold_start=True,
+    )
     decision = ModelPromotionPolicy().evaluate(
         context=PromotionContext(candidate=candidate, production=production),
-        config=PromotionConfig(
-            min_metrics={"f1": request.min_f1},
-            must_beat_production=False,
-            allow_cold_start=True,
-        ),
+        config=promotion_config,
     )
     if not decision.approved:
         mm.transition_state(candidate.id, ModelState.REJECTED)
@@ -408,7 +415,17 @@ def evaluate_readiness(
     except Exception as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    policy = TrainingPolicy.from_dict(request.policy) if request.policy else TrainingPolicy()
+    # Persisted Settings is the base; a shallow merge (not a deep one —
+    # request.policy's own dict-valued fields, e.g. dtypes, replace the
+    # base's wholesale rather than merging key-by-key) layers the
+    # caller's request on top. Empty framework_settings + no
+    # request.policy ⇒ exactly today's bare TrainingPolicy().
+    base = FrameworkSettingsManager(db).get_training_policy()
+    policy = (
+        TrainingPolicy.from_dict({**base.to_dict(), **request.policy})
+        if request.policy
+        else base
+    )
     result = ReadinessEngine(db).evaluate(version, policy=policy)
     if not result.is_ready:
         GovernanceEventStore(db).record(

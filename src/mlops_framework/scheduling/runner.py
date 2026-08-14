@@ -33,6 +33,7 @@ deliberate change, not a gap being worked around.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,8 +43,7 @@ from sqlalchemy.orm import Session
 
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.dataset.manager import DatasetManager
-from mlops_framework.governance.eligibility import EligibilityConfig
-from mlops_framework.governance.promotion import PromotionConfig
+from mlops_framework.framework_settings.manager import FrameworkSettingsManager
 from mlops_framework.orchestration.local import LocalDockerOrchestrator
 from mlops_framework.scheduling import cron
 from mlops_framework.scheduling.manager import ScheduleManager
@@ -135,16 +135,27 @@ def _fire(session: Session, schedule: Any, mlflow_tracking_uri: str | None, now:
     workflow = RetrainingWorkflow(
         session, training_service=service, actor=f"schedule:{schedule.id}"
     )
+    # Persisted Settings (see FrameworkSettingsManager) is the base;
+    # schedule.min_f1 and the two flags below are this call site's own
+    # per-schedule overrides layered on top — identical to today's
+    # bare-default behaviour for anyone who has never customized
+    # Settings (an empty framework_settings table makes
+    # get_eligibility_config()/get_promotion_config() return exactly
+    # EligibilityConfig()/PromotionConfig()).
+    settings_mgr = FrameworkSettingsManager(session)
+    eligibility_config = settings_mgr.get_eligibility_config()
+    promotion_config = dataclasses.replace(
+        settings_mgr.get_promotion_config(),
+        min_metrics={"f1": schedule.min_f1},
+        must_beat_production=False,
+        allow_cold_start=True,
+    )
     try:
         outcome = workflow.run(
             dataset_version=version,
             model=model,
-            eligibility_config=EligibilityConfig(),
-            promotion_config=PromotionConfig(
-                min_metrics={"f1": schedule.min_f1},
-                must_beat_production=False,
-                allow_cold_start=True,
-            ),
+            eligibility_config=eligibility_config,
+            promotion_config=promotion_config,
             pipeline_id=schedule.pipeline_id,
             force=True,  # the cron IS the eligibility decision
         )

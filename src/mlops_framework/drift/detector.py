@@ -58,6 +58,23 @@ class DriftConfig:
     min_samples: int = 30
     methods: list[str] = field(default_factory=lambda: ["ks", "chi2"])
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> DriftConfig:
+        if data is None:
+            return cls()
+        return cls(
+            threshold=float(data.get("threshold", 0.05)),
+            min_samples=int(data.get("min_samples", 30)),
+            methods=list(data.get("methods") or ["ks", "chi2"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "threshold": self.threshold,
+            "min_samples": self.min_samples,
+            "methods": list(self.methods),
+        }
+
 
 @dataclass
 class FeatureDrift:
@@ -347,6 +364,23 @@ class DriftService:
         mappings. The framework does not load data itself; the
         caller does.
         """
+        if config is None:
+            # Deferred import: framework_settings.manager imports
+            # DriftConfig from this module, so importing it back at
+            # module level here would be circular. Resolved here
+            # rather than inside ScipyDriftDetector.detect() (whose own
+            # ``config or DriftConfig()`` fallback stays as a bare
+            # default for direct/pluggable-detector callers that
+            # bypass this service) — DriftDetector is meant to be
+            # swappable (see its own docstring), so "read the
+            # framework's persisted default" belongs in the framework's
+            # own orchestration layer around it, not baked into one
+            # specific implementation.
+            from mlops_framework.framework_settings.manager import (
+                FrameworkSettingsManager,
+            )
+
+            config = FrameworkSettingsManager(self._session).get_drift_config()
         result = self._detector.detect(reference_data, current_data, config)
         outcome = (
             DriftOutcome.DRIFT_DETECTED

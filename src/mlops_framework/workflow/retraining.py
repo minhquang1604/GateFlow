@@ -161,7 +161,13 @@ class RetrainingWorkflow:
         self._eligibility = eligibility_policy or TrainingEligibilityPolicy(
             session
         )
-        self._promotion = promotion_policy or ModelPromotionPolicy()
+        # session=session, not a bare ModelPromotionPolicy() — so a
+        # workflow run with no explicit promotion_config (see run()
+        # below) resolves its default from persisted Settings, same as
+        # self._readiness/self._eligibility already do via their own
+        # session-bearing constructors. A caller-supplied
+        # promotion_policy is left exactly as they built it.
+        self._promotion = promotion_policy or ModelPromotionPolicy(session=session)
         self._drift_service = drift_service
         self._event_publisher = event_publisher
         # Separate session for persisting events (may be the same as

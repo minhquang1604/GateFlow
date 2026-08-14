@@ -20,6 +20,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from mlops_framework.database.models.model_version import (
     ModelVersion,
 )
@@ -99,21 +101,41 @@ class PromotionDecision:
 class ModelPromotionPolicy:
     """Reusable, explainable promotion policy.
 
-    The policy is stateless. It does not mutate the database; the
-    caller (e.g. the :class:`ModelManager` or a workflow) is
-    responsible for actually changing the model state.
+    The policy does not mutate the database; the caller (e.g. the
+    :class:`ModelManager` or a workflow) is responsible for actually
+    changing the model state. ``session`` is optional and only used as
+    a fallback: when a caller evaluates with ``config=None`` *and* a
+    session was supplied at construction, the policy resolves its
+    default from persisted Settings (see
+    ``framework_settings.manager.FrameworkSettingsManager``) instead of
+    the dataclass's own bare default — this is what makes
+    ``ModelPromotionPolicy()`` (no session, the shape every existing
+    caller and test already uses) behave exactly as before.
     """
+
+    def __init__(self, session: Session | None = None) -> None:
+        self._session = session
 
     def evaluate(
         self,
         context: PromotionContext,
         config: PromotionConfig | dict[str, Any] | None = None,
     ) -> PromotionDecision:
-        cfg = (
-            config
-            if isinstance(config, PromotionConfig)
-            else PromotionConfig.from_dict(config)
-        )
+        if isinstance(config, PromotionConfig):
+            cfg = config
+        elif config is not None:
+            cfg = PromotionConfig.from_dict(config)
+        elif self._session is not None:
+            # Deferred import: framework_settings.manager imports
+            # PromotionConfig from this module, so importing it back at
+            # module level here would be circular.
+            from mlops_framework.framework_settings.manager import (
+                FrameworkSettingsManager,
+            )
+
+            cfg = FrameworkSettingsManager(self._session).get_promotion_config()
+        else:
+            cfg = PromotionConfig()
 
         reasons: list[str] = []
         details: dict[str, Any] = {

@@ -36,6 +36,7 @@ from mlops_framework.database.models.audit_log import AuditLog
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.drift_evaluation import DriftEvaluation
+from mlops_framework.database.models.framework_setting import FrameworkSetting
 from mlops_framework.database.models.governance_event import GovernanceEvent
 from mlops_framework.database.models.model import Model
 from mlops_framework.database.models.model_promotion_event import ModelPromotionEvent

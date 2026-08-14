@@ -100,7 +100,25 @@ class EligibilityConfig:
     def from_dict(cls, data: dict[str, Any] | None) -> EligibilityConfig:
         if data is None:
             return cls()
-        return cls(**data)
+        return cls(
+            require_ready=bool(data.get("require_ready", True)),
+            min_new_rows=data.get("min_new_rows"),
+            require_drift_to_retrain=data.get("require_drift_to_retrain"),
+            block_when_drift_detected=data.get("block_when_drift_detected"),
+            cooldown_hours=data.get("cooldown_hours"),
+            block_when_production_metrics_meet=(
+                dict(data["block_when_production_metrics_meet"])
+                if data.get("block_when_production_metrics_meet") is not None
+                else None
+            ),
+            require_production_below=(
+                dict(data["require_production_below"])
+                if data.get("require_production_below") is not None
+                else None
+            ),
+            require_existing_production=data.get("require_existing_production"),
+            block_when_production_exists=data.get("block_when_production_exists"),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -220,7 +238,16 @@ class TrainingEligibilityPolicy:
         if isinstance(config, dict):
             cfg = EligibilityConfig.from_dict(config)
         elif config is None:
-            cfg = EligibilityConfig()
+            # Deferred import: framework_settings.manager imports
+            # EligibilityConfig from this module, so importing it back
+            # at module level here would be circular. self._session is
+            # always present (constructor-mandatory), unlike
+            # ModelPromotionPolicy's optional one.
+            from mlops_framework.framework_settings.manager import (
+                FrameworkSettingsManager,
+            )
+
+            cfg = FrameworkSettingsManager(self._session).get_eligibility_config()
         else:
             cfg = config
 

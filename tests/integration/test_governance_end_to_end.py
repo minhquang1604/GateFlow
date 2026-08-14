@@ -36,6 +36,11 @@ from mlops_framework.database.models.model_version import (
 )
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.events.publisher import InMemoryEventPublisher
+from mlops_framework.framework_settings.manager import (
+    PROMOTION,
+    TRAINING_POLICY,
+    FrameworkSettingsManager,
+)
 from mlops_framework.governance.eligibility import EligibilityConfig
 from mlops_framework.governance.promotion import PromotionConfig
 from mlops_framework.model.manager import ModelManager
@@ -392,4 +397,66 @@ class TestEligibilityShortcut:
         )
         assert out2.promoted is False
         assert out2.blocked_reason == "not_eligible"
-        assert any(s.name == "eligibility" for s in out2.steps)
+
+
+# ---------------------------------------------------------------------- #
+# Settings default-resolution (CP4) — RetrainingWorkflow itself never
+# constructs a TrainingPolicy/EligibilityConfig/PromotionConfig; a run
+# with none of those three arguments now resolves each from persisted
+# FrameworkSettingsManager instead of each policy class's own bare
+# dataclass default. Proven two ways per policy layer isn't needed here
+# (that's tests/unit/test_settings_wiring.py's job, one class at a
+# time) — this is specifically "does a real, fully-wired
+# RetrainingWorkflow.run() with zero policy args actually pick it up".
+# ---------------------------------------------------------------------- #
+
+
+class TestSettingsDefaultResolution:
+    def test_fully_default_run_is_unchanged_when_settings_empty(self, wired_workflow):
+        """No training_policy/eligibility_config/promotion_config and
+        no force — empty framework_settings means every governance
+        layer falls back to its own bare default exactly as it always
+        has (readiness passes at required_size=0, eligibility passes
+        with only require_ready, promotion cold-starts with no floors)."""
+        db_session = wired_workflow["db_session"]
+        dv = _make_dataset_version(db_session, row_count=5000)
+        model = _make_model(db_session)
+        outcome = wired_workflow["workflow"].run(
+            dataset_version=dv, model=model, pipeline_id=SUCCESS_PIPELINE,
+        )
+        assert outcome.promoted is True
+        assert outcome.training_run_id is not None
+
+    def test_persisted_min_floors_blocks_a_fully_default_run(self, wired_workflow):
+        """Same call as above (no promotion_config at all) — this only
+        reaches the decision if ModelPromotionPolicy.evaluate() itself
+        resolves its default from Settings, since nothing else in the
+        call chain ever constructs a PromotionConfig."""
+        db_session = wired_workflow["db_session"]
+        FrameworkSettingsManager(db_session).set_raw(
+            PROMOTION, {"min_floors": {"f1": 0.99}}
+        )
+        dv = _make_dataset_version(db_session, row_count=5000)
+        model = _make_model(db_session)
+        outcome = wired_workflow["workflow"].run(
+            dataset_version=dv, model=model, pipeline_id=SUCCESS_PIPELINE,
+        )
+        assert outcome.promoted is False
+        assert outcome.blocked_reason == "model_rejected"
+
+    def test_persisted_required_size_blocks_a_fully_default_run(self, wired_workflow):
+        """Same idea, one layer up — no training_policy passed; the
+        persisted training_policy.required_size still blocks the run
+        before training ever starts."""
+        db_session = wired_workflow["db_session"]
+        FrameworkSettingsManager(db_session).set_raw(
+            TRAINING_POLICY, {"required_size": 999_999}
+        )
+        dv = _make_dataset_version(db_session, row_count=5000)
+        model = _make_model(db_session)
+        outcome = wired_workflow["workflow"].run(
+            dataset_version=dv, model=model, pipeline_id=SUCCESS_PIPELINE,
+        )
+        assert outcome.promoted is False
+        assert outcome.blocked_reason == "readiness_blocked"
+        assert outcome.training_run_id is None

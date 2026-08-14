@@ -523,7 +523,11 @@ class MLOpsProject:
             self._ensure_managers(s)
             engine = ReadinessEngine(s)
             version = self.datasets.get_version(dataset_version.id)
-            return engine.evaluate(version, policy=policy or TrainingPolicy())
+            # Passed straight through, not `policy or TrainingPolicy()` —
+            # engine.evaluate() itself now resolves a bare `None` from
+            # persisted Settings (see ReadinessEngine.evaluate());
+            # forcing a bare TrainingPolicy() here would shadow that.
+            return engine.evaluate(version, policy=policy)
 
     @property
     def lineage(self) -> MLOpsLineage:

@@ -54,7 +54,7 @@ class TestFullAppBoot:
         assert client.get("/static/app.css").status_code == 200
         assert client.get("/static/app.js").status_code == 200
         assert client.get("/static/favicon.svg").status_code == 200
-        # OpenAPI exposes 54 distinct /api paths: 18 read endpoints over the
+        # OpenAPI exposes 57 distinct /api paths: 18 read endpoints over the
         # framework's own rows (readiness + drift included, plus
         # api/routers/models.py's reproducibility-report download — see
         # sdk/report.py — and runs.py's SSE status stream, GET
@@ -74,7 +74,11 @@ class TestFullAppBoot:
         # the write endpoints, which are the only route into the deployed
         # database from outside the VPC — 1 for
         # api/routers/settings.py's single read-only config/reachability
-        # pane (GET /api/settings), 2 for airflow_views.py's gated
+        # pane (GET /api/settings), 3 for api/routers/policy_settings.py's
+        # persisted, editable governance-policy defaults (GET
+        # /api/settings/policies, GET+PUT /api/settings/policies/{key},
+        # POST /api/settings/policies/{key}/reset — see
+        # framework_settings/manager.py), 2 for airflow_views.py's gated
         # task-control writes (POST .../tasks/{task_id}/clear and
         # .../retry — see api/security.py's require_write_token), 1 for
         # api/routers/audit.py's read-only audit-trail list (GET
@@ -83,7 +87,7 @@ class TestFullAppBoot:
         # /api/alerts — see events/store.py::GovernanceEventStore).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 54, f"Expected 54, got {len(api_paths)}: {api_paths}"
+        assert len(api_paths) == 57, f"Expected 57, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
         # The read-only proxy count stays 19: clear/retry are a distinct

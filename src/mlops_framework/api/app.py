@@ -27,6 +27,7 @@ from mlops_framework.api.routers import (
     lineage,
     mlflow_views,
     models,
+    policy_settings,
     readiness,
     runs,
     schedules,
@@ -82,6 +83,7 @@ def create_app(
     app.include_router(schedules.router, prefix="/api", tags=["scheduling"])
     app.include_router(internal.router, prefix="/api", tags=["internal"])
     app.include_router(settings_router.router, prefix="/api", tags=["settings"])
+    app.include_router(policy_settings.router, prefix="/api", tags=["settings"])
     app.include_router(audit.router, prefix="/api", tags=["audit"])
     app.include_router(alerts.router, prefix="/api", tags=["alerts"])
 

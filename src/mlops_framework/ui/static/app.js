@@ -2242,13 +2242,107 @@ function settingsCard(title, system) {
     el("dl", { class: "kv" }, ...rows));
 }
 
+// The four governance policies FrameworkSettingsManager persists (see
+// framework_settings/manager.py) — key order here is display order, and
+// the title is the one place their internal key names get a human label.
+const POLICY_TITLES = {
+  promotion: "Promotion",
+  eligibility: "Training eligibility",
+  training_policy: "Dataset readiness",
+  drift: "Drift detection",
+};
+const POLICY_ORDER = ["promotion", "eligibility", "training_policy", "drift"];
+
+// api()'s errors carry the raw response body after the status line
+// (see api() above) — for a 4xx from policy_settings.py that's a JSON
+// {"detail": "..."} blob. Pull the message out when it parses as that;
+// fall back to the raw text for anything else (a network failure, a
+// non-JSON 5xx) rather than showing "[object Object]" or nothing.
+function apiErrorDetail(e) {
+  const brace = e.message.indexOf("{");
+  if (brace === -1) return e.message;
+  try {
+    return JSON.parse(e.message.slice(brace)).detail || e.message;
+  } catch {
+    return e.message;
+  }
+}
+
+// One policy's card: a raw-JSON textarea (pre-filled with its effective
+// value, pretty-printed) is the whole edit surface rather than ~7-9
+// bespoke fields per policy (26+ fields total across all four) — same
+// idiom this app already uses for structured data it shows but doesn't
+// build a form for (detailCell()'s <pre> on the Activity page). Save
+// round-trips through the same from_dict()/to_dict() validation
+// constructing the dataclass directly would apply (see
+// FrameworkSettingsManager.set_raw), so a malformed edit is rejected
+// with the real reason, not silently coerced.
+function policyCard(key, entry) {
+  const textarea = el("textarea", {
+    class: "policy-json", spellcheck: "false", rows: "9",
+    "aria-label": `${POLICY_TITLES[key] || key} policy JSON`,
+  });
+  const badgeSlot = el("span", {});
+  const errorBox = el("div", { class: "policy-error" });
+  const saveBtn = el("button", { class: "btn primary", type: "button" }, "Save");
+  const resetBtn = el("button", { class: "btn", type: "button" }, "Reset to default");
+
+  function paint(e) {
+    textarea.value = JSON.stringify(e.value, null, 2);
+    mount(badgeSlot, e.is_default
+      ? el("span", { class: "badge plain" }, "default")
+      : el("span", { class: "badge success" }, "customized"));
+    resetBtn.disabled = e.is_default;
+    mount(errorBox);
+  }
+  paint(entry);
+
+  saveBtn.addEventListener("click", async () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(textarea.value);
+    } catch (parseErr) {
+      mount(errorBox, banner(`Invalid JSON: ${parseErr.message}`, "err"));
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      paint(await api(`/settings/policies/${key}`, {
+        method: "PUT",
+        body: JSON.stringify({ value: parsed }),
+      }));
+    } catch (apiErr) {
+      mount(errorBox, banner(apiErrorDetail(apiErr), "err"));
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+
+  resetBtn.addEventListener("click", async () => {
+    resetBtn.disabled = true;
+    try {
+      paint(await api(`/settings/policies/${key}/reset`, { method: "POST" }));
+    } catch (apiErr) {
+      mount(errorBox, banner(apiErrorDetail(apiErr), "err"));
+      resetBtn.disabled = false;
+    }
+  });
+
+  return el("div", { class: "card policy-card" },
+    el("div", { class: "chart-title", style: "display:flex;align-items:center;justify-content:space-between" },
+      POLICY_TITLES[key] || key, badgeSlot),
+    textarea,
+    errorBox,
+    el("div", { class: "policy-actions" }, saveBtn, resetBtn));
+}
+
 async function initSettings() {
   const out = document.getElementById("settings-out");
 
   async function load() {
-    let s;
+    let s, policies;
     try {
-      s = await api("/settings");
+      [s, policies] = await Promise.all([api("/settings"), api("/settings/policies")]);
     } catch (e) {
       setError(out, e);
       return;
@@ -2264,7 +2358,15 @@ async function initSettings() {
             el("dt", {}, "name"), el("dd", {}, s.app_name),
             el("dt", {}, "version"), el("dd", {}, s.app_version),
             el("dt", {}, "scheduler enabled"), el("dd", {}, String(s.scheduler.enabled)),
-            el("dt", {}, "scheduler poll seconds"), el("dd", {}, String(s.scheduler.poll_seconds))))));
+            el("dt", {}, "scheduler poll seconds"), el("dd", {}, String(s.scheduler.poll_seconds))))),
+      el("h3", { style: "margin-top:28px" }, "Policies"),
+      el("p", { class: "muted", style: "margin:0 0 14px" },
+        "Governance defaults used when nothing more specific overrides them — a schedule's own " +
+        "min F1, or a manual promote/readiness request's own values, still take precedence over " +
+        "these (see each field's own docstring in the framework for what it does). ",
+        el("a", { href: "/activity" }, "Every change is on the Activity page"), "."),
+      el("div", { class: "grid-2" },
+        ...POLICY_ORDER.map((key) => policyCard(key, policies[key]))));
   }
 
   document.getElementById("refresh").addEventListener("click", load);

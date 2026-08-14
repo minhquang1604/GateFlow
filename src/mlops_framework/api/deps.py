@@ -17,6 +17,7 @@ from mlops_framework.database.session import (
     get_db_manager,
 )
 from mlops_framework.dataset.manager import DatasetManager
+from mlops_framework.framework_settings.manager import FrameworkSettingsManager
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.scheduling.manager import ScheduleManager
 from mlops_framework.training.manager import TrainingManager
@@ -80,6 +81,13 @@ def get_schedule_manager(db: Session = Depends(get_db)) -> ScheduleManager:
 def get_audit_manager(db: Session = Depends(get_db)) -> AuditManager:
     """FastAPI dependency for :class:`AuditManager`."""
     return AuditManager(db)
+
+
+def get_framework_settings_manager(
+    db: Session = Depends(get_db),
+) -> FrameworkSettingsManager:
+    """FastAPI dependency for :class:`FrameworkSettingsManager`."""
+    return FrameworkSettingsManager(db)
 
 
 def get_actor(x_actor: str | None = Header(default=None, alias="X-Actor")) -> str:
