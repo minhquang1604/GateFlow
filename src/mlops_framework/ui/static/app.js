@@ -579,6 +579,47 @@ function driftCheckButton(v) {
   return btn;
 }
 
+// "Train now" on a dataset version. Creates the run and hands it to
+// Airflow in one gated call (POST /training-runs) — the console never
+// touches /api/internal/*, which is the DAG's own callback surface.
+//
+// The entrypoint is asked for rather than guessed: pipeline_id is a
+// dag_id to AirflowOrchestrator, and the module:callable it actually
+// runs is a separate thing the framework cannot infer.
+function trainNowButton(v) {
+  const btn = el("button", { class: "btn primary" }, "Train now");
+  btn.addEventListener("click", async () => {
+    const entrypoint = window.prompt(
+      "Training entrypoint (module:callable) to run on this version:",
+      "case_studies.fraud_detection.pipelines:train_xgboost",
+    );
+    if (!entrypoint) return;
+    const modelName = window.prompt(
+      "Register the result under which model? (blank = train only, register nothing)",
+      "",
+    );
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const body = { dataset_version_id: v.id, training_entrypoint: entrypoint.trim() };
+      if (modelName && modelName.trim()) body.model_name = modelName.trim();
+      const r = await apiWrite("/training-runs", {
+        method: "POST", body: JSON.stringify(body),
+      });
+      flash(
+        `Training run #${r.training_run_id} queued on ${r.pipeline_id}.`,
+        "ok",
+      );
+      location.href = `/runs/${r.training_run_id}`;
+    } catch (e) {
+      flash(e.message, "err");
+      btn.disabled = false;
+      btn.textContent = "Train now";
+    }
+  });
+  return btn;
+}
+
 // One version's facts/readiness/drift/schema panel — used both for the
 // single-version view (the default) and reused nowhere else, since the
 // two-version compare below needs its fields side by side, not stacked.
@@ -659,7 +700,9 @@ async function datasetVersionSection(v) {
   return el("section", {},
     el("div", { class: "section-head" },
       el("h3", {}, `Version ${v.version_number}`),
-      el("span", { class: "faint" }, fmt.ago(v.created_at))),
+      el("div", { class: "row-actions" },
+        el("span", { class: "faint" }, fmt.ago(v.created_at)),
+        trainNowButton(v))),
     el("div", { class: "grid-2" },
       el("div", { class: "card" }, facts),
       el("div", {},

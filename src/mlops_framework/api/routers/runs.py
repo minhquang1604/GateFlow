@@ -15,20 +15,33 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api import airflow_gateway
-from mlops_framework.api.deps import get_db, get_db_manager_dep
+from mlops_framework.api.deps import (
+    get_actor,
+    get_audit_manager,
+    get_db,
+    get_db_manager_dep,
+    get_training_manager,
+)
 from mlops_framework.api.mlflow_gateway import panel, tracking_uri
 from mlops_framework.api.schemas import ExternalPanel, TrainingRunOut
+from mlops_framework.api.security import require_write_token
+from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.database.session import DatabaseManager
+from mlops_framework.training.manager import TrainingManager
+
+_log = logging.getLogger("mlops_framework.api.runs")
 
 router = APIRouter()
 
@@ -344,3 +357,182 @@ def get_mlflow_run(mlflow_run_id: str) -> ExternalPanel:
     """Everything MLflow holds about a run, in one call — by raw MLflow
     run id, for a run with no framework TrainingRun row at all."""
     return _run_mlflow_panel(mlflow_run_id)
+
+
+# ---------------------------------------------------------------------- #
+# POST /training-runs — start a training run from outside the DAG
+# ---------------------------------------------------------------------- #
+
+
+class StartTrainingRequest(BaseModel):
+    dataset_version_id: int
+    # The Airflow dag_id. Named pipeline_id because that is the column
+    # it lands in and what every other surface calls it.
+    pipeline_id: str = Field(default="mlops_training_pipeline")
+    # "module:callable" — what the DAG actually runs. It travels in the
+    # run's metadata because pipeline_id means a dag_id to
+    # AirflowOrchestrator, not an import path; see
+    # mlops_training_pipeline.py's _resolve_entrypoint.
+    training_entrypoint: str
+    experiment_name: str = "mlops-framework"
+    model_name: str | None = None
+    min_f1: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class StartTrainingResponse(BaseModel):
+    training_run_id: int
+    status: str
+    pipeline_id: str | None = None
+    execution_id: str | None = None
+
+
+@router.post(
+    "/training-runs",
+    response_model=StartTrainingResponse,
+    status_code=202,
+    dependencies=[Depends(require_write_token)],
+)
+def start_training_run(
+    request: StartTrainingRequest,
+    db: Session = Depends(get_db),
+    tm: TrainingManager = Depends(get_training_manager),
+    am: AuditManager = Depends(get_audit_manager),
+    actor: str = Depends(get_actor),
+) -> StartTrainingResponse:
+    """Create a training run and hand it to Airflow, in one call.
+
+    Training could previously only be started from Python (the SDK's
+    ``project.train``) or through ``/api/internal/*``, which is the
+    Airflow DAG's own callback surface — reachable, but not something a
+    console button should be calling. This is the same two steps
+    (``create_run`` then ``TrainingService.start_run``) behind one
+    public, gated, audited route.
+
+    Deliberately create *and* start rather than exposing them
+    separately: a created-but-never-started run is a PENDING row that
+    looks like a stuck training run to every reader of ``/runs``, and
+    there is no reason for a caller to want one.
+
+    202: the run is queued on Airflow, not finished. Its progress is on
+    ``GET /training-runs/{id}`` and its live status on the SSE stream
+    above — the same places a schedule-triggered run reports.
+
+    ``model_name``/``min_f1`` are passed through to the run's metadata,
+    where the DAG's ``register_and_promote`` task reads them. Leaving
+    ``model_name`` unset means the DAG trains and reports but registers
+    no ModelVersion, which is the right default for an exploratory run
+    started by hand.
+    """
+    import os
+
+    from mlops_framework.orchestration.airflow import AirflowOrchestrator
+    from mlops_framework.training.service import TrainingService
+
+    base_url = os.environ.get("AIRFLOW_BASE_URL")
+    if not base_url:
+        raise HTTPException(
+            status_code=503,
+            detail="AIRFLOW_BASE_URL is not configured on this deployment",
+        )
+
+    metadata: dict[str, Any] = {"training_entrypoint": request.training_entrypoint}
+    if request.model_name:
+        metadata["model_name"] = request.model_name
+        metadata["min_f1"] = request.min_f1
+
+    try:
+        run = tm.create_run(
+            dataset_version_id=request.dataset_version_id,
+            pipeline_id=request.pipeline_id,
+            trigger_type="MANUAL",
+            metadata=metadata,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Committed before the trigger, not with the rest of the request.
+    # The DAG resolves this run by calling GET /internal/training-runs/
+    # {id}/context back over HTTP — a separate connection in a separate
+    # transaction, which cannot see this one's writes until they are
+    # published. Without this commit the DAG 404s the instant
+    # resolve_context asks. Same reason RetrainingWorkflow.run() commits
+    # at the same point; see its comment.
+    #
+    # It also means a failed trigger below leaves a *visible* row to
+    # mark FAILED, rather than one that vanishes with the request's
+    # rollback and takes the record of the attempt with it.
+    db.commit()
+
+    tracker = None
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
+    if tracking_uri:
+        from mlops_framework.tracking.mlflow import MLflowTracker
+
+        try:
+            tracker = MLflowTracker(
+                tracking_uri=tracking_uri, experiment_name=request.experiment_name
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"MLflow at {tracking_uri} is unreachable: {exc}",
+            ) from exc
+
+    with AirflowOrchestrator(
+        base_url=base_url,
+        username=os.environ.get("AIRFLOW_USERNAME", "airflow"),
+        password=os.environ.get("AIRFLOW_PASSWORD", "airflow"),
+    ) as orchestrator:
+        service = TrainingService(
+            training_manager=tm, orchestrator=orchestrator, tracker=tracker
+        )
+        try:
+            execution_id = service.start_run(run.id)
+        except Exception as exc:
+            # The row exists and Airflow never took it. Fail it here
+            # rather than leaving a PENDING run nothing will ever close,
+            # which is the exact state /internal/.../finish exists to end.
+            #
+            # Through RUNNING first: the lifecycle has no PENDING ->
+            # FAILED edge by design, and start_run can raise either
+            # before or after it made that transition. Same move
+            # internal.py's finish_training_run makes, for the same
+            # reason — and if even this fails, the 502 below still has
+            # to reach the caller, so a stuck row must not become an
+            # opaque 500 on top of it.
+            try:
+                current = tm.get_run(run.id)
+                if getattr(current.status, "value", current.status) == "PENDING":
+                    tm.start_run(run.id)
+                tm.fail_run(run.id, error_message=f"could not start: {exc}")
+                db.commit()
+            except Exception:  # noqa: BLE001 - reporting the real failure wins
+                _log.exception("run %s: could not mark the failed start", run.id)
+                db.rollback()
+            raise HTTPException(status_code=502, detail=f"start failed: {exc}") from exc
+
+    run = tm.get_run(run.id)
+    if tracker is not None and run.mlflow_run_id:
+        tm.update_metadata(
+            run.id, {"tracker_run_id": run.mlflow_run_id, "tracking_uri": tracking_uri}
+        )
+
+    am.record(
+        actor=actor,
+        action="TRAINING_RUN_STARTED",
+        entity_type="TrainingRun",
+        entity_id=run.id,
+        metadata={
+            "dataset_version_id": request.dataset_version_id,
+            "pipeline_id": request.pipeline_id,
+            "training_entrypoint": request.training_entrypoint,
+            "execution_id": execution_id,
+        },
+    )
+    status = getattr(run.status, "value", run.status)
+    return StartTrainingResponse(
+        training_run_id=run.id,
+        status=status,
+        pipeline_id=run.pipeline_id,
+        execution_id=execution_id,
+    )

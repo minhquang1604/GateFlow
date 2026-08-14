@@ -539,6 +539,37 @@ curl -X POST localhost:8001/internal/model/reload \
 curl localhost:8001/internal/model/active/fraud-model
 ```
 
+### Starting a training run
+
+```bash
+curl -X POST localhost:8000/api/training-runs \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -H "X-Actor: alice" \
+  -d '{"dataset_version_id": 4,
+       "training_entrypoint": "case_studies.fraud_detection.pipelines:train_xgboost",
+       "model_name": "fraud-xgboost"}'
+# 202 {"training_run_id": 17, "status": "RUNNING", "execution_id": "..."}
+```
+
+Or **Train now** on a version in the console. Training was previously
+startable only from Python (`project.train`) or through
+`/api/internal/*`, which is the DAG's own callback surface — reachable,
+but not something a console button should be calling.
+
+Create and start are one call on purpose: a created-but-never-started
+run is a PENDING row that reads as a stuck training run to everyone
+looking at `/runs`, and no caller wants one. The run is committed before
+the trigger, because the DAG resolves it by calling
+`GET /internal/training-runs/{id}/context` back over HTTP — a separate
+transaction, which cannot see an uncommitted row. If Airflow then
+refuses the run, it is marked FAILED rather than left PENDING for
+nothing to close.
+
+`training_entrypoint` is asked for rather than inferred: `pipeline_id`
+means a *dag_id* to `AirflowOrchestrator`, and the `module:callable` the
+DAG actually runs is a separate thing that travels in the run's
+metadata. Leaving `model_name` unset trains and reports but registers no
+ModelVersion — the right default for an exploratory run started by hand.
+
 ### Running a drift check
 
 ```bash
@@ -623,6 +654,7 @@ the same FastAPI app as the API, at `/`.
 |---|---|---|
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
 | Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** with a **Run check** button |
+| Datasets (version panel) | `/datasets/{id}` | **Train now** on any version — creates the run and hands it to Airflow |
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
 | Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download, and **Roll back** on any retired version |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
@@ -645,6 +677,7 @@ the same FastAPI app as the API, at `/`.
 | Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
+| Start training | `POST /api/training-runs` | Create a run and hand it to Airflow in one gated, audited call. 202; progress on `GET /api/training-runs/{id}` and the SSE stream |
 | Drift | `/api/drift/{id}` (read), `/api/drift/{id}/check` (run) | The check is queued on Airflow, not run in-process — see below. 202 on trigger; the verdict lands on the read endpoint |
 | Rollback | `/api/model-versions/{id}/rollback` | Put a retired version back into production — archives the incumbent, audits the actor, raises a CRITICAL alert, and asks the ServingBridge to reload. Gated by `CONSOLE_WRITE_TOKEN` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
