@@ -26,6 +26,7 @@ will offer to delete — which is the mistake this file exists to stop
 anyone repeating.
 """
 
+from mlops_framework.database.models.api_key import ApiKey
 from mlops_framework.database.models.audit_log import AuditLog
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
@@ -58,6 +59,7 @@ from mlops_framework.database.models.training_run import (
 )
 
 __all__ = [
+    "ApiKey",
     "AuditLog",
     "Dataset",
     "DatasetVersion",

@@ -1176,10 +1176,25 @@ function writeToken(forcePrompt = false) {
   if (forcePrompt) sessionStorage.removeItem("gateflow-write-token");
   let t = sessionStorage.getItem("gateflow-write-token");
   if (!t) {
-    t = window.prompt("Console write token (CONSOLE_WRITE_TOKEN) — required for any action that changes state:");
-    if (t) sessionStorage.setItem("gateflow-write-token", t);
+    t = window.prompt(
+      "Credential for actions that change state.\n\n" +
+      "An API key (mlops_ak_…) is preferred — it names you in the audit " +
+      "trail. CONSOLE_WRITE_TOKEN also works, but records every action " +
+      "as \"system\"."
+    );
+    if (t) sessionStorage.setItem("gateflow-write-token", t.trim());
   }
   return t || null;
+}
+
+// An mlops_ak_ key goes in Authorization: Bearer; anything else is
+// assumed to be the legacy shared secret. Sniffing the prefix rather
+// than asking the user which kind they pasted — the prefix exists
+// precisely so a key is self-identifying (see auth/manager.py).
+function writeAuthHeaders(token) {
+  return token.startsWith("mlops_ak_")
+    ? { Authorization: `Bearer ${token}` }
+    : { "X-Console-Token": token };
 }
 
 // api() plus the write token, for any gated endpoint (see
@@ -1194,7 +1209,7 @@ async function apiWrite(path, options = {}, _retried = false) {
   try {
     return await api(path, {
       ...options,
-      headers: { ...(options.headers || {}), "X-Console-Token": token },
+      headers: { ...(options.headers || {}), ...writeAuthHeaders(token) },
     });
   } catch (e) {
     if (!_retried && /^40[13]/.test(e.message)) {

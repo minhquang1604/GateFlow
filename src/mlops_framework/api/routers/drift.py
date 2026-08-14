@@ -20,9 +20,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from mlops_framework.api.deps import get_actor, get_audit_manager, get_db
+from mlops_framework.api.deps import get_audit_manager, get_db
 from mlops_framework.api.schemas import DriftEvaluationOut
-from mlops_framework.api.security import require_write_token
+from mlops_framework.api.security import get_actor, require_write_token
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.drift_evaluation import DriftEvaluation

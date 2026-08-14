@@ -24,7 +24,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import (
-    get_actor,
     get_audit_manager,
     get_db,
     get_model_manager,
@@ -33,7 +32,7 @@ from mlops_framework.api.schemas import (
     ModelOut,
     ModelVersionOut,
 )
-from mlops_framework.api.security import require_write_token
+from mlops_framework.api.security import get_actor, require_write_token
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.config.settings import get_settings
 from mlops_framework.database.models.governance_event import GovernanceEventSeverity

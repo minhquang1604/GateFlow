@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from mlops_framework.api.routers import (
     airflow_views,
     alerts,
+    api_keys,
     audit,
     dashboard,
     datasets,
@@ -91,6 +92,8 @@ def create_app(
     app.include_router(policy_settings.router, prefix="/api", tags=["settings"])
     app.include_router(audit.router, prefix="/api", tags=["audit"])
     app.include_router(alerts.router, prefix="/api", tags=["alerts"])
+    # admin scope, router-level — see routers/api_keys.py.
+    app.include_router(api_keys.router, prefix="/api", tags=["api-keys"])
 
     if mount_ui:
         from mlops_framework.ui.mount import mount_ui as _mount_ui

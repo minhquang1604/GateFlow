@@ -29,6 +29,7 @@ print(run.status, run.metrics)
 - [Using the SDK](#using-the-sdk)
 - [Using the framework directly](#using-the-framework-directly)
 - [Governance: readiness, drift, eligibility, promotion](#governance-readiness-drift-eligibility-promotion)
+- [Authentication](#authentication)
 - [Gateflow — the management console](#gateflow--the-management-console)
 - [Real end-to-end demos](#real-end-to-end-demos)
 - [Case studies — reusability proof](#case-studies--reusability-proof)
@@ -645,6 +646,57 @@ for edge in graph.edges:
     print(edge.source, "->", edge.target, f"({edge.type})")
 ```
 
+## Authentication
+
+Two credentials are accepted, and the difference between them is the
+point.
+
+A **scoped API key** resolves to a named principal, and that name is what
+lands in `AuditLog.actor` — derived from a credential the caller had to
+possess, so an audit row is evidence rather than a claim.
+
+```bash
+# The first key cannot be minted through the API (that needs `admin`),
+# so it is created against the database directly — same trust boundary
+# as running a migration.
+python -m mlops_framework.auth.cli create alice --scopes admin
+#     mlops_ak_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#     This is the only time it will be shown.
+
+curl -X POST localhost:8000/api/api-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name": "airflow-dag", "scopes": ["write"]}'
+
+curl -X POST localhost:8000/api/model-versions/12/rollback \
+  -H "Authorization: Bearer $ALICE_KEY"      # actor = "alice", verified
+```
+
+| Scope | Grants |
+|---|---|
+| `read` | Every GET the console renders from |
+| `write` | Anything that changes state — promote, rollback, start a run, schedules, policies. Implies `read` |
+| `admin` | Managing keys. Implies `write` |
+
+Only a **hash** of a key is stored; the plaintext is returned once and is
+unrecoverable, so a database dump yields no usable credential. Revocation
+sets a timestamp rather than deleting the row — a key that acted has to
+stay resolvable for as long as the audit rows naming it do.
+
+The **shared secret** (`CONSOLE_WRITE_TOKEN`, `X-Console-Token`) still
+works and grants `write`. It is what closed the anonymous-write hole and
+what every current deployment is configured with; a request using it
+records the unverified `X-Actor` header as its actor, exactly as before.
+It deliberately does **not** grant `admin`: a shared secret that could
+mint per-principal keys would let anyone holding it manufacture
+identities.
+
+Refusals distinguish the two failures: **401** when nothing valid was
+presented (an unknown key and a wrong key are the same answer, so
+neither confirms that a string is real), **403** when the caller is known
+but lacks the scope, and **503** when the deployment has no keys and no
+shared secret — it cannot authenticate anyone, and saying so beats a 401
+no credential could satisfy.
+
 ## Gateflow — the management console
 
 A server-rendered console (HTML + vanilla JS, no build step) served on
@@ -664,7 +716,7 @@ the same FastAPI app as the API, at `/`.
 
 ### API reference
 
-61 REST endpoints under `/api`, plus the two probes at the root
+64 REST endpoints under `/api`, plus the two probes at the root
 (`/health`, `/ready`), grouped by what they front:
 
 | Group | Examples | Purpose |
@@ -679,6 +731,7 @@ the same FastAPI app as the API, at `/`.
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
 | Start training | `POST /api/training-runs` | Create a run and hand it to Airflow in one gated, audited call. 202; progress on `GET /api/training-runs/{id}` and the SSE stream |
 | Drift | `/api/drift/{id}` (read), `/api/drift/{id}/check` (run) | The check is queued on Airflow, not run in-process — see below. 202 on trigger; the verdict lands on the read endpoint |
+| API keys | `/api/api-keys` | Mint (returns the key once), list, revoke. Requires the `admin` scope |
 | Rollback | `/api/model-versions/{id}/rollback` | Put a retired version back into production — archives the incumbent, audits the actor, raises a CRITICAL alert, and asks the ServingBridge to reload. Gated by `CONSOLE_WRITE_TOKEN` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
 | Health | `/health`, `/ready` | Liveness (process only) and readiness (pings the database) — mounted at the root, not under `/api`, for container/load-balancer probes |
@@ -897,7 +950,7 @@ Framework/
 ## Testing
 
 ```bash
-pytest                         # full suite — 831 passed, 24 skipped (live-service integration tests)
+pytest                         # full suite — 961 passed, 24 skipped (live-service integration tests)
 pytest tests/unit              # unit tests only
 pytest tests/integration       # integration tests only
 pytest -k drift                # by name
@@ -958,14 +1011,18 @@ to it.
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
-6. **`CONSOLE_WRITE_TOKEN` is a shared secret, not authentication.**
-   There is still no user, session, or RBAC concept anywhere in the
-   app: one token gates every write endpoint, and `X-Actor` — what the
-   audit trail records — is caller-supplied and unverified. That is
-   enough to stop an anonymous request promoting a model or handing the
-   orchestrator a `pipeline_id` to run, and not enough to tell two
-   authorized operators apart. Per-principal credentials with RBAC are
-   the intended replacement.
+6. **`CONSOLE_WRITE_TOKEN` is still accepted, and is not
+   authentication.** Scoped API keys are now the real credential (see
+   [Authentication](#authentication)); the shared secret is kept because
+   it is what every existing deployment — the Airflow DAG included — is
+   configured with, and removing it in the same change that introduced
+   keys would break all of them at once. A request authenticated that
+   way still records the unverified `X-Actor` header as its actor.
+   Migrate the DAG and any scripts to keys, then unset it.
+7. **There is no browser login.** The console prompts for a credential
+   and keeps it in `sessionStorage` for the tab. Read endpoints are
+   ungated, so the console renders for anyone who can reach it —
+   gating GETs needs session management the app does not have.
 
 ## License
 

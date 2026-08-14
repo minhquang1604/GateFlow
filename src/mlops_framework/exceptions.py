@@ -155,6 +155,19 @@ class ConcurrentPromotionError(ModelError):
     pass
 
 
+class ApiKeyError(MLopsFrameworkError):
+    """Raised when an API key cannot be minted or revoked as asked.
+
+    Not an authentication failure — a caller presenting a bad key gets
+    ``None`` from ``ApiKeyManager.resolve`` and a 401 from the
+    dependency, deliberately without being told which part was wrong.
+    This is the *management* side: an unknown scope, a duplicate name, a
+    key that does not exist.
+    """
+
+    pass
+
+
 class RollbackError(ModelError):
     """Raised when a ModelVersion cannot be rolled back to.
 
