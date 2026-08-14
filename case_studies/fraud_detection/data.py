@@ -27,8 +27,9 @@ from __future__ import annotations
 
 import csv
 import random
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any
 
 #: The canonical column order the framework registers and the pipeline reads.
 CANONICAL_COLUMNS: list[str] = (
@@ -65,7 +66,6 @@ def generate(
     still separable — only the boundary needs to move.
     """
     rng = random.Random(seed)
-    columns = ["time", "amount"] + [f"v{i}" for i in range(1, 29)] + ["class"]
     n_fraud = max(1, int(n_rows * fraud_ratio))
     fraud_indices = set(rng.sample(range(n_rows), n_fraud))
 
@@ -188,7 +188,7 @@ def describe_csv(path: str | Path) -> dict:
     df = to_dataframe(path)
     columns = [
         {"name": str(name), "dtype": str(dtype)}
-        for name, dtype in zip(df.columns, df.dtypes)
+        for name, dtype in zip(df.columns, df.dtypes, strict=True)
     ]
     n_fraud = int(df["class"].sum())
     n_rows = int(len(df))

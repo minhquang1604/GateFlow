@@ -18,7 +18,6 @@ from mlops_framework.sdk import MLOpsProject
 from mlops_framework.sdk.exceptions import TrainingError
 from mlops_framework.tracking.in_memory import InMemoryTracker
 
-
 SUCCESS_PIPELINE = "tests._pipelines.e2e_training:main"
 FAIL_PIPELINE = "tests._pipelines.pipelines:fail"
 

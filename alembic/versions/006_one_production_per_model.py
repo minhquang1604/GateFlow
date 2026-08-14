@@ -19,16 +19,17 @@ Postgres (postgresql_where) and SQLite (sqlite_where) — both used
 by op.create_index's dialect-specific WHERE clause support.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "006_one_production_per_model"
-down_revision: Union[str, None] = "005_schedules"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "005_schedules"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _INDEX_NAME = "uq_model_versions_one_production_per_model"
 _WHERE = "state = 'PRODUCTION'"

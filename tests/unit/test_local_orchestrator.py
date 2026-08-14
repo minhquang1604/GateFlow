@@ -8,7 +8,6 @@ from mlops_framework.exceptions import ExecutionNotFoundError
 from mlops_framework.orchestration.base import ExecutionState
 from mlops_framework.orchestration.local import LocalDockerOrchestrator
 
-
 PIPELINE_SUCCESS = "tests._pipelines.pipelines:success"
 PIPELINE_FAIL = "tests._pipelines.pipelines:fail"
 PIPELINE_SLOW = "tests._pipelines.pipelines:slow"

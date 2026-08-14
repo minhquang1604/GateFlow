@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from mlops_framework.database.models.model_version import (
     ModelState,
     ModelVersion,

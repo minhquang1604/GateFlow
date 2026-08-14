@@ -9,7 +9,6 @@ import pytest
 
 from mlops_framework.events.publisher import (
     DriftDetectedEvent,
-    Event,
     HttpEventPublisher,
     InMemoryEventPublisher,
     ModelPromotedEvent,

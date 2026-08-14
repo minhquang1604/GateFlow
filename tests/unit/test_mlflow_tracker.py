@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -26,14 +26,13 @@ from mlops_framework.exceptions import ExperimentTrackingError
 from mlops_framework.tracking import mlflow as mlflow_module
 from mlops_framework.tracking.base import RunStatus
 
-
 # ---------------------------------------------------------------------- #
 # Helpers — build a fake "mlflow" module with a recording surface.
 # ---------------------------------------------------------------------- #
 
 
 class _FakeRun:
-    def __init__(self, run_id: str, name: Optional[str] = None):
+    def __init__(self, run_id: str, name: str | None = None):
         self.info = types.SimpleNamespace(run_id=run_id, run_name=name)
 
 
@@ -42,8 +41,8 @@ class _FakeMlflow:
 
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = []
-        self._tracking_uri: Optional[str] = None
-        self._experiment: Optional[str] = None
+        self._tracking_uri: str | None = None
+        self._experiment: str | None = None
         self._run_counter = 0
 
     # Surface used by the adapter
@@ -55,7 +54,7 @@ class _FakeMlflow:
         self.calls.append(("set_experiment", (name,), {}))
         self._experiment = name
 
-    def start_run(self, run_name: Optional[str] = None, tags: Optional[dict] = None):
+    def start_run(self, run_name: str | None = None, tags: dict | None = None):
         self._run_counter += 1
         run_id = f"run-{self._run_counter}"
         self.calls.append(("start_run", (), {"run_name": run_name, "tags": tags or {}}))
@@ -67,10 +66,10 @@ class _FakeMlflow:
     def log_params(self, params: dict) -> None:
         self.calls.append(("log_params", (dict(params),), {}))
 
-    def log_metric(self, key: str, value: float, step: Optional[int] = None) -> None:
+    def log_metric(self, key: str, value: float, step: int | None = None) -> None:
         self.calls.append(("log_metric", (key, value), {"step": step}))
 
-    def log_metrics(self, metrics: dict, step: Optional[int] = None) -> None:
+    def log_metrics(self, metrics: dict, step: int | None = None) -> None:
         self.calls.append(("log_metrics", (dict(metrics),), {"step": step}))
 
     def log_artifact(self, path: str) -> None:
@@ -100,7 +99,7 @@ class FakeMlflowShim:
     def set_experiment(self, name: str) -> None:  # pragma: no cover - overridden
         pass
 
-    def start_run(self, run_name: Optional[str] = None, tags: Optional[dict] = None):
+    def start_run(self, run_name: str | None = None, tags: dict | None = None):
         self._run_counter += 1
         return _FakeRun(f"run-{self._run_counter}", run_name)
 
@@ -110,10 +109,10 @@ class FakeMlflowShim:
     def log_params(self, params: dict) -> None:
         pass
 
-    def log_metric(self, key: str, value: float, step: Optional[int] = None) -> None:
+    def log_metric(self, key: str, value: float, step: int | None = None) -> None:
         pass
 
-    def log_metrics(self, metrics: dict, step: Optional[int] = None) -> None:
+    def log_metrics(self, metrics: dict, step: int | None = None) -> None:
         pass
 
     def log_artifact(self, path: str) -> None:
@@ -229,7 +228,8 @@ class TestStatusMapping:
 class TestEnvDrivenConstruction:
     def test_uses_explicit_tracking_uri(self, monkeypatch):
         fake = _install_fake_mlflow(monkeypatch)
-        tracker = mlflow_module.MLflowTracker(
+        # Constructed purely for its side effects on the fake module.
+        mlflow_module.MLflowTracker(
             tracking_uri="http://mlflow:5000",
             experiment_name="unit-tests",
         )

@@ -3,14 +3,13 @@
 import pytest
 
 from mlops_framework.dataset.manager import DatasetManager
-from mlops_framework.training.manager import TrainingManager
 from mlops_framework.exceptions import (
-    DuplicateDatasetNameError,
     DatasetNotFoundError,
     DatasetVersionNotFoundError,
-    TrainingRunNotFoundError,
+    DuplicateDatasetNameError,
     ImmutableDatasetVersionError,
 )
+from mlops_framework.training.manager import TrainingManager
 
 
 class TestDatasetCreation:
@@ -180,7 +179,13 @@ class TestDatasetVersionImmutability:
         assert version.is_immutable is True
 
     def test_version_cannot_be_deleted(self, db_session):
-        """Test that versions cannot be deleted through the manager."""
+        """A version cannot be removed or modified through the manager.
+
+        This test used to create a version and then assert nothing at
+        all — three comments describing the intent, no code expressing
+        it, so it passed no matter what the manager did. The two
+        properties it was describing are checked below.
+        """
         manager = DatasetManager(db_session)
         dataset = manager.create_dataset(name="test-dataset", description="Test")
         version = manager.create_version(
@@ -189,12 +194,17 @@ class TestDatasetVersionImmutability:
             row_count=1000,
         )
 
-        version_id = version.id
+        # 1. The manager exposes no deletion route at all. Immutability
+        #    here is the absence of an operation, not a guarded one.
+        assert not [
+            name
+            for name in dir(manager)
+            if "delete" in name.lower() or "remove" in name.lower()
+        ]
 
-        # Delete should fail because version is immutable
-        # (This tests the concept - actual enforcement is at the database level via FK)
-        # The key point is that once created, versions should not be modified
-        # and the is_immutable flag should be respected by any update operations
+        # 2. And the guard every mutating path runs first refuses.
+        with pytest.raises(ImmutableDatasetVersionError):
+            manager._ensure_mutable(version)
 
 
 class TestTrainingRunCreation:

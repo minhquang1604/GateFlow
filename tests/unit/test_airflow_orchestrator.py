@@ -16,7 +16,7 @@ a real Airflow and is the backstop for exactly that class of mistake.
 """
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -31,7 +31,7 @@ DAG_ID = "mlops_training_pipeline"
 
 
 class _Response:
-    def __init__(self, status_code: int, payload: Optional[dict[str, Any]] = None):
+    def __init__(self, status_code: int, payload: dict[str, Any] | None = None):
         self.status_code = status_code
         self._payload = payload or {}
         self.text = json.dumps(self._payload)
@@ -78,7 +78,7 @@ class _FakeAirflowClient:
         pass
 
 
-def _make(responses: Optional[dict] = None) -> tuple[AirflowOrchestrator, _FakeAirflowClient]:
+def _make(responses: dict | None = None) -> tuple[AirflowOrchestrator, _FakeAirflowClient]:
     """Build an orchestrator with a fake HTTP client.
 
     ``responses`` maps (method, url) -> {status, body}.
@@ -558,8 +558,9 @@ class TestGetTaskLog:
         assert client.calls == []
 
     def test_falls_back_to_rest_when_s3_object_missing(self, monkeypatch):
-        import mlops_framework.orchestration.airflow as airflow_mod
         from botocore.exceptions import ClientError
+
+        import mlops_framework.orchestration.airflow as airflow_mod
 
         class _FakeS3Client:
             def get_object(self, Bucket, Key):

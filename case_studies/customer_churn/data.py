@@ -20,9 +20,8 @@ from __future__ import annotations
 
 import csv
 import random
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
-
 
 _CONTRACT_TYPES = ("month-to-month", "one-year", "two-year")
 _PAYMENT_METHODS = ("credit-card", "bank-transfer", "electronic-check")

@@ -8,6 +8,7 @@ behaviour. No statistical libraries are required.
 from __future__ import annotations
 
 import json
+from datetime import UTC
 
 import pytest
 from sqlalchemy import create_engine
@@ -17,18 +18,9 @@ from sqlalchemy.pool import StaticPool
 from mlops_framework.database.base import Base
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
-from mlops_framework.database.models.drift_evaluation import DriftEvaluation
-from mlops_framework.database.models.model import Model
-from mlops_framework.database.models.model_promotion_event import (
-    ModelPromotionEvent,
-)
-from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.readiness_evaluation import (
-    ReadinessEvaluation,
     ReadinessStatus,
 )
-from mlops_framework.database.models.serving_instance import ServingInstance
-from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.readiness.engine import (
     ReadinessEngine,
     ReadinessResult,
@@ -167,8 +159,8 @@ class TestFreshnessCheck:
     def test_stale_dataset_fails(self, session):
         v = _make_version(session)
         # created_at is `now()` by default — simulate an old version
-        from datetime import datetime, timedelta, timezone
-        v.created_at = datetime.now(timezone.utc) - timedelta(hours=72)
+        from datetime import datetime, timedelta
+        v.created_at = datetime.now(UTC) - timedelta(hours=72)
         result = ReadinessEngine(session).evaluate(
             v, TrainingPolicy(freshness_hours=24)
         )
@@ -310,6 +302,8 @@ class TestPersistedEvaluation:
         rows = engine.get_evaluations(v.id)
         assert len(rows) == 1
         row = rows[0]
+        # The persisted row must agree with what the caller was told.
+        assert row.status == result.status
         assert row.dataset_version_id == v.id
         assert row.status == ReadinessStatus.READY
         assert row.observed_row_count == v.row_count
@@ -323,6 +317,7 @@ class TestPersistedEvaluation:
         rows = engine.get_evaluations(v.id)
         assert len(rows) == 1
         assert rows[0].status == ReadinessStatus.BLOCKED
+        assert rows[0].status == result.status
         reasons = json.loads(rows[0].reasons_json)
         assert reasons and "10000" in reasons[0]
 

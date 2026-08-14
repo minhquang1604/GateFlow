@@ -18,7 +18,6 @@ from sqlalchemy.pool import StaticPool
 
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.base import Base
-from mlops_framework.database.session import DatabaseManager
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.drift_evaluation import (
@@ -36,6 +35,7 @@ from mlops_framework.database.models.readiness_evaluation import (
     ReadinessStatus,
 )
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
+from mlops_framework.database.session import DatabaseManager
 from mlops_framework.events.publisher import TrainingFailedEvent
 from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.sdk import MLOpsProject

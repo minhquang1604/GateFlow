@@ -23,7 +23,6 @@ from mlops_framework.api.routers import mlflow_views
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
 from mlops_framework.tracking import mlflow_client
 
-
 MLFLOW_RUN_ID = "abc123def456"
 
 

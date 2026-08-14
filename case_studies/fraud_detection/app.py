@@ -10,17 +10,10 @@ Run with::
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
-from mlops_framework.sdk import MLOpsProject, NotFoundError
-
 from case_studies.fraud_detection import data
-from case_studies.fraud_detection.pipelines import (
-    train_advanced,
-    train_baseline,
-)
-
+from mlops_framework.sdk import MLOpsProject, NotFoundError
 
 PROJECT_NAME = "fraud-detection"
 DATASET_NAME = "credit-card-transactions"

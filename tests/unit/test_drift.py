@@ -8,17 +8,12 @@ results.
 
 from __future__ import annotations
 
-import math
 import random
-from typing import Callable
-
-import pytest
 
 from mlops_framework.drift.detector import (
     DriftConfig,
     DriftDetector,
     DriftResult,
-    FeatureDrift,
     ScipyDriftDetector,
 )
 

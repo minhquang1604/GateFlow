@@ -34,11 +34,12 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 from sqlalchemy import select
 
+from case_studies.fraud_detection import data as fraud_data
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
@@ -56,8 +57,6 @@ from mlops_framework.tracking.mlflow import MLflowTracker
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
 
-from case_studies.fraud_detection import data as fraud_data
-
 STEP_SEP = "─" * 72
 
 
@@ -73,7 +72,7 @@ def _wait_for(url: str, *, label: str, timeout: float = 180.0) -> None:
     """Poll ``url`` until it returns 2xx/3xx or we time out."""
     print(f"  waiting for {label} at {url} ...", flush=True)
     deadline = time.time() + timeout
-    last_err: Optional[str] = None
+    last_err: str | None = None
     while time.time() < deadline:
         try:
             response = httpx.get(url, timeout=2.0)
@@ -146,8 +145,8 @@ class InitialTrainingResult:
     model_state: str
     metrics: dict[str, Any]
     promoted: bool
-    tracker_run_id: Optional[str]
-    mlflow_run_id: Optional[str]
+    tracker_run_id: str | None
+    mlflow_run_id: str | None
     execution_id: str
     dag_id: str
     content_sha256: str
@@ -169,10 +168,10 @@ def run_initial_training(
     experiment_name: str,
     csv_local_path: Path,
     airflow_csv_path: str,
-    csv_write_kwargs: Optional[dict[str, Any]] = None,
-    training_params: Optional[dict[str, Any]] = None,
+    csv_write_kwargs: dict[str, Any] | None = None,
+    training_params: dict[str, Any] | None = None,
     min_f1: float = 0.5,
-    training_policy: Optional[TrainingPolicy] = None,
+    training_policy: TrainingPolicy | None = None,
     timeout: float = 600.0,
     step_prefix: str = "",
 ) -> InitialTrainingResult:

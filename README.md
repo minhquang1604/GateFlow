@@ -797,12 +797,17 @@ Framework/
 ## Testing
 
 ```bash
-pytest                        # full suite — 469 passed, 24 skipped (live-service integration tests)
+pytest                         # full suite — 831 passed, 24 skipped (live-service integration tests)
 pytest tests/unit              # unit tests only
 pytest tests/integration       # integration tests only
 pytest -k drift                # by name
-pytest --cov=mlops_framework   # coverage
+pytest --cov=mlops_framework   # coverage — currently 91%
 ```
+
+Every test carries a 300s ceiling (`pytest-timeout`, configured in
+`pyproject.toml`). Several drive real subprocesses and a real local
+MLflow store, so a hang there used to stall the whole run with nothing
+naming the test responsible.
 
 The suite is hermetic — no live MLflow, Airflow, or Postgres required:
 
@@ -815,6 +820,13 @@ The suite is hermetic — no live MLflow, Airflow, or Postgres required:
 
 The 24 skipped tests need a live stack (`docker compose up -d`) and are
 opt-in — see `tests/integration/test_airflow_live.py`.
+
+CI runs `ruff check .` over the whole repository, not just `src/`, and
+`pytest tests/ case_studies/` — `pytest tests/` alone was skipping the
+two case studies that exist to prove the SDK boundary holds. Deliberate
+lint exceptions live in `pyproject.toml`'s
+`[tool.ruff.lint.per-file-ignores]`, each with the reason written next
+to it.
 
 ## Known limitations
 

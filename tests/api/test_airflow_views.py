@@ -16,12 +16,13 @@ adapter (which already has its own suite).
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from mlops_framework.api import airflow_gateway
 from mlops_framework.api.routers import airflow_views
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
-
 
 EXECUTION_ID = "mlops_training_pipeline/mlops-abc123"
 
@@ -64,7 +65,7 @@ class _FakeOrchestrator:
         return [{"task_id": "train", "state": "success", "try_number": 1}]
 
     def get_execution_status(self, execution_id):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from mlops_framework.orchestration.base import ExecutionState, ExecutionStatus
 
@@ -73,8 +74,8 @@ class _FakeOrchestrator:
             execution_id=execution_id,
             state=ExecutionState.SUCCESS,
             pipeline_id="mlops_training_pipeline",
-            started_at=datetime(2026, 8, 5, tzinfo=timezone.utc),
-            finished_at=datetime(2026, 8, 5, 0, 1, tzinfo=timezone.utc),
+            started_at=datetime(2026, 8, 5, tzinfo=UTC),
+            finished_at=datetime(2026, 8, 5, 0, 1, tzinfo=UTC),
             metadata={"conf": {"max_depth": 6}},
         )
 

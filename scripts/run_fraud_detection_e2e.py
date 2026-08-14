@@ -52,12 +52,13 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from case_studies.fraud_detection import data as fraud_data  # noqa: E402
 from mlops_framework.database.base import Base  # noqa: E402
 from mlops_framework.database.models.model_version import ModelState  # noqa: E402
 from mlops_framework.database.session import DatabaseManager  # noqa: E402
@@ -74,8 +75,6 @@ from mlops_framework.orchestration.local import LocalDockerOrchestrator  # noqa:
 from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy  # noqa: E402
 from mlops_framework.training.manager import TrainingManager  # noqa: E402
 from mlops_framework.training.service import TrainingService  # noqa: E402
-
-from case_studies.fraud_detection import data as fraud_data  # noqa: E402
 
 DATASET_NAME = "credit-card-fraud"
 MODEL_NAME = "fraud-xgboost"
@@ -169,7 +168,7 @@ def evaluate_readiness(session, version) -> Any:
     return result
 
 
-def train(session, version, *, tracking_uri: Optional[str], timeout: float) -> Any:
+def train(session, version, *, tracking_uri: str | None, timeout: float) -> Any:
     """Run the real XGBoost pipeline through the framework."""
     dm = DatasetManager(session)
     tm = TrainingManager(session, dm)
@@ -283,7 +282,7 @@ def register_and_promote(session, run, version, metrics: dict) -> Any:
     return candidate
 
 
-def exercise_airflow(session, version) -> Optional[Any]:
+def exercise_airflow(session, version) -> Any | None:
     """Drive a real Airflow DAG run through the framework's orchestrator.
 
     This is the orchestration path, not the training path — see the module

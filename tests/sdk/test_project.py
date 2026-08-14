@@ -7,17 +7,21 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Registers every table on Base.metadata for create_all() in the
+# fixture below. Without it this module passed only when another
+# test had already imported framework_setting — see the models
+# package docstring.
+from mlops_framework.database import models  # noqa: F401
 from mlops_framework.database.base import Base
 from mlops_framework.database.session import DatabaseManager
+from mlops_framework.pipeline import PipelineNotFoundError
 from mlops_framework.sdk import (
     AlreadyExistsError,
     MLOpsDataset,
     MLOpsProject,
-    MLOpsRun,
     NotFoundError,
     PipelineNotRegisteredError,
 )
-from mlops_framework.sdk.exceptions import TrainingError
 
 
 @pytest.fixture()
@@ -51,7 +55,7 @@ class TestPipelines:
         # The SDK's train() wraps the registry's PipelineNotFoundError into
         # the SDK's PipelineNotRegisteredError, so the registry exception
         # itself bubbles up when calling pipelines.resolve directly.
-        with pytest.raises(Exception):  # PipelineNotFoundError (KeyError subclass)
+        with pytest.raises(PipelineNotFoundError):
             project.pipelines.resolve("nope")
 
 
@@ -94,6 +98,7 @@ class TestVersions:
         assert [v.version_number for v in ds.versions] == [1, 2]
         assert ds.latest_version.version_number == 2
         assert v1.row_count == 100
+        assert v2.row_count == 200
         assert v1.metadata == {"columns": [{"name": "x", "dtype": "int64"}]}
 
 

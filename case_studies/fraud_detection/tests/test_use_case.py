@@ -19,6 +19,12 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from case_studies.fraud_detection import data
+from case_studies.fraud_detection.pipelines import (
+    fail,
+    train_advanced,
+    train_baseline,
+)
 from mlops_framework.database.base import Base
 from mlops_framework.database.session import DatabaseManager
 from mlops_framework.orchestration.local import LocalDockerOrchestrator
@@ -28,14 +34,6 @@ from mlops_framework.sdk import (
     NotFoundError,
 )
 from mlops_framework.tracking.in_memory import InMemoryTracker
-
-from case_studies.fraud_detection import data
-from case_studies.fraud_detection.pipelines import (
-    fail,
-    train_advanced,
-    train_baseline,
-)
-
 
 # ---------------------------------------------------------------------- #
 # Data generator
@@ -145,6 +143,7 @@ class TestCaseStudyLifecycle:
             metadata=data.schema_metadata(),
         )
         m = project.create_model("fraud-xgb", task="binary_classification")
+        assert m.name == "fraud-xgb"
 
         run = project.train(
             dataset_version=v,

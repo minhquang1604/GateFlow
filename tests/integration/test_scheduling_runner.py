@@ -9,15 +9,15 @@ right functions were called.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 pytest.importorskip("mlflow", reason="mlflow SDK is not installed")
 
 from mlops_framework.config.settings import get_settings
-from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.database.models.training_run import RunStatus, TriggerType
+from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.scheduling.manager import ScheduleManager
 from mlops_framework.scheduling.runner import run_due_schedules, run_schedule_now
@@ -55,7 +55,7 @@ def _backdate(db_session, schedule, minutes: int = 2):
     "not due yet" otherwise, since croniter's next slot after "right
     now" is up to 60 real seconds away.
     """
-    schedule.created_at = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    schedule.created_at = datetime.now(UTC) - timedelta(minutes=minutes)
     db_session.flush()
     db_session.commit()
 
@@ -112,7 +112,7 @@ class TestRunDueSchedules:
 
         # "Now" is a moment that can't be due for a freshly created
         # 3am-daily schedule (see cron.is_due's anchoring rule).
-        soon = datetime.now(timezone.utc) + timedelta(seconds=5)
+        soon = datetime.now(UTC) + timedelta(seconds=5)
         results = run_due_schedules(db_session, mlflow_tracking_uri=mlflow_uri, now=soon)
         assert len(results) == 1
         assert results[0].fired is False
@@ -143,7 +143,7 @@ class TestRunDueSchedules:
 
         # Same minute, called again immediately — must not fire twice.
         second = run_due_schedules(
-            db_session, mlflow_tracking_uri=mlflow_uri, now=datetime.now(timezone.utc)
+            db_session, mlflow_tracking_uri=mlflow_uri, now=datetime.now(UTC)
         )
         assert second[0].fired is False
         assert second[0].skipped_reason == "not due"

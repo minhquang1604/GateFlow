@@ -19,17 +19,34 @@ from fastapi.testclient import TestClient
 
 from mlops_framework.api.app import create_app
 
-
+# Every route mount_ui registers. It used to be nine of them, which
+# left the newest pages — Scheduling, Pipelines, Settings, Activity,
+# the compare view, the raw-MLflow-run view — with no test that they
+# render at all; a fragment renamed or a template deleted would only
+# have shown up in a browser.
 PAGES = [
     "/",
     "/dashboard",
     "/datasets",
-    "/runs",
-    "/models",
-    "/lineage",
     "/datasets/1",  # even with no data, the page itself loads
+    "/runs",
+    "/runs/compare",  # registered before /runs/{id}; must not 422
     "/runs/1",
+    "/models",
     "/models/1",
+    "/schedules",
+    "/lineage",
+    "/pipelines",
+    "/pipelines/mlops_training_pipeline",  # dag_id, a string not an int
+    "/mlflow-runs/abc123def456",  # opaque MLflow run id
+    "/settings",
+    "/activity",
+]
+
+# Folded into /runs; kept as redirects so old links still land somewhere.
+REDIRECTS = [
+    ("/experiments", "/runs"),
+    ("/experiments/42", "/runs?experiment=42"),
 ]
 
 
@@ -75,6 +92,14 @@ class TestTopNav:
         body = ui_client.get("/dashboard").text
         sidebar = body.split('class="sidenav"', 1)[1].split("</aside>", 1)[0]
         assert "/docs" not in sidebar
+
+
+class TestRedirects:
+    @pytest.mark.parametrize("path,target", REDIRECTS)
+    def test_old_experiment_urls_redirect(self, ui_client, path, target):
+        r = ui_client.get(path, follow_redirects=False)
+        assert r.status_code in (307, 308)
+        assert r.headers["location"] == target
 
 
 class TestStaticAssets:

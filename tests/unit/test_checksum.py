@@ -1,13 +1,10 @@
 """Unit tests for checksum module."""
 
-import pytest
 from mlops_framework.dataset.checksum import (
     calculate_checksum,
-    calculate_file_checksum,
     calculate_dict_checksum,
     verify_checksum,
 )
-from mlops_framework.exceptions import ChecksumError
 
 
 class TestCalculateChecksum:

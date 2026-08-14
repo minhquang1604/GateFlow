@@ -6,6 +6,7 @@ from logging.config import fileConfig
 
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
+
 from alembic import context
 
 # Add the project root to the Python path
@@ -30,21 +31,12 @@ if not database_url:
     )
 config.set_main_option("sqlalchemy.url", database_url)
 
-# Import the Base from the database models
+# Import the Base, then every model — importing the models package is
+# what puts all thirteen tables on Base.metadata below. Without it
+# autogenerate sees an empty schema and proposes dropping everything.
+# See that package's docstring; it is the one place this list lives now.
+from mlops_framework.database import models  # noqa: F401
 from mlops_framework.database.base import Base
-from mlops_framework.database.models.audit_log import AuditLog
-from mlops_framework.database.models.dataset import Dataset
-from mlops_framework.database.models.dataset_version import DatasetVersion
-from mlops_framework.database.models.drift_evaluation import DriftEvaluation
-from mlops_framework.database.models.framework_setting import FrameworkSetting
-from mlops_framework.database.models.governance_event import GovernanceEvent
-from mlops_framework.database.models.model import Model
-from mlops_framework.database.models.model_promotion_event import ModelPromotionEvent
-from mlops_framework.database.models.model_version import ModelVersion
-from mlops_framework.database.models.readiness_evaluation import ReadinessEvaluation
-from mlops_framework.database.models.schedule import Schedule
-from mlops_framework.database.models.serving_instance import ServingInstance
-from mlops_framework.database.models.training_run import TrainingRun
 
 # Interpret the config file for Python logging
 if config.config_file_name is not None:

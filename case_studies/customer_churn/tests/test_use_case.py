@@ -16,22 +16,18 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from mlops_framework.database.base import Base
-from mlops_framework.database.session import DatabaseManager
-from mlops_framework.sdk import (
-    AlreadyExistsError,
-    MLOpsProject,
-    NotFoundError,
-)
-from mlops_framework.sdk.exceptions import TrainingError
-
 from case_studies.customer_churn import data
 from case_studies.customer_churn.pipelines import (
     fail,
     train_balanced,
     train_baseline,
 )
-
+from mlops_framework.database.base import Base
+from mlops_framework.database.session import DatabaseManager
+from mlops_framework.sdk import (
+    MLOpsProject,
+)
+from mlops_framework.sdk.exceptions import TrainingError
 
 # ---------------------------------------------------------------------- #
 # Data generator
@@ -141,6 +137,7 @@ class TestCaseStudyLifecycle:
             metadata=data.schema_metadata(),
         )
         m = project.create_model("churn-clf", task="binary_classification")
+        assert m.name == "churn-clf"
         run = project.train(
             dataset_version=v, pipeline="baseline", wait=True, timeout=30
         )
@@ -203,8 +200,8 @@ class TestReusabilityAcrossCaseStudies:
     """Both case studies must use the same public SDK — no custom hooks."""
 
     def test_same_sdk_exports(self):
-        from mlops_framework import sdk as fraud_sdk
         from mlops_framework import sdk as churn_sdk  # same module
+        from mlops_framework import sdk as fraud_sdk
         # The SDK is one module; both case studies see the same exports.
         assert fraud_sdk is churn_sdk
 

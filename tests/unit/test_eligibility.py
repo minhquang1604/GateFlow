@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import create_engine
@@ -11,22 +11,13 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from mlops_framework.database.base import Base
-from mlops_framework.database.models.dataset import Dataset
-from mlops_framework.database.models.dataset_version import DatasetVersion
-from mlops_framework.database.models.drift_evaluation import DriftEvaluation
-from mlops_framework.database.models.model import Model
-from mlops_framework.database.models.model_promotion_event import (
-    ModelPromotionEvent,
-)
 from mlops_framework.database.models.model_version import (
     ModelState,
     ModelVersion,
 )
 from mlops_framework.database.models.readiness_evaluation import (
-    ReadinessEvaluation,
     ReadinessStatus,
 )
-from mlops_framework.database.models.serving_instance import ServingInstance
 from mlops_framework.database.models.training_run import (
     RunStatus,
     TrainingRun,
@@ -41,7 +32,6 @@ from mlops_framework.governance.eligibility import (
 from mlops_framework.readiness.engine import (
     ReadinessCheck,
     ReadinessCheckOutcome,
-    ReadinessEngine,
     ReadinessResult,
     TrainingPolicy,
 )
@@ -73,7 +63,7 @@ def _ready_result(version_id: int) -> ReadinessResult:
         reasons=[],
         policy=TrainingPolicy(),
         dataset_version_id=version_id,
-        evaluated_at=datetime.now(timezone.utc),
+        evaluated_at=datetime.now(UTC),
         observed_row_count=1000,
     )
 
@@ -86,7 +76,7 @@ def _blocked_result(version_id: int) -> ReadinessResult:
         reasons=["Dataset contains fewer rows than required"],
         policy=TrainingPolicy(),
         dataset_version_id=version_id,
-        evaluated_at=datetime.now(timezone.utc),
+        evaluated_at=datetime.now(UTC),
         observed_row_count=10,
     )
 
@@ -139,8 +129,8 @@ class TestCooldown:
             dataset_version_id=1,
             status=RunStatus.SUCCESS,
             trigger_type=TriggerType.MANUAL,
-            started_at=datetime.now(timezone.utc) - timedelta(hours=2),
-            completed_at=datetime.now(timezone.utc) - timedelta(hours=2),
+            started_at=datetime.now(UTC) - timedelta(hours=2),
+            completed_at=datetime.now(UTC) - timedelta(hours=2),
         )
         ctx = EligibilityContext(
             readiness=_ready_result(1),
@@ -157,7 +147,7 @@ class TestCooldown:
             dataset_version_id=1,
             status=RunStatus.SUCCESS,
             trigger_type=TriggerType.MANUAL,
-            completed_at=datetime.now(timezone.utc) - timedelta(hours=72),
+            completed_at=datetime.now(UTC) - timedelta(hours=72),
         )
         ctx = EligibilityContext(
             readiness=_ready_result(1),

@@ -1,10 +1,9 @@
 """Unit tests for schema hashing module."""
 
-import pytest
 from mlops_framework.dataset.versioning import (
     ColumnSpec,
-    calculate_schema_hash,
     calculate_dict_schema_hash,
+    calculate_schema_hash,
     verify_schema_hash,
 )
 

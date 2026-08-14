@@ -58,9 +58,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mlops_framework.dataset.checksum import calculate_file_checksum  # noqa: E402
-
 from case_studies.fraud_detection import data as fraud_data  # noqa: E402
+from mlops_framework.dataset.checksum import calculate_file_checksum  # noqa: E402
 
 DATASET_NAME = "credit-card-fraud"
 MODEL_NAME = "fraud-xgboost"
@@ -97,7 +96,7 @@ class AppClient:
     def close(self) -> None:
         self._c.close()
 
-    def __enter__(self) -> "AppClient":
+    def __enter__(self) -> AppClient:
         return self
 
     def __exit__(self, *_exc: Any) -> None:

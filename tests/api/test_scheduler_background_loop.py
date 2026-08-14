@@ -13,9 +13,10 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 pytest.importorskip("mlflow", reason="mlflow SDK is not installed")
+
+from datetime import UTC
 
 from mlops_framework.api.app import create_app
 from mlops_framework.api.deps import get_db_manager_dep
@@ -49,7 +50,7 @@ def db_setup(tmp_path, monkeypatch):
 
 
 def _seed_due_schedule(session_factory) -> int:
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     s = session_factory()
     try:
@@ -72,7 +73,7 @@ def _seed_due_schedule(session_factory) -> int:
             cron_expression="* * * * *",
             enabled=True,
             min_f1=0.5,
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=2),
+            created_at=datetime.now(UTC) - timedelta(minutes=2),
         )
         s.add(schedule)
         s.flush()

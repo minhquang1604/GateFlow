@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -45,7 +45,7 @@ API_BASE = "https://api.telegram.org"
 class ApprovalResult:
     approved: bool
     reason: str
-    responder: Optional[str] = None  # Telegram display name / username of whoever answered
+    responder: str | None = None  # Telegram display name / username of whoever answered
 
 
 class TelegramApprovalGate:
@@ -62,7 +62,7 @@ class TelegramApprovalGate:
         self._api = f"{API_BASE}/bot{bot_token}"
 
     @classmethod
-    def from_settings(cls, settings: Any) -> "TelegramApprovalGate":
+    def from_settings(cls, settings: Any) -> TelegramApprovalGate:
         return cls(
             bot_token=settings.telegram_bot_token,
             admin_chat_id=settings.telegram_admin_chat_id,
@@ -126,7 +126,7 @@ class TelegramApprovalGate:
 
     def _poll_answer(
         self, message_id: int, after_update_id: int, deadline: float
-    ) -> Optional[tuple[str, str]]:
+    ) -> tuple[str, str] | None:
         """Poll getUpdates for a callback_query on ``message_id`` from the
         admin chat. Returns (decision, responder_name) or None on timeout."""
         offset = after_update_id + 1
