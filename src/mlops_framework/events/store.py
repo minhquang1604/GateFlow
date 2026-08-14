@@ -10,7 +10,11 @@ store does not do that for them.
 
 Same "never raises" contract as ``audit/manager.py::AuditManager`` — a
 write failing here must not take down the training/drift/readiness
-decision it is recording.
+decision it is recording — and, for the same reason, the same SAVEPOINT
+around the insert. Swallowing the exception alone leaves the session in
+a rolled-back state, so the caller's own ``commit()`` fails with
+``PendingRollbackError`` and the decision this was recording is lost
+anyway. See that module's docstring for the full reasoning.
 """
 
 from __future__ import annotations
@@ -56,8 +60,10 @@ class GovernanceEventStore:
                 message=message,
                 payload_json=json.dumps(event.payload) if event.payload else None,
             )
-            self._session.add(row)
-            self._session.flush()
+            # SAVEPOINT — see the module docstring and AuditManager.record.
+            with self._session.begin_nested():
+                self._session.add(row)
+                self._session.flush()
             return row
         except Exception:  # noqa: BLE001 - never fail the caller's real action
             _log.exception(

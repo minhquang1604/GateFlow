@@ -67,6 +67,60 @@ class TestRecord:
         assert am.list_entries() == []
 
 
+
+class TestFailureIsolation:
+    """The "never raises" contract, taken literally: the caller's own
+    transaction has to survive a failed audit write, not just the call.
+
+    Before the SAVEPOINT (see the module docstring), catching the
+    exception was not enough — a failure raised by ``flush()`` left the
+    session in a rolled-back state, so the caller's next statement died
+    with ``PendingRollbackError`` and the promotion being audited was
+    lost anyway.
+    """
+
+    def test_flush_time_failure_leaves_the_session_usable(self, session):
+        from mlops_framework.dataset.manager import DatasetManager
+
+        dm = DatasetManager(session)
+        dm.create_dataset("the-callers-real-work")
+
+        # action is NOT NULL — this fails inside flush(), not before it,
+        # which is the case a bare try/except cannot contain.
+        assert AuditManager(session).record(actor="a", action=None) is None
+
+        # The caller carries on and commits: its work is intact, and the
+        # failed audit row is simply absent.
+        dm.create_dataset("work-after-the-failed-audit-write")
+        session.commit()
+
+        from mlops_framework.database.models.audit_log import AuditLog
+        from mlops_framework.database.models.dataset import Dataset
+
+        names = {d.name for d in session.query(Dataset).all()}
+        assert names == {"the-callers-real-work", "work-after-the-failed-audit-write"}
+        assert session.query(AuditLog).count() == 0
+
+    def test_a_later_audit_write_still_succeeds(self, session):
+        am = AuditManager(session)
+        assert am.record(actor="a", action=None) is None
+        entry = am.record(actor="alice", action="MODEL_PROMOTED", entity_id=1)
+        assert entry is not None and entry.id is not None
+        session.commit()
+
+    def test_pre_flush_failure_is_still_contained(self, session):
+        """json.dumps failing happens before any SQL; it was already
+        harmless, and must stay that way now the SAVEPOINT is there."""
+        from mlops_framework.dataset.manager import DatasetManager
+
+        dm = DatasetManager(session)
+        assert AuditManager(session).record(
+            actor="a", action="X", metadata={"not": object()}
+        ) is None
+        dm.create_dataset("still-fine")
+        session.commit()
+
+
 class TestListEntries:
     def _seed(self, am: AuditManager) -> None:
         am.record(actor="a", action="SCHEDULE_CREATED", entity_type="Schedule", entity_id=1)

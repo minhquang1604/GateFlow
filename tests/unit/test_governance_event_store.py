@@ -67,6 +67,44 @@ class TestRecord:
         assert empty_row.payload_json is None
 
 
+
+class TestFailureIsolation:
+    """Same contract, same SAVEPOINT, as AuditManager — see
+    ``tests/unit/test_audit.py``'s ``TestFailureIsolation`` for why
+    catching the exception is not on its own enough."""
+
+    def test_flush_time_failure_leaves_the_session_usable(self, session):
+        from mlops_framework.database.models.dataset import Dataset
+        from mlops_framework.database.models.governance_event import GovernanceEvent
+        from mlops_framework.dataset.manager import DatasetManager
+
+        dm = DatasetManager(session)
+        dm.create_dataset("the-callers-real-work")
+
+        # message is NOT NULL — fails inside flush(), like a constraint
+        # violation would in production.
+        assert (
+            GovernanceEventStore(session).record(
+                TrainingFailedEvent(training_run_id=1), message=None
+            )
+            is None
+        )
+
+        dm.create_dataset("work-after-the-failed-event-write")
+        session.commit()
+
+        names = {d.name for d in session.query(Dataset).all()}
+        assert names == {"the-callers-real-work", "work-after-the-failed-event-write"}
+        assert session.query(GovernanceEvent).count() == 0
+
+    def test_a_later_event_write_still_succeeds(self, session):
+        store = GovernanceEventStore(session)
+        assert store.record(TrainingFailedEvent(training_run_id=1), message=None) is None
+        row = store.record(TrainingFailedEvent(training_run_id=2), message="ok")
+        assert row is not None and row.id is not None
+        session.commit()
+
+
 class TestListEntries:
     def _seed(self, store: GovernanceEventStore) -> None:
         store.record(

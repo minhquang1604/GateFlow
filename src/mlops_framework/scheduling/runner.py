@@ -41,8 +41,11 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from mlops_framework.database.models.governance_event import GovernanceEventSeverity
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.dataset.manager import DatasetManager
+from mlops_framework.events.publisher import ScheduleFailedEvent
+from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.framework_settings.manager import FrameworkSettingsManager
 from mlops_framework.orchestration.local import LocalDockerOrchestrator
 from mlops_framework.scheduling import cron
@@ -61,6 +64,10 @@ class ScheduleFireResult:
     fired: bool
     skipped_reason: str | None = None
     outcome: RetrainingOutcome | None = None
+    # Set when the schedule was due and attempted, but firing raised.
+    # Distinct from skipped_reason ("we chose not to run it") — this is
+    # "we ran it and it blew up". ``fired`` stays False either way.
+    error: str | None = None
 
 
 def run_due_schedules(
@@ -74,6 +81,18 @@ def run_due_schedules(
     One result per *enabled* schedule (fired or not, with why);
     disabled schedules aren't reported at all — "disabled" isn't an
     interesting outcome to surface on every tick.
+
+    A schedule that raises is contained here rather than allowed out:
+    it is recorded, its trigger time is advanced, and the loop moves on
+    to the next schedule. Without that containment one broken schedule
+    took the whole tick with it — every schedule after it in the list
+    never ran, and because ``record_trigger`` was only reached on the
+    success path the broken one stayed due and re-fired on every tick
+    forever, minting a TrainingRun row each time. ``api/app.py``'s
+    scheduler loop catches at the *tick* level, which kept the loop
+    alive but could not give the other schedules their turn; that is
+    what its docstring's "one broken schedule must not silently stop
+    every other schedule" needs from this function to be true.
     """
     now = now or datetime.now(UTC)
     sm = ScheduleManager(session)
@@ -90,8 +109,54 @@ def run_due_schedules(
                 ScheduleFireResult(schedule.id, fired=False, skipped_reason="not due")
             )
             continue
-        results.append(_fire(session, schedule, mlflow_tracking_uri, now))
+        try:
+            results.append(_fire(session, schedule, mlflow_tracking_uri, now))
+        except Exception as exc:  # noqa: BLE001 - one schedule must not end the pass
+            results.append(_record_failure(session, schedule, exc))
     return results
+
+
+def _record_failure(session: Session, schedule: Any, exc: Exception) -> ScheduleFireResult:
+    """Absorb a schedule that blew up: surface it, then let it wait.
+
+    Three things have to happen, in this order:
+
+    1. The session is rolled back. Whatever ``_fire`` was part-way
+       through is unusable, and the two writes below need a working
+       transaction.
+    2. A CRITICAL GovernanceEvent is written, so the failure shows up on
+       Gateflow's Alerts tab instead of only in a container log.
+    3. ``record_trigger`` advances ``last_triggered_at``. This is the
+       half that stops the retry storm: the schedule waits for its next
+       natural occurrence rather than being due again on the very next
+       tick. A schedule failing every time therefore fails at its own
+       cadence — once an hour for an hourly cron — not every
+       ``scheduler_poll_seconds``.
+    """
+    session.rollback()
+    _log.exception("schedule %s failed to fire", schedule.id)
+
+    detail = f"{type(exc).__name__}: {exc}"
+    GovernanceEventStore(session).record(
+        ScheduleFailedEvent(schedule_id=schedule.id, error_message=detail),
+        message=f"Schedule #{schedule.id} failed to fire — {detail}",
+        severity=GovernanceEventSeverity.CRITICAL,
+        entity_type="Schedule",
+        entity_id=schedule.id,
+    )
+    try:
+        ScheduleManager(session).record_trigger(
+            schedule.id, triggered_at=datetime.now(UTC), training_run_id=None
+        )
+        session.commit()
+    except Exception:  # noqa: BLE001 - nothing further to fall back on
+        _log.exception(
+            "schedule %s: could not record the failed trigger; it may re-fire "
+            "on the next tick",
+            schedule.id,
+        )
+        session.rollback()
+    return ScheduleFireResult(schedule.id, fired=False, error=detail)
 
 
 def run_schedule_now(
@@ -104,6 +169,12 @@ def run_schedule_now(
 
     What ``POST /schedules/{id}/run-now`` calls — "run it now" means
     now, not "now if it happens to be due".
+
+    A failure here propagates, unlike in :func:`run_due_schedules`: this
+    path has a caller waiting on the response, so the error belongs in
+    it rather than in an alert row they would have to go looking for.
+    Nor does a failed manual run advance ``last_triggered_at`` — that
+    would silently consume the schedule's next automatic occurrence.
     """
     schedule = ScheduleManager(session).get_schedule(schedule_id)
     return _fire(session, schedule, mlflow_tracking_uri, datetime.now(UTC))
@@ -162,8 +233,19 @@ def _fire(session: Session, schedule: Any, mlflow_tracking_uri: str | None, now:
     finally:
         orchestrator.shutdown()
 
+    # Anchored at the moment training *finished*, not the moment the tick
+    # started. ``is_due`` measures the next occurrence from
+    # ``last_triggered_at``, so recording the start time means a run that
+    # outlasts its own cron interval is already overdue the instant it
+    # returns — an every-minute schedule whose training takes 90s fires
+    # again immediately, back to back, forever. Recording the end instead
+    # gives the documented "wait for the next occurrence" semantics
+    # whatever the run cost. ``now`` still decides *whether* to fire; it
+    # just no longer decides when the next window opens.
     ScheduleManager(session).record_trigger(
-        schedule.id, triggered_at=now, training_run_id=outcome.training_run_id
+        schedule.id,
+        triggered_at=datetime.now(UTC),
+        training_run_id=outcome.training_run_id,
     )
     session.commit()
     _log.info(

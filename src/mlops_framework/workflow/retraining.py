@@ -64,6 +64,7 @@ from mlops_framework.governance.eligibility import (
 from mlops_framework.governance.promotion import (
     ModelPromotionPolicy,
     PromotionConfig,
+    PromotionContext,
 )
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.readiness.engine import ReadinessEngine, TrainingPolicy
@@ -514,7 +515,12 @@ class RetrainingWorkflow:
         # 6. Promotion policy ----------------------------------------------
         production = self._production_for_model(model.id)
         decision = self._promotion.evaluate(
-            context=type("Ctx", (), {"candidate": mv, "production": production})(),
+            # The real dataclass, not an ad-hoc type() with the two
+            # attributes the policy happens to read today: that shape
+            # silently drifts the moment PromotionContext grows a field,
+            # and it is what api/routers/internal.py's promote_model —
+            # the other caller of this same policy — has always passed.
+            context=PromotionContext(candidate=mv, production=production),
             config=promotion_config,
         )
         if not decision.approved:

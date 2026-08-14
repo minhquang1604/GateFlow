@@ -12,6 +12,27 @@ recording — the framework's own state change is what happened; a
 missed audit row is a degraded record of it, not a reason to fail the
 action itself. Same design contract as ``mlflow_registry``'s "nothing
 here ever raises".
+
+Why the write goes inside a SAVEPOINT
+-------------------------------------
+Swallowing the exception is not on its own enough to keep that promise.
+A failure raised by ``flush()`` — a constraint violation, a bad column
+value — leaves the *session* in a rolled-back state, so the caller's
+next statement (usually the ``commit()`` in ``api/deps.py``'s
+``get_db``) dies with ``PendingRollbackError``. The promotion this was
+recording is then lost anyway, which is precisely the outcome the
+contract above exists to prevent.
+
+``session.rollback()`` in the handler is not the fix either: it would
+discard the caller's own uncommitted work and let the request return
+2xx over a database that never saw the promotion — silent data loss in
+place of a loud failure.
+
+So the insert runs inside ``begin_nested()``. On failure SQLAlchemy
+rolls back to the savepoint only: the audit row is discarded, the
+caller's transaction is untouched and still usable, and the action goes
+through with one missing audit row — the documented degradation. See
+``tests/unit/test_audit.py``'s ``TestFailureIsolation``.
 """
 
 from __future__ import annotations
@@ -53,8 +74,13 @@ class AuditManager:
                 entity_id=entity_id,
                 metadata_json=json.dumps(metadata) if metadata else None,
             )
-            self._session.add(entry)
-            self._session.flush()
+            # SAVEPOINT, so a failed insert rolls back only this row and
+            # leaves the caller's transaction usable — see the module
+            # docstring. json.dumps above is deliberately outside it:
+            # that failure happens before any SQL and needs no unwinding.
+            with self._session.begin_nested():
+                self._session.add(entry)
+                self._session.flush()
             return entry
         except Exception:  # noqa: BLE001 - never fail the caller's real action
             _log.exception("failed to record audit log entry action=%s", action)
