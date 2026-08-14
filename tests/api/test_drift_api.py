@@ -154,3 +154,131 @@ class TestMostRecentWins:
 class TestReadsAreNotGated:
     def test_no_write_token_needed(self, anon_client, two_versions):
         assert anon_client.get(f"/api/drift/{two_versions[0]}").status_code == 200
+
+
+# ---------------------------------------------------------------------- #
+# POST /api/drift/{version_id}/check — trigger an Airflow drift run
+# ---------------------------------------------------------------------- #
+
+
+@pytest.fixture()
+def airflow_env(monkeypatch):
+    from mlops_framework.config.settings import get_settings
+
+    monkeypatch.setenv("AIRFLOW_BASE_URL", "http://airflow:8080")
+    get_settings.cache_clear()
+    yield
+    get_settings.cache_clear()
+
+
+@pytest.fixture()
+def fake_orchestrator(monkeypatch):
+    """Capture what the endpoint asks Airflow to run."""
+    triggered = {}
+
+    class _Fake:
+        def __init__(self, **kwargs):
+            triggered["auth"] = (kwargs.get("username"), kwargs.get("password"))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            triggered["closed"] = True
+
+        def trigger_pipeline(self, dag_id, config=None):
+            triggered["dag_id"] = dag_id
+            triggered["conf"] = config
+            return f"{dag_id}/run-abc123"
+
+    monkeypatch.setattr(
+        "mlops_framework.orchestration.airflow.AirflowOrchestrator", _Fake
+    )
+    return triggered
+
+
+class TestTriggerDriftCheck:
+    def test_queues_the_dag_against_the_previous_version(
+        self, client, two_versions, airflow_env, fake_orchestrator
+    ):
+        v1, v2 = two_versions
+        r = client.post(f"/api/drift/{v2}/check", json={})
+
+        # 202: the verdict is not ready yet, only the run is queued.
+        assert r.status_code == 202
+        body = r.json()
+        assert body["dag_id"] == "mlops_drift_check"
+        assert body["reference_dataset_version_id"] == v1
+        assert body["current_dataset_version_id"] == v2
+        assert body["execution_id"] == "mlops_drift_check/run-abc123"
+
+        assert fake_orchestrator["conf"] == {
+            "reference_version_id": v1,
+            "current_version_id": v2,
+            "sample_size": 5000,
+        }
+        assert fake_orchestrator["closed"] is True
+
+    def test_explicit_reference_is_honoured(
+        self, client, two_versions, airflow_env, fake_orchestrator
+    ):
+        v1, v2 = two_versions
+        r = client.post(
+            f"/api/drift/{v1}/check", json={"reference_version_id": v2, "sample_size": 250}
+        )
+        assert r.status_code == 202
+        assert fake_orchestrator["conf"]["reference_version_id"] == v2
+        assert fake_orchestrator["conf"]["sample_size"] == 250
+
+    def test_first_version_has_nothing_to_compare_against(
+        self, client, two_versions, airflow_env, fake_orchestrator
+    ):
+        v1, _ = two_versions
+        r = client.post(f"/api/drift/{v1}/check", json={})
+        assert r.status_code == 422
+        assert "first version" in r.json()["detail"]
+        assert "dag_id" not in fake_orchestrator
+
+    def test_cannot_compare_a_version_with_itself(
+        self, client, two_versions, airflow_env, fake_orchestrator
+    ):
+        v1, v2 = two_versions
+        r = client.post(f"/api/drift/{v2}/check", json={"reference_version_id": v2})
+        assert r.status_code == 422
+        assert "itself" in r.json()["detail"]
+
+    def test_unknown_version_is_404(self, client, airflow_env, fake_orchestrator):
+        assert client.post("/api/drift/9999/check", json={}).status_code == 404
+
+    def test_without_airflow_configured_it_says_so(
+        self, client, two_versions, monkeypatch
+    ):
+        from mlops_framework.config.settings import get_settings
+
+        monkeypatch.delenv("AIRFLOW_BASE_URL", raising=False)
+        get_settings.cache_clear()
+        r = client.post(f"/api/drift/{two_versions[1]}/check", json={})
+        assert r.status_code == 503
+        assert "AIRFLOW_BASE_URL" in r.json()["detail"]
+        get_settings.cache_clear()
+
+    def test_records_who_asked(
+        self, client, session_factory, two_versions, airflow_env, fake_orchestrator
+    ):
+        from mlops_framework.database.models.audit_log import AuditLog
+
+        v1, v2 = two_versions
+        client.post(f"/api/drift/{v2}/check", json={}, headers={"X-Actor": "bob"})
+
+        s = session_factory()
+        try:
+            row = s.query(AuditLog).filter_by(action="DRIFT_CHECK_TRIGGERED").one()
+            assert row.actor == "bob"
+            assert row.entity_id == v2
+            assert json.loads(row.metadata_json)["reference_dataset_version_id"] == v1
+        finally:
+            s.close()
+
+    def test_is_gated(self, anon_client, two_versions, airflow_env, fake_orchestrator):
+        assert anon_client.post(f"/api/drift/{two_versions[1]}/check", json={}).status_code == 401
+        assert "dag_id" not in fake_orchestrator

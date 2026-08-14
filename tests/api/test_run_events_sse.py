@@ -114,9 +114,26 @@ class TestStatusTransition:
         # loop stopped watching too early).
         assert statuses == ["PENDING", "RUNNING", "SUCCESS"]
 
-    def test_no_event_emitted_when_status_is_unchanged(self, client, session_factory):
+    def test_no_event_emitted_when_status_is_unchanged(
+        self, client, session_factory, monkeypatch
+    ):
         """Multiple poll ticks over an unchanging RUNNING status must not
-        each produce their own event — only transitions do."""
+        each produce their own event — only transitions do.
+
+        The flip runs on a background thread on purpose: the stream is
+        consumed synchronously here, so a write from *this* thread could
+        not land until the response was already finished.
+
+        _SSE_MAX_SECONDS is raised for this one test. At the file-wide
+        0.2s it was the binding constraint rather than the poll interval:
+        an 0.08s sleep that the OS scheduler delayed past 0.2s under a
+        loaded machine let the stream close on its timeout before the
+        SUCCESS transition existed, and the test failed with
+        ['RUNNING'] != ['RUNNING', 'SUCCESS']. What is under test is that
+        four unchanged ticks emit nothing, which the 0.02s poll interval
+        and the 0.08s flip still express.
+        """
+        monkeypatch.setattr(runs_module, "_SSE_MAX_SECONDS", 5.0)
         run_id = _seed_run(session_factory, status=RunStatus.RUNNING.value)
 
         def _flip_after_a_few_ticks():
@@ -129,7 +146,7 @@ class TestStatusTransition:
             with client.stream("GET", f"/api/training-runs/{run_id}/events") as resp:
                 events = _parse_events(list(resp.iter_lines()))
         finally:
-            t.join(timeout=2)
+            t.join(timeout=5)
 
         statuses = [data["status"] for name, data in events if name == "status"]
         assert statuses == ["RUNNING", "SUCCESS"]

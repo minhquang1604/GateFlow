@@ -544,6 +544,41 @@ async function initDatasets() {
   }
 }
 
+// "Run check" on a version's drift panel. The framework cannot compute
+// drift here — it never reads dataset files (see drift.py's module
+// docstring) — so this queues an Airflow DAG that can, and the panel
+// picks the verdict up on the next load. 202 with no result is the
+// honest response, so the button says so rather than pretending to have
+// an answer.
+//
+// Hidden on version 1 of a dataset: with nothing earlier to compare
+// against, the endpoint answers 422, and a button that always fails is
+// worse than no button.
+function driftCheckButton(v) {
+  if (!v.version_number || v.version_number < 2) return null;
+  const btn = el("button", { class: "btn" }, "Run check");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Queuing…";
+    try {
+      const r = await apiWrite(`/drift/${v.id}/check`, {
+        method: "POST", body: JSON.stringify({}),
+      });
+      flash(
+        `Drift check queued on ${r.dag_id} (v${v.version_number} vs #${r.reference_dataset_version_id}). ` +
+        "The verdict appears here when the DAG finishes.",
+        "ok",
+      );
+    } catch (e) {
+      flash(e.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run check";
+    }
+  });
+  return btn;
+}
+
 // One version's facts/readiness/drift/schema panel — used both for the
 // single-version view (the default) and reused nowhere else, since the
 // two-version compare below needs its fields side by side, not stacked.
@@ -602,7 +637,9 @@ async function datasetVersionSection(v) {
   // evaluation involving this version says.
   const driftFeatures = (drift && drift.details && drift.details.feature_results) || [];
   const driftPanel = el("div", { class: "card" },
-    el("div", { class: "chart-title" }, "Drift"),
+    el("div", { class: "section-head", style: "margin:0 0 10px" },
+      el("div", { class: "chart-title", style: "margin:0" }, "Drift"),
+      driftCheckButton(v)),
     drift
       ? el("div", {},
           el("div", { style: "margin-bottom:8px" }, statusBadge(drift.outcome)),

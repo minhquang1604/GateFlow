@@ -539,6 +539,38 @@ curl -X POST localhost:8001/internal/model/reload \
 curl localhost:8001/internal/model/active/fraud-model
 ```
 
+### Running a drift check
+
+```bash
+curl -X POST localhost:8000/api/drift/12/check \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -d '{}'
+# 202 {"dag_id": "mlops_drift_check", "execution_id": "...", ...}
+```
+
+Or **Run check** on a version's drift panel in the console. The verdict
+appears on `GET /api/drift/{id}` when the DAG finishes.
+
+The indirection is the point. The framework does not read dataset files
+— `DriftService` takes feature values from its caller, and nothing under
+`src/` opens an S3 object or a CSV — so neither the console nor the API
+process can compute drift itself. Giving the app container S3
+credentials and a 144 MB CSV inside a 256 MiB reservation is the exact
+failure that already killed Airflow's own gunicorn worker once, so the
+work goes where the data already is: `mlops_drift_check` reads both
+versions, samples them, and posts the values to
+`POST /api/internal/drift`.
+
+The DAG does the I/O and nothing else. Which detector, which thresholds
+(persisted Settings unless overridden), whether it counts as drift, and
+the `DriftEvaluation` row are all decided framework-side — a DAG that
+computed its own verdict could assert anything, and the row would be a
+client's claim rather than the framework's conclusion. Same split as
+`resolve_context`/`readiness` in `mlops_training_pipeline.py`.
+
+Sampling (default 5000 rows/feature) is about transport, not statistics:
+a KS test settles on a few thousand points, so shipping 284,807 values
+per feature over HTTP would reach the same answer more slowly.
+
 ### Rolling back
 
 ```python
@@ -590,7 +622,7 @@ the same FastAPI app as the API, at `/`.
 | Page | Route | Shows |
 |---|---|---|
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
-| Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
+| Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** with a **Run check** button |
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
 | Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download, and **Roll back** on any retired version |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
@@ -600,7 +632,7 @@ the same FastAPI app as the API, at `/`.
 
 ### API reference
 
-58 REST endpoints under `/api`, plus the two probes at the root
+61 REST endpoints under `/api`, plus the two probes at the root
 (`/health`, `/ready`), grouped by what they front:
 
 | Group | Examples | Purpose |
@@ -613,6 +645,7 @@ the same FastAPI app as the API, at `/`.
 | Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
+| Drift | `/api/drift/{id}` (read), `/api/drift/{id}/check` (run) | The check is queued on Airflow, not run in-process — see below. 202 on trigger; the verdict lands on the read endpoint |
 | Rollback | `/api/model-versions/{id}/rollback` | Put a retired version back into production — archives the incumbent, audits the actor, raises a CRITICAL alert, and asks the ServingBridge to reload. Gated by `CONSOLE_WRITE_TOKEN` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
 | Health | `/health`, `/ready` | Liveness (process only) and readiness (pings the database) — mounted at the root, not under `/api`, for container/load-balancer probes |

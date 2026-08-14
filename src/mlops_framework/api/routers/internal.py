@@ -65,7 +65,11 @@ from mlops_framework.database.models.governance_event import GovernanceEventSeve
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.dataset.manager import DatasetManager
-from mlops_framework.events.publisher import RunBlockedEvent, TrainingFailedEvent
+from mlops_framework.events.publisher import (
+    DriftDetectedEvent,
+    RunBlockedEvent,
+    TrainingFailedEvent,
+)
 from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.framework_settings.manager import FrameworkSettingsManager
 from mlops_framework.governance.promotion import (
@@ -135,6 +139,54 @@ def get_training_run_context(
         pipeline_id=run.pipeline_id,
         metadata=json.loads(run.metadata_json or "{}"),
         dataset_content_sha256=version_meta.get("content_sha256"),
+    )
+
+
+# ---------------------------------------------------------------------- #
+# GET /internal/dataset-versions/{version_id}
+# ---------------------------------------------------------------------- #
+
+
+class DatasetVersionContextOut(BaseModel):
+    id: int
+    dataset_id: int
+    version_number: int
+    storage_uri: str
+    row_count: int
+    metadata: dict[str, Any] = {}
+
+
+@router.get(
+    "/internal/dataset-versions/{version_id}",
+    response_model=DatasetVersionContextOut,
+)
+def get_dataset_version_context(
+    version_id: int,
+    dm: DatasetManager = Depends(get_dataset_manager),
+) -> DatasetVersionContextOut:
+    """Resolve a DatasetVersion for a DAG that has to read its data.
+
+    ``mlops_drift_check`` needs the storage_uri of both sides of a
+    comparison. It comes from here rather than the public
+    ``GET /dataset-versions/{id}`` for the same reason every other DAG
+    callback does: this router is the gated machine-to-machine surface,
+    and a storage URI is not something to hand out unauthenticated.
+    """
+    try:
+        version = dm.get_version(version_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    try:
+        metadata = json.loads(version.metadata_json or "{}")
+    except (TypeError, ValueError):
+        metadata = {}
+    return DatasetVersionContextOut(
+        id=version.id,
+        dataset_id=version.dataset_id,
+        version_number=version.version_number,
+        storage_uri=version.storage_uri,
+        row_count=version.row_count,
+        metadata=metadata,
     )
 
 
@@ -676,3 +728,115 @@ def finish_training_run(
             entity_id=run_id,
         )
     return _run_out(run, tm)
+
+
+# ---------------------------------------------------------------------- #
+# POST /internal/drift
+# ---------------------------------------------------------------------- #
+
+
+class InternalDriftRequest(BaseModel):
+    reference_dataset_version_id: int
+    current_dataset_version_id: int
+    # Feature-value mappings, {feature_name: [values]}. Sampled by the
+    # caller — see the endpoint docstring on why the DAG ships values
+    # rather than a verdict, and why a sample is enough.
+    reference_data: dict[str, list[float]]
+    current_data: dict[str, list[float]]
+    config: dict[str, Any] | None = None
+    notes: str = ""
+
+
+class InternalDriftResponse(BaseModel):
+    drift_detected: bool
+    score: float
+    method: str
+    threshold: float
+    feature_results: list[dict[str, Any]] = []
+
+
+@router.post("/internal/drift", response_model=InternalDriftResponse)
+def evaluate_drift(
+    request: InternalDriftRequest,
+    db: Session = Depends(get_db),
+    dm: DatasetManager = Depends(get_dataset_manager),
+) -> InternalDriftResponse:
+    """Run the drift detector over data the caller read, and persist it.
+
+    The counterpart of ``POST /internal/readiness/{version_id}``, and
+    split the same way. The DAG (``mlops_drift_check.py``) does the I/O
+    the framework deliberately does not do — reading a dataset out of S3
+    — and this endpoint does everything that is a *decision*: which
+    detector, which thresholds (persisted Settings, unless the caller
+    overrides), whether that counts as drift, and recording the verdict
+    where the console's drift panel reads it.
+
+    That split is why the DAG posts feature *values* rather than a
+    drift verdict. A caller that computed its own verdict could assert
+    anything; here the framework's own detector and its own configured
+    thresholds decide, and the DriftEvaluation row is the framework's
+    conclusion rather than a client's claim.
+
+    Values are expected to be a sample, not the whole column. A KS test
+    reaches its decision on a few thousand points; shipping 284,807 rows
+    per feature over HTTP to reach the same answer would only be slower.
+    The sample size is the DAG's to choose.
+    """
+    from mlops_framework.drift.detector import DriftConfig, DriftService, ScipyDriftDetector
+
+    try:
+        reference = dm.get_version(request.reference_dataset_version_id)
+        current = dm.get_version(request.current_dataset_version_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not request.reference_data or not request.current_data:
+        raise HTTPException(
+            status_code=422,
+            detail="reference_data and current_data must both carry at least one feature",
+        )
+
+    service = DriftService(db, ScipyDriftDetector())
+    result = service.evaluate(
+        reference_version=reference,
+        current_version=current,
+        reference_data=request.reference_data,
+        current_data=request.current_data,
+        config=DriftConfig.from_dict(request.config) if request.config else None,
+        notes=request.notes,
+    )
+
+    if result.drift_detected:
+        GovernanceEventStore(db).record(
+            DriftDetectedEvent(
+                dataset_version_id=current.id,
+                score=result.score,
+                threshold=result.threshold,
+                method=result.method,
+            ),
+            message=(
+                f"Drift detected on dataset version #{current.id} vs "
+                f"#{reference.id} ({result.method}, score={result.score:.4f} "
+                f"vs threshold {result.threshold:.4f})"
+            ),
+            severity=GovernanceEventSeverity.CRITICAL,
+            entity_type="DatasetVersion",
+            entity_id=current.id,
+        )
+
+    return InternalDriftResponse(
+        drift_detected=result.drift_detected,
+        score=result.score,
+        method=result.method,
+        threshold=result.threshold,
+        feature_results=[
+            {
+                "feature": f.feature,
+                "method": f.method,
+                "score": f.score,
+                "drift_detected": f.drift_detected,
+                "p_value": f.p_value,
+            }
+            for f in result.feature_results
+        ],
+    )

@@ -534,3 +534,162 @@ class TestWriteEndpoints:
         ).json()["id"]
         r = client.post(f"/api/internal/training-runs/{run_id}/start", json={})
         assert r.status_code == 503
+
+
+# ---------------------------------------------------------------------- #
+# POST /internal/drift — the DAG posts values, the framework decides
+# ---------------------------------------------------------------------- #
+
+
+class TestInternalDrift:
+    """The split this endpoint exists to enforce: ``mlops_drift_check``
+    does the I/O the framework deliberately does not do, and everything
+    that is a *decision* — detector, thresholds, verdict, the persisted
+    row — happens here. A DAG that computed its own verdict could assert
+    anything."""
+
+    def _versions(self, client):
+        ds = client.post("/api/internal/datasets", json={"name": "churn"}).json()
+        out = []
+        for n in (1, 2):
+            out.append(
+                client.post(
+                    f"/api/internal/datasets/{ds['id']}/versions",
+                    json={"storage_uri": f"s3://b/v{n}.csv", "row_count": 1000},
+                ).json()["id"]
+            )
+        return out
+
+    def test_identical_distributions_are_not_drift(self, client):
+        ref, cur = self._versions(client)
+        values = [float(i % 50) for i in range(400)]
+        r = client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {"v1": values},
+                "current_data": {"v1": list(values)},
+            },
+        )
+        assert r.status_code == 200
+        assert r.json()["drift_detected"] is False
+
+    def test_a_shifted_distribution_is_drift(self, client):
+        ref, cur = self._versions(client)
+        base = [float(i % 50) for i in range(400)]
+        r = client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {"v1": base},
+                "current_data": {"v1": [x + 500.0 for x in base]},
+            },
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["drift_detected"] is True
+        assert body["method"]
+        assert any(f["drift_detected"] for f in body["feature_results"])
+
+    def test_the_verdict_is_persisted_where_the_console_reads_it(self, client):
+        ref, cur = self._versions(client)
+        base = [float(i % 50) for i in range(400)]
+        client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {"v1": base},
+                "current_data": {"v1": [x + 500.0 for x in base]},
+            },
+        )
+        # …which is the same endpoint the drift panel calls.
+        shown = client.get(f"/api/drift/{cur}").json()
+        assert shown is not None
+        assert shown["reference_dataset_version_id"] == ref
+        assert shown["outcome"] == "DRIFT_DETECTED"
+
+    def test_drift_raises_a_critical_alert(self, client):
+        ref, cur = self._versions(client)
+        base = [float(i % 50) for i in range(400)]
+        client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {"v1": base},
+                "current_data": {"v1": [x + 500.0 for x in base]},
+            },
+        )
+        alerts = client.get("/api/alerts").json()
+        drift_alerts = [a for a in alerts if a["event_type"] == "DRIFT_DETECTED"]
+        assert len(drift_alerts) == 1
+        assert drift_alerts[0]["severity"] == "CRITICAL"
+        assert drift_alerts[0]["entity_id"] == cur
+
+    def test_no_drift_raises_no_alert(self, client):
+        ref, cur = self._versions(client)
+        values = [float(i % 50) for i in range(400)]
+        client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {"v1": values},
+                "current_data": {"v1": list(values)},
+            },
+        )
+        alerts = client.get("/api/alerts").json()
+        assert not [a for a in alerts if a["event_type"] == "DRIFT_DETECTED"]
+
+    def test_empty_feature_mappings_are_refused(self, client):
+        ref, cur = self._versions(client)
+        r = client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": cur,
+                "reference_data": {},
+                "current_data": {},
+            },
+        )
+        assert r.status_code == 422
+
+    def test_unknown_version_is_404(self, client):
+        ref, _ = self._versions(client)
+        r = client.post(
+            "/api/internal/drift",
+            json={
+                "reference_dataset_version_id": ref,
+                "current_dataset_version_id": 9999,
+                "reference_data": {"v1": [1.0, 2.0]},
+                "current_data": {"v1": [1.0, 2.0]},
+            },
+        )
+        assert r.status_code == 404
+
+
+class TestInternalDatasetVersionContext:
+    """What mlops_drift_check reads to find the files."""
+
+    def test_returns_the_storage_uri(self, client):
+        ds = client.post("/api/internal/datasets", json={"name": "churn"}).json()
+        v = client.post(
+            f"/api/internal/datasets/{ds['id']}/versions",
+            json={"storage_uri": "s3://b/v1.csv", "row_count": 42,
+                  "metadata": {"content_sha256": "abc"}},
+        ).json()
+
+        body = client.get(f"/api/internal/dataset-versions/{v['id']}").json()
+        assert body["storage_uri"] == "s3://b/v1.csv"
+        assert body["row_count"] == 42
+        assert body["version_number"] == 1
+        assert body["metadata"]["content_sha256"] == "abc"
+
+    def test_unknown_is_404(self, client):
+        assert client.get("/api/internal/dataset-versions/9999").status_code == 404
+
+    def test_is_gated(self, anon_client):
+        assert anon_client.get("/api/internal/dataset-versions/1").status_code == 401
