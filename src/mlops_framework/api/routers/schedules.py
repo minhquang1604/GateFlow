@@ -6,6 +6,15 @@ Mutations go through :class:`ScheduleManager`; ``POST
 background loop (``api/app.py``'s ``_start_scheduler``) calls when a
 schedule is actually due, so a manual trigger fires exactly the same
 way a cron-triggered one does, just without waiting on the clock.
+
+The four mutating routes are gated by
+:func:`~mlops_framework.api.security.require_write_token`; the two GETs
+are not, so the console's Scheduling page still renders for a reader
+with no token. Creating a schedule is not a benign row insert: its
+``pipeline_id`` is handed to ``LocalDockerOrchestrator``, which imports
+and calls it inside the app container — see that module's docstring.
+The console prompts for the token and retries on 401/403 (``app.js``'s
+``writeToken``/``apiWrite``).
 """
 
 from __future__ import annotations
@@ -18,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import get_actor, get_audit_manager, get_db, get_schedule_manager
 from mlops_framework.api.schemas import ScheduleOut
+from mlops_framework.api.security import require_write_token
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.config.settings import get_settings
 from mlops_framework.exceptions import (
@@ -60,7 +70,12 @@ class RunNowResponse(BaseModel):
     blocked_reason: str | None = None
 
 
-@router.post("/schedules", response_model=ScheduleOut, status_code=201)
+@router.post(
+    "/schedules",
+    response_model=ScheduleOut,
+    status_code=201,
+    dependencies=[Depends(require_write_token)],
+)
 def create_schedule(
     request: CreateScheduleRequest,
     sm: ScheduleManager = Depends(get_schedule_manager),
@@ -117,7 +132,11 @@ def get_schedule(
     return ScheduleOut.from_schedule(schedule)
 
 
-@router.patch("/schedules/{schedule_id}", response_model=ScheduleOut)
+@router.patch(
+    "/schedules/{schedule_id}",
+    response_model=ScheduleOut,
+    dependencies=[Depends(require_write_token)],
+)
 def update_schedule(
     schedule_id: int,
     request: UpdateScheduleRequest,
@@ -148,7 +167,11 @@ def update_schedule(
     return ScheduleOut.from_schedule(schedule)
 
 
-@router.delete("/schedules/{schedule_id}", status_code=204)
+@router.delete(
+    "/schedules/{schedule_id}",
+    status_code=204,
+    dependencies=[Depends(require_write_token)],
+)
 def delete_schedule(
     schedule_id: int,
     sm: ScheduleManager = Depends(get_schedule_manager),
@@ -167,7 +190,11 @@ def delete_schedule(
     )
 
 
-@router.post("/schedules/{schedule_id}/run-now", response_model=RunNowResponse)
+@router.post(
+    "/schedules/{schedule_id}/run-now",
+    response_model=RunNowResponse,
+    dependencies=[Depends(require_write_token)],
+)
 def trigger_schedule_now(
     schedule_id: int,
     db: Session = Depends(get_db),

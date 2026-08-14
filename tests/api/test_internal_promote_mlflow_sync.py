@@ -18,13 +18,15 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 pytest.importorskip("mlflow", reason="mlflow SDK is not installed")
 
+# tests/api has no __init__.py, so pytest puts this directory on sys.path
+# and the shared fixtures module is importable by its bare name.
+from conftest import authenticated_client  # noqa: E402
 from mlops_framework.api.app import create_app
 from mlops_framework.api.deps import get_db_manager_dep
 from mlops_framework.config.settings import get_settings
@@ -74,7 +76,7 @@ def api(mlflow_client):
     app = create_app(mount_ui=False)
     app.dependency_overrides[get_db_manager_dep] = lambda: mgr
     try:
-        yield TestClient(app), session_factory
+        yield authenticated_client(app), session_factory
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()

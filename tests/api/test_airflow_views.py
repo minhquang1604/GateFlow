@@ -331,8 +331,13 @@ class TestTaskControl:
         assert r.status_code == 503
         get_settings.cache_clear()
 
-    def test_clear_rejects_missing_header(self, client, fake_airflow, run_on_airflow, write_token):
-        r = client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
+    def test_clear_rejects_missing_header(
+        self, anon_client, fake_airflow, run_on_airflow, write_token
+    ):
+        # anon_client, not client: the shared `client` fixture now sends
+        # the token on every request (see conftest), so it cannot express
+        # "no header" — which is exactly what this test is about.
+        r = anon_client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
         assert r.status_code == 401
 
     def test_clear_rejects_wrong_token(self, client, fake_airflow, run_on_airflow, write_token):

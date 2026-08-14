@@ -581,7 +581,7 @@ the same FastAPI app as the API, at `/`.
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
-| Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network |
+| Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network. Gated by `CONSOLE_WRITE_TOKEN`, whole router, GET included |
 
 Full list at `/docs` (OpenAPI) once the app is running.
 
@@ -662,7 +662,7 @@ Environment variables (`.env` for host runs / Alembic, `.env.docker` for
 | `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | MinIO/S3 credentials the MLflow **client** needs directly — it talks to the artifact store, bypassing the mlflow server. Missing these fails `log_artifact`/`download_artifacts` with a silent `AccessDenied`, not a crash | unset |
 | `AIRFLOW_BASE_URL` / `AIRFLOW_USERNAME` / `AIRFLOW_PASSWORD` | `AirflowOrchestrator` REST credentials | unset / `airflow` / `airflow` |
 | `SERVING_BRIDGE_URL` | Used by `HttpEventPublisher` | unset |
-| `CONSOLE_WRITE_TOKEN` | Shared secret required in the `X-Console-Token` header for Gateflow's write endpoints (Airflow task Clear/Retry — see `api/security.py`). Unset disables those endpoints entirely | unset |
+| `CONSOLE_WRITE_TOKEN` | Shared secret required in the `X-Console-Token` header by **every** state-changing endpoint: all of `/api/internal/*` (the Airflow DAG's callbacks) and the write half of `/api/schedules`, plus Airflow task Clear/Retry — see `api/security.py`. The gate fails closed: unset, those endpoints answer 503, so the DAG cannot report a run back and Scheduling is read-only. Reads are never gated | unset |
 | `APP_NAME` / `APP_VERSION` | Application metadata | `mlops-framework` / `0.1.0` |
 | `DEBUG` | Debug mode | `false` |
 
@@ -845,6 +845,14 @@ opt-in — see `tests/integration/test_airflow_live.py`.
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
+6. **`CONSOLE_WRITE_TOKEN` is a shared secret, not authentication.**
+   There is still no user, session, or RBAC concept anywhere in the
+   app: one token gates every write endpoint, and `X-Actor` — what the
+   audit trail records — is caller-supplied and unverified. That is
+   enough to stop an anonymous request promoting a model or handing the
+   orchestrator a `pipeline_id` to run, and not enough to tell two
+   authorized operators apart. Per-principal credentials with RBAC are
+   the intended replacement.
 
 ## License
 

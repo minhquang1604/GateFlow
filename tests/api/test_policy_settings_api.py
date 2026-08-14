@@ -28,15 +28,16 @@ from __future__ import annotations
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# tests/api has no __init__.py, so pytest puts this directory on sys.path
+# and the shared fixtures module is importable by its bare name.
+from conftest import authenticated_client  # noqa: E402
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
-from mlops_framework.database.models.model_version import ModelState, ModelVersion
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
 
 DRIFT_DEFAULT = {"threshold": 0.05, "min_samples": 30, "methods": ["ks", "chi2"]}
@@ -299,7 +300,7 @@ def scheduler_api(mlflow_uri):
 
     app = create_app(mount_ui=False)
     app.dependency_overrides[get_db_manager_dep] = lambda: mgr
-    yield TestClient(app), session_factory
+    yield authenticated_client(app), session_factory
     Base.metadata.drop_all(engine)
     engine.dispose()
 

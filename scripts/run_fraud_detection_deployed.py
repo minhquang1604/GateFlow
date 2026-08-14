@@ -80,7 +80,19 @@ class AppClient:
     """Thin wrapper over the deployed app's internal API."""
 
     def __init__(self, base_url: str, timeout: float = 120.0) -> None:
-        self._c = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
+        # /api/internal/* fails closed behind CONSOLE_WRITE_TOKEN (see
+        # mlops_framework.api.security). Read it from the environment the
+        # same way the DAG does, so running this script against a
+        # configured deployment needs no new flag — and against an
+        # unconfigured one fails with the endpoint's own 503/401 rather
+        # than a confusing mid-flow error.
+        headers = {"X-Actor": "script:run_fraud_detection_deployed"}
+        token = os.environ.get("CONSOLE_WRITE_TOKEN", "")
+        if token:
+            headers["X-Console-Token"] = token
+        self._c = httpx.Client(
+            base_url=base_url.rstrip("/"), timeout=timeout, headers=headers
+        )
 
     def close(self) -> None:
         self._c.close()

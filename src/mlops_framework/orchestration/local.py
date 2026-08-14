@@ -13,11 +13,32 @@ JSON blob on stdin, and is expected to write a single JSON line on
 stdout to report ``{"status": "SUCCESS"|"FAILED", ...}``. Exit code 0
 is interpreted as SUCCESS, anything else as FAILED. ``cancel_execution``
 terminates the running process.
+
+Why the entry point is validated *and* passed out-of-band
+---------------------------------------------------------
+``pipeline_id`` is attacker-reachable: it arrives verbatim from
+``POST /api/schedules`` (``schedules.py``'s ``CreateScheduleRequest``)
+and from any SDK/API caller creating a training run. It used to be
+interpolated into the child's source text
+(``f"from {module} import {fn} as _entry"``), which made a newline in
+the value arbitrary code execution inside the app container — the
+value only had to keep the surrounding two lines syntactically valid.
+
+Both halves of that are now closed, deliberately redundantly:
+
+* :func:`_resolve_entry_point` rejects anything that is not a dotted
+  identifier path plus an identifier, so a payload never gets this far;
+* :data:`_BOOTSTRAP` is a fixed, constant program. The module and
+  callable travel as ``argv`` and are resolved with
+  :func:`importlib.import_module` + :func:`getattr`, so nothing a
+  caller supplies is ever parsed as Python — even if the validator
+  above is one day loosened or bypassed.
 """
 
 from __future__ import annotations
 
 import json
+import re
 import signal
 import subprocess
 import sys
@@ -41,17 +62,52 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+# A dotted import path and a plain callable name — exactly what
+# `import a.b.c` and `getattr(mod, "name")` accept, and nothing else.
+# Anchored, so a value that merely *starts* like an identifier (the
+# shape every injection payload has) is rejected rather than truncated.
+#
+# \Z, not $: in Python `$` also matches just before a trailing newline,
+# so `^\w+$` accepts "mod\n" — the one character these patterns exist to
+# reject. tests/unit/test_local_orchestrator_injection.py pins this.
+_MODULE_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*\Z")
+_CALLABLE_RE = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
 def _resolve_entry_point(pipeline_id: str) -> tuple[str, str]:
-    """Parse ``"module:callable"`` into ``(module, callable)``."""
+    """Parse ``"module:callable"`` into ``(module, callable)``.
+
+    Raises:
+        OrchestratorConfigError: if either half is not a plain Python
+            identifier path. See the module docstring — this value is
+            reachable from unauthenticated-by-default HTTP input, so
+            "looks roughly right" is not a strong enough check.
+    """
     if ":" in pipeline_id:
         module, _, fn = pipeline_id.partition(":")
     else:
         module, fn = pipeline_id, "main"
-    if not module or not fn:
+    if not _MODULE_RE.match(module) or not _CALLABLE_RE.match(fn):
         raise OrchestratorConfigError(
-            f"Invalid pipeline_id {pipeline_id!r}; expected 'module:callable'"
+            f"Invalid pipeline_id {pipeline_id!r}; expected 'module:callable' "
+            "where 'module' is a dotted import path and 'callable' is a "
+            "Python identifier"
         )
     return module, fn
+
+
+# Constant by construction: the entry point travels as argv (see
+# trigger_pipeline), never as text spliced into this program.
+_BOOTSTRAP = (
+    "import importlib, json, sys\n"
+    "_entry = getattr(importlib.import_module(sys.argv[1]), sys.argv[2])\n"
+    "cfg = json.loads(sys.stdin.read() or '{}')\n"
+    "result = _entry(cfg)\n"
+    "if result is not None:\n"
+    "    sys.stdout.write(json.dumps(result) + '\\n')\n"
+    "sys.stdout.flush()\n"
+    "sys.exit(0)\n"
+)
 
 
 class _LocalExecution:
@@ -135,20 +191,9 @@ class LocalDockerOrchestrator(Orchestrator):
         execution_id = uuid.uuid4().hex
         config = config or {}
 
-        bootstrap = (
-            "import json, sys\n"
-            f"from {module} import {fn} as _entry\n"
-            "cfg = json.loads(sys.stdin.read() or '{}')\n"
-            "result = _entry(cfg)\n"
-            "if result is not None:\n"
-            "    sys.stdout.write(json.dumps(result) + '\\n')\n"
-            "sys.stdout.flush()\n"
-            "sys.exit(0)\n"
-        )
-
         try:
             proc = subprocess.Popen(
-                [self._python, "-c", bootstrap],
+                [self._python, "-c", _BOOTSTRAP, module, fn],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

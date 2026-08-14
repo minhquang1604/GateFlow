@@ -146,6 +146,10 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+      # The DAG calls /api/internal/* on the app, which is gated — see
+      # the app service's own CONSOLE_WRITE_TOKEN comment and
+      # dags/mlops_training_pipeline.py's _internal_headers().
+      CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-dev-console-token}
       AIRFLOW__API__AUTH_BACKEND: airflow.api.auth.backend.basic_auth
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       AIRFLOW_ADMIN_USERNAME: airflow
@@ -211,6 +215,10 @@ services:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
       AIRFLOW__WEBSERVER__SECRET_KEY: "MLOPS_FRAMEWORK_SECRET"
+      # The DAG calls /api/internal/* on the app, which is gated — see
+      # the app service's own CONSOLE_WRITE_TOKEN comment and
+      # dags/mlops_training_pipeline.py's _internal_headers().
+      CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-dev-console-token}
       # See airflow-webserver's comment — LocalExecutor runs tasks as
       # scheduler subprocesses, so this is the container that actually
       # needs these when train_xgboost calls mlflow.log_artifact().
@@ -257,6 +265,14 @@ services:
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
       SCHEDULER_ENABLED: "true"
+      # Shared secret gating every write endpoint (/api/internal/* and
+      # the write half of /api/schedules) — see
+      # mlops_framework/api/security.py. The gate fails closed, so this
+      # is not optional: without it those routes answer 503 and the
+      # Airflow DAG cannot report back. The default below is a
+      # development value; set CONSOLE_WRITE_TOKEN in .env.docker (and
+      # anywhere reachable from outside a laptop) to something else.
+      CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-dev-console-token}
     ports:
       - "8000:8000"
     depends_on:
