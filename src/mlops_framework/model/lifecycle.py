@@ -6,8 +6,13 @@ The framework owns the model version state transitions. The lifecycle is:
                             CANDIDATE -> REJECTED
     TRAINING -> REJECTED
     CANDIDATE -> REJECTED
+    ARCHIVED  -> APPROVED                              (rollback only)
 
-ARCHIVED and REJECTED are terminal.
+REJECTED is terminal. ARCHIVED is not: a retired version can be
+re-approved and put back into production, which is what
+``ModelManager.rollback_to()`` does — see the comment on
+``VALID_MODEL_STATE_TRANSITIONS`` for why the edge lands on APPROVED
+rather than going straight to PRODUCTION.
 """
 
 from mlops_framework.database.models.model_version import (

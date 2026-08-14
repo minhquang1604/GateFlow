@@ -1,4 +1,10 @@
-"""Unit tests for scripts._telegram_approval.TelegramApprovalGate.
+"""Unit tests for ``mlops_framework.approval.telegram.TelegramApprovalGate``.
+
+The gate moved out of ``scripts/_telegram_approval.py`` and into the
+framework when human approval became an ``ApprovalGate`` the retraining
+workflow can be given — these tests moved with it, unchanged in what
+they cover: the polling loop, and that a click from a chat other than
+the configured admin is ignored.
 
 No real network calls — httpx.post is monkeypatched to a small fake
 Telegram Bot API that plays back a scripted sequence of responses, so
@@ -8,18 +14,13 @@ real bot/chat happened out-of-band during development, not here).
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parent.parent.parent / "scripts"
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
-
-import _telegram_approval as approval_module  # noqa: E402
-from _telegram_approval import TelegramApprovalGate  # noqa: E402
+from mlops_framework.approval import ApprovalRequest
+from mlops_framework.approval import telegram as approval_module
+from mlops_framework.approval.telegram import TelegramApprovalGate
 
 ADMIN_CHAT_ID = "111"
 OTHER_CHAT_ID = "999"
@@ -96,7 +97,7 @@ class TestApprove:
             [],  # the drain call before sending the prompt
             [_callback_update(1, message_id=42, from_id=ADMIN_CHAT_ID, data="approve", username="Kang_NFT")],
         ]
-        result = g.request_approval("drift detected", timeout=5.0)
+        result = g.request_approval(ApprovalRequest(summary="drift detected"), timeout=5.0)
         assert result.approved is True
         assert result.responder == "Kang_NFT"
         assert "approved by Kang_NFT" in result.reason
@@ -113,7 +114,7 @@ class TestDeny:
             [],
             [_callback_update(1, message_id=42, from_id=ADMIN_CHAT_ID, data="deny")],
         ]
-        result = g.request_approval("drift detected", timeout=5.0)
+        result = g.request_approval(ApprovalRequest(summary="drift detected"), timeout=5.0)
         assert result.approved is False
         assert "denied by" in result.reason
         assert any("DENIED" in e["text"] for e in fake.edits)
@@ -123,7 +124,7 @@ class TestTimeout:
     def test_no_response_denies_by_default(self, gate):
         g, fake = gate
         fake.getUpdates_queue = []  # never any update
-        result = g.request_approval("drift detected", timeout=0.05)
+        result = g.request_approval(ApprovalRequest(summary="drift detected"), timeout=0.05)
         assert result.approved is False
         assert "timeout" in result.reason
         assert any("TIMED OUT" in e["text"] for e in fake.edits)
@@ -139,7 +140,7 @@ class TestForeignChatIgnored:
             # The real admin then approves.
             [_callback_update(2, message_id=42, from_id=ADMIN_CHAT_ID, data="approve", username="Kang_NFT")],
         ]
-        result = g.request_approval("drift detected", timeout=5.0)
+        result = g.request_approval(ApprovalRequest(summary="drift detected"), timeout=5.0)
         assert result.approved is True
         assert result.responder == "Kang_NFT"
 
@@ -149,7 +150,7 @@ class TestForeignChatIgnored:
             [],
             [_callback_update(1, message_id=42, from_id=OTHER_CHAT_ID, data="approve")],
         ]
-        result = g.request_approval("drift detected", timeout=0.05)
+        result = g.request_approval(ApprovalRequest(summary="drift detected"), timeout=0.05)
         assert result.approved is False
         assert "timeout" in result.reason
 

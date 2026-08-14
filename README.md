@@ -29,6 +29,7 @@ print(run.status, run.metrics)
 - [Using the SDK](#using-the-sdk)
 - [Using the framework directly](#using-the-framework-directly)
 - [Governance: readiness, drift, eligibility, promotion](#governance-readiness-drift-eligibility-promotion)
+- [Authentication](#authentication)
 - [Gateflow — the management console](#gateflow--the-management-console)
 - [Real end-to-end demos](#real-end-to-end-demos)
 - [Case studies — reusability proof](#case-studies--reusability-proof)
@@ -77,7 +78,8 @@ SQLite-only path with no external services.
 - **Training Run Lifecycle** — strict state machine (PENDING → RUNNING → SUCCESS / FAILED / CANCELLED)
 - **Orchestration** — pluggable orchestrators (local subprocess, Airflow, …)
 - **Experiment Tracking** — pluggable trackers (MLflow, in-memory, …)
-- **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle
+- **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle,
+  and a **rollback** path back to a known-good version
 - **Lineage** — full chain: Dataset → DatasetVersion → TrainingRun → ModelVersion → ServingInstance
 - **Dataset Readiness** — explainable READY/BLOCKED decisions, persisted
 - **Training Eligibility** — separates "data is ready" from "training should happen now"
@@ -85,6 +87,8 @@ SQLite-only path with no external services.
 - **Promotion Policy** — explicit, explainable APPROVED/REJECTED, configurable per call
 - **Automated Retraining** — one framework-controlled workflow chaining readiness → drift → eligibility → training → promotion
 - **Model Promotion Events** — `EventPublisher` ABC with HTTP and in-memory adapters
+- **Human Approval** — pluggable `ApprovalGate` ABC (Telegram reference adapter), so an
+  automated retrain can block on a real person; denies by default
 - **Serving Bridge** — FastAPI app that atomically reloads a promoted model
 - **Gateflow** — a server-rendered management console (no build step) over all of the above
 - **Python SDK** — `MLOpsProject`, so application code never imports a manager directly
@@ -523,6 +527,39 @@ run — is handled automatically; see
 [Known limitations](#known-limitations) for the one thing that still
 needs the DAG itself to cooperate.
 
+### Human approval
+
+An automated retrain that a policy allows is not always one you want run
+unattended. `RetrainingWorkflow` takes an optional gate, asked *after*
+eligibility and *before* training — no point asking a human about a
+retrain the policies already ruled out, and asking before any compute is
+spent is the value of the gate.
+
+```python
+from mlops_framework.approval.telegram import TelegramApprovalGate
+
+workflow = RetrainingWorkflow(
+    session,
+    training_service=service,
+    approval_gate=TelegramApprovalGate.from_settings(get_settings()),
+)
+outcome = workflow.run(dataset_version=v, model=m)
+# denied -> outcome.blocked_reason == "approval_denied", no TrainingRun created
+```
+
+Every gate **denies by default**: a timeout, an unreachable channel, a
+malformed reply all return `approved=False`. A gate that could not reach
+anyone has not been told yes, and failing open would make it worse than
+having none — it would fail open exactly when something is already
+wrong. A denial is recorded the way a policy block is (a `RUN_BLOCKED`
+event and a `blocked_reason`), because downstream it is the same fact.
+
+`ApprovalGate` is an ABC like `DriftDetector` and `EventPublisher`;
+Telegram is a reference adapter, `AutoApproveGate`/`DenyAllGate` make
+the two outcomes testable without a channel. This used to live only in
+`scripts/_telegram_approval.py`, wired by hand into one demo — that
+module is now a shim re-exporting the framework's version.
+
 ### Serving bridge
 
 ```python
@@ -538,6 +575,100 @@ curl -X POST localhost:8001/internal/model/reload \
 curl localhost:8001/internal/model/active/fraud-model
 ```
 
+### Starting a training run
+
+```bash
+curl -X POST localhost:8000/api/training-runs \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -H "X-Actor: alice" \
+  -d '{"dataset_version_id": 4,
+       "training_entrypoint": "case_studies.fraud_detection.pipelines:train_xgboost",
+       "model_name": "fraud-xgboost"}'
+# 202 {"training_run_id": 17, "status": "RUNNING", "execution_id": "..."}
+```
+
+Or **Train now** on a version in the console. Training was previously
+startable only from Python (`project.train`) or through
+`/api/internal/*`, which is the DAG's own callback surface — reachable,
+but not something a console button should be calling.
+
+Create and start are one call on purpose: a created-but-never-started
+run is a PENDING row that reads as a stuck training run to everyone
+looking at `/runs`, and no caller wants one. The run is committed before
+the trigger, because the DAG resolves it by calling
+`GET /internal/training-runs/{id}/context` back over HTTP — a separate
+transaction, which cannot see an uncommitted row. If Airflow then
+refuses the run, it is marked FAILED rather than left PENDING for
+nothing to close.
+
+`training_entrypoint` is asked for rather than inferred: `pipeline_id`
+means a *dag_id* to `AirflowOrchestrator`, and the `module:callable` the
+DAG actually runs is a separate thing that travels in the run's
+metadata. Leaving `model_name` unset trains and reports but registers no
+ModelVersion — the right default for an exploratory run started by hand.
+
+### Running a drift check
+
+```bash
+curl -X POST localhost:8000/api/drift/12/check \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -d '{}'
+# 202 {"dag_id": "mlops_drift_check", "execution_id": "...", ...}
+```
+
+Or **Run check** on a version's drift panel in the console. The verdict
+appears on `GET /api/drift/{id}` when the DAG finishes.
+
+The indirection is the point. The framework does not read dataset files
+— `DriftService` takes feature values from its caller, and nothing under
+`src/` opens an S3 object or a CSV — so neither the console nor the API
+process can compute drift itself. Giving the app container S3
+credentials and a 144 MB CSV inside a 256 MiB reservation is the exact
+failure that already killed Airflow's own gunicorn worker once, so the
+work goes where the data already is: `mlops_drift_check` reads both
+versions, samples them, and posts the values to
+`POST /api/internal/drift`.
+
+The DAG does the I/O and nothing else. Which detector, which thresholds
+(persisted Settings unless overridden), whether it counts as drift, and
+the `DriftEvaluation` row are all decided framework-side — a DAG that
+computed its own verdict could assert anything, and the row would be a
+client's claim rather than the framework's conclusion. Same split as
+`resolve_context`/`readiness` in `mlops_training_pipeline.py`.
+
+Sampling (default 5000 rows/feature) is about transport, not statistics:
+a KS test settles on a few thousand points, so shipping 284,807 values
+per feature over HTTP would reach the same answer more slowly.
+
+### Rolling back
+
+```python
+model = project.get_model("fraud-xgboost")
+model.rollback_to(3)          # v3 back into production, incumbent archived
+```
+
+Or from the console's Model registry page (**Roll back** on any retired
+version), or over HTTP:
+
+```bash
+curl -X POST localhost:8000/api/model-versions/12/rollback \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -H "X-Actor: alice"
+```
+
+The promotion policy is deliberately **not** consulted. It answers "is
+this candidate good enough to replace production", judged on metrics; a
+rollback answers "production is broken, put back the version that
+worked", and the version being restored already passed that policy once.
+Gating it on metrics would block the rollback in exactly the case it
+exists for — an incumbent whose offline metrics look better than the
+version you need back. The decision is the operator's; the framework
+records it loudly instead (audit row, CRITICAL alert) rather than
+second-guessing it.
+
+The HTTP route additionally asks the ServingBridge to reload, and
+reports `serving_reloaded` so a caller can tell "the registry rolled
+back and serving followed" from "the registry rolled back and serving
+may not have". `MLOpsModel.rollback_to` changes the framework's own
+registry only — the SDK holds no opinion about where serving lives.
+
 ### Lineage
 
 ```python
@@ -550,6 +681,57 @@ for edge in graph.edges:
     print(edge.source, "->", edge.target, f"({edge.type})")
 ```
 
+## Authentication
+
+Two credentials are accepted, and the difference between them is the
+point.
+
+A **scoped API key** resolves to a named principal, and that name is what
+lands in `AuditLog.actor` — derived from a credential the caller had to
+possess, so an audit row is evidence rather than a claim.
+
+```bash
+# The first key cannot be minted through the API (that needs `admin`),
+# so it is created against the database directly — same trust boundary
+# as running a migration.
+python -m mlops_framework.auth.cli create alice --scopes admin
+#     mlops_ak_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+#     This is the only time it will be shown.
+
+curl -X POST localhost:8000/api/api-keys \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -d '{"name": "airflow-dag", "scopes": ["write"]}'
+
+curl -X POST localhost:8000/api/model-versions/12/rollback \
+  -H "Authorization: Bearer $ALICE_KEY"      # actor = "alice", verified
+```
+
+| Scope | Grants |
+|---|---|
+| `read` | Every GET the console renders from |
+| `write` | Anything that changes state — promote, rollback, start a run, schedules, policies. Implies `read` |
+| `admin` | Managing keys. Implies `write` |
+
+Only a **hash** of a key is stored; the plaintext is returned once and is
+unrecoverable, so a database dump yields no usable credential. Revocation
+sets a timestamp rather than deleting the row — a key that acted has to
+stay resolvable for as long as the audit rows naming it do.
+
+The **shared secret** (`CONSOLE_WRITE_TOKEN`, `X-Console-Token`) still
+works and grants `write`. It is what closed the anonymous-write hole and
+what every current deployment is configured with; a request using it
+records the unverified `X-Actor` header as its actor, exactly as before.
+It deliberately does **not** grant `admin`: a shared secret that could
+mint per-principal keys would let anyone holding it manufacture
+identities.
+
+Refusals distinguish the two failures: **401** when nothing valid was
+presented (an unknown key and a wrong key are the same answer, so
+neither confirms that a string is real), **403** when the caller is known
+but lacks the scope, and **503** when the deployment has no keys and no
+shared secret — it cannot authenticate anyone, and saying so beats a 401
+no credential could satisfy.
+
 ## Gateflow — the management console
 
 A server-rendered console (HTML + vanilla JS, no build step) served on
@@ -558,9 +740,10 @@ the same FastAPI app as the API, at `/`.
 | Page | Route | Shows |
 |---|---|---|
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
-| Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
+| Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** with a **Run check** button |
+| Datasets (version panel) | `/datasets/{id}` | **Train now** on any version — creates the run and hands it to Airflow |
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
-| Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download |
+| Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download, and **Roll back** on any retired version |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
 | Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
 | Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
@@ -568,7 +751,8 @@ the same FastAPI app as the API, at `/`.
 
 ### API reference
 
-53 REST endpoints under `/api`, grouped by what they front:
+64 REST endpoints under `/api`, plus the two probes at the root
+(`/health`, `/ready`), grouped by what they front:
 
 | Group | Examples | Purpose |
 |---|---|---|
@@ -580,6 +764,10 @@ the same FastAPI app as the API, at `/`.
 | Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
+| Start training | `POST /api/training-runs` | Create a run and hand it to Airflow in one gated, audited call. 202; progress on `GET /api/training-runs/{id}` and the SSE stream |
+| Drift | `/api/drift/{id}` (read), `/api/drift/{id}/check` (run) | The check is queued on Airflow, not run in-process — see below. 202 on trigger; the verdict lands on the read endpoint |
+| API keys | `/api/api-keys` | Mint (returns the key once), list, revoke. Requires the `admin` scope |
+| Rollback | `/api/model-versions/{id}/rollback` | Put a retired version back into production — archives the incumbent, audits the actor, raises a CRITICAL alert, and asks the ServingBridge to reload. Gated by `CONSOLE_WRITE_TOKEN` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
 | Health | `/health`, `/ready` | Liveness (process only) and readiness (pings the database) — mounted at the root, not under `/api`, for container/load-balancer probes |
 | Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network. Gated by `CONSOLE_WRITE_TOKEN`, whole router, GET included |
@@ -797,7 +985,7 @@ Framework/
 ## Testing
 
 ```bash
-pytest                         # full suite — 831 passed, 24 skipped (live-service integration tests)
+pytest                         # full suite — 973 passed, 24 skipped (live-service integration tests)
 pytest tests/unit              # unit tests only
 pytest tests/integration       # integration tests only
 pytest -k drift                # by name
@@ -858,14 +1046,18 @@ to it.
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
-6. **`CONSOLE_WRITE_TOKEN` is a shared secret, not authentication.**
-   There is still no user, session, or RBAC concept anywhere in the
-   app: one token gates every write endpoint, and `X-Actor` — what the
-   audit trail records — is caller-supplied and unverified. That is
-   enough to stop an anonymous request promoting a model or handing the
-   orchestrator a `pipeline_id` to run, and not enough to tell two
-   authorized operators apart. Per-principal credentials with RBAC are
-   the intended replacement.
+6. **`CONSOLE_WRITE_TOKEN` is still accepted, and is not
+   authentication.** Scoped API keys are now the real credential (see
+   [Authentication](#authentication)); the shared secret is kept because
+   it is what every existing deployment — the Airflow DAG included — is
+   configured with, and removing it in the same change that introduced
+   keys would break all of them at once. A request authenticated that
+   way still records the unverified `X-Actor` header as its actor.
+   Migrate the DAG and any scripts to keys, then unset it.
+7. **There is no browser login.** The console prompts for a credential
+   and keeps it in `sessionStorage` for the tab. Read endpoints are
+   ungated, so the console renders for anyone who can reach it —
+   gating GETs needs session management the app does not have.
 
 ## License
 

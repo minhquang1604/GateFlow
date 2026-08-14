@@ -113,6 +113,48 @@ def sync_candidate(
         return None
 
 
+def version_for_run(model_name: str, mlflow_run_id: str | None) -> str | None:
+    """Find the MLflow model version registered for ``mlflow_run_id``.
+
+    The promotion paths pass ``sync_production`` the version string
+    ``sync_candidate`` just handed back. A rollback has no such handle —
+    the version it restores was registered on some earlier run, possibly
+    in a different process — so it has to look the version up from the
+    run id the framework recorded on its own ModelVersion row.
+
+    Returns ``None`` — MLflow unreachable, the model or run unknown to
+    it, no ``mlflow_run_id`` on the framework's row — without raising,
+    same contract as everything else here. ``sync_production(name,
+    None)`` is then a no-op, so a rollback still completes on the
+    framework's side with MLflow's view left stale rather than the
+    rollback failing.
+    """
+    if not mlflow_run_id:
+        return None
+
+    client, reason = client_or_reason()
+    if client is None:
+        _log.warning("registry lookup skipped for %s: %s", model_name, reason)
+        return None
+
+    try:
+        matches = client.search_model_versions(f"run_id='{mlflow_run_id}'")
+    except Exception as exc:  # noqa: BLE001 - never fail the caller's rollback
+        _log.warning(
+            "registry lookup: could not find a version for %s run %s: %s",
+            model_name, mlflow_run_id, exc,
+        )
+        return None
+
+    for mv in matches:
+        if getattr(mv, "name", None) == model_name:
+            return str(mv.version)
+    _log.info(
+        "registry lookup: no %s version registered for run %s", model_name, mlflow_run_id
+    )
+    return None
+
+
 def sync_production(model_name: str, version: str | None) -> bool:
     """Mark ``version`` as the one being served on MLflow's side:
     stage=Production (auto-archiving whichever version held it before)

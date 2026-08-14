@@ -1,81 +1,193 @@
-"""Write-gate for every endpoint that changes state — the framework's own
-database included.
+"""Authentication and authorization for the HTTP API.
 
-Not real authentication: there is still no user/session/RBAC concept
-anywhere in this app. This is a single shared secret, checked against one
-request header, that an operator must set as ``CONSOLE_WRITE_TOKEN``.
-Unset, every route guarded by :func:`require_write_token` answers 503 —
-it fails *closed*, so a deployment that has not been configured refuses
-writes rather than accepting anonymous ones.
+Two credentials are accepted, and the difference between them is the
+whole point of this module.
 
-Scope
------
-This gate started life covering only the two Airflow task control routes
-(clear/retry), on the reasoning that mutating an *external* system was
-the dangerous case and that the framework's own tables could stay
-unguarded. That reasoning did not hold up:
+A **scoped API key** (``Authorization: Bearer mlops_ak_…``) resolves to a
+named :class:`~mlops_framework.auth.manager.Principal` with a scope set.
+The name is what lands in ``AuditLog.actor``, derived from a credential
+the caller had to possess — so an audit row is evidence rather than a
+claim, and two authorized operators are finally distinguishable.
 
-* ``POST /api/internal/models/{name}/promote`` puts a ModelVersion into
-  PRODUCTION. Anyone who could reach the port could promote anything.
-* ``POST /api/internal/training-runs/{id}/start`` triggers a real
-  Airflow DAG run, so "only the framework's own database" was never
-  accurate for that router either.
-* ``POST /api/schedules`` + ``/run-now`` hands a ``pipeline_id`` to
-  ``LocalDockerOrchestrator``, which imports and calls it. Combined with
-  the source-splicing that used to live in ``orchestration/local.py``,
-  that was remote code execution on the app container from an
-  unauthenticated request.
-* ``X-Actor`` (see ``api/deps.py``'s ``get_actor``) is caller-supplied
-  and unverified, so an unguarded write route also made the audit trail
-  it feeds trivially forgeable.
+The **shared secret** (``X-Console-Token``, ``CONSOLE_WRITE_TOKEN``) is
+still accepted, and grants ``write``. It is the transitional path: it is
+what closed the anonymous-write hole, it is what the deployed Airflow
+DAG and docker-compose are configured with today, and removing it in the
+same change that introduced keys would break every existing deployment
+the moment it was pulled. A request authenticated this way is marked
+``via_shared_secret`` and its actor falls back to the *unverified*
+``X-Actor`` header, exactly as before — no better, but no worse, and
+visibly so.
 
-So every mutating route is now behind this dependency:
-``/api/internal/*`` (whole router — its GET leaks dataset storage URIs
-and belongs to the same machine-to-machine surface), and the write half
-of ``/api/schedules``. Read-only proxies (``mlflow_views.py``, the read
-half of ``airflow_views.py``, ``dashboard``/``datasets``/``models``/
-``runs``/``lineage``/``audit``/``alerts``) are unchanged: they expose no
-state change, and gating them would break the console's own rendering.
+Scopes
+------
+``read`` < ``write`` < ``admin``; each implies the ones before it (see
+``auth/manager.py``). Routes ask for what they need:
 
-Replacing this with per-principal credentials and RBAC is still the
-right end state; it is tracked separately. This closes the hole in the
-meantime without pretending to be more than a shared secret.
+* nothing — the read surface the console renders from. Unauthenticated
+  reads remain deliberate: the console has no login, and gating GETs
+  would make it unusable without solving session management first.
+* ``require_write`` — everything that changes state.
+* ``require_admin`` — managing keys themselves.
+
+Refusals
+--------
+* 503 when neither credential type is configured *and* no keys exist —
+  the deployment cannot authenticate anyone, and saying so beats a 401
+  that no credential could satisfy.
+* 401 when nothing was presented, or what was presented did not resolve.
+  A bad key and an unknown key are the same answer on purpose: telling
+  them apart confirms that a given string is a real key.
+* 403 when the caller is known but lacks the scope. Distinct from 401
+  because "log in" and "you may not do this" are different fixes.
 """
 
 from __future__ import annotations
 
 import hmac
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
+from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from mlops_framework.api.deps import get_db
+from mlops_framework.auth.manager import (
+    SCOPE_ADMIN,
+    SCOPE_READ,
+    SCOPE_WRITE,
+    ApiKeyManager,
+    Principal,
+)
 from mlops_framework.config.settings import get_settings
+from mlops_framework.database.models.api_key import ApiKey
 
 HEADER_NAME = "X-Console-Token"
+BEARER_PREFIX = "Bearer "
+
+# The name recorded for a shared-secret request that sends no X-Actor.
+# Same default get_actor has always used.
+ANONYMOUS_ACTOR = "system"
 
 
-def require_write_token(
+def _bearer_token(authorization: str | None) -> str | None:
+    if not authorization or not authorization.startswith(BEARER_PREFIX):
+        return None
+    return authorization[len(BEARER_PREFIX):].strip() or None
+
+
+def get_principal(
+    authorization: str | None = Header(default=None),
     x_console_token: str | None = Header(default=None, alias=HEADER_NAME),
-) -> None:
-    """FastAPI dependency guarding a write endpoint.
+    x_actor: str | None = Header(default=None, alias="X-Actor"),
+    db: Session = Depends(get_db),
+) -> Principal | None:
+    """Resolve the caller, or ``None`` if they presented nothing valid.
 
-    Usable per-route (``dependencies=[Depends(require_write_token)]``) or
-    for a whole router (``APIRouter(dependencies=[...])`` — how
-    ``routers/internal.py`` applies it).
-
-    Raises:
-        HTTPException: 503 if ``CONSOLE_WRITE_TOKEN`` is not configured
-            (writes are off until an operator sets one — a missing
-            header is not the caller's fault when there is nothing to
-            send), 401 if the header is missing while a token *is*
-            configured, 403 if it does not match.
+    Returns rather than raises: read routes take this to *record* who is
+    calling without requiring it, and the scope dependencies below turn
+    a ``None`` into the right refusal for the route that needed one.
     """
+    presented = _bearer_token(authorization)
+    if presented:
+        principal = ApiKeyManager(db).resolve(presented)
+        if principal is not None:
+            return principal
+        # A malformed or revoked key is not silently downgraded to the
+        # shared-secret path: someone presenting a key means to use it,
+        # and quietly succeeding as a different identity would put the
+        # wrong name in the audit trail.
+        return None
+
     configured = get_settings().console_write_token
-    if not configured:
-        raise HTTPException(
-            status_code=503,
-            detail="Write endpoints are disabled: CONSOLE_WRITE_TOKEN is not configured.",
+    if configured and x_console_token and hmac.compare_digest(x_console_token, configured):
+        return Principal(
+            name=x_actor or ANONYMOUS_ACTOR,
+            scopes=frozenset({SCOPE_WRITE, SCOPE_READ}),
+            via_shared_secret=True,
         )
-    if not x_console_token:
-        raise HTTPException(status_code=401, detail=f"Missing {HEADER_NAME} header.")
-    if not hmac.compare_digest(x_console_token, configured):
-        raise HTTPException(status_code=403, detail="Invalid write token.")
+    return None
+
+
+def _any_keys_exist(db: Session) -> bool:
+    return (
+        db.execute(select(ApiKey.id).where(ApiKey.revoked_at.is_(None)).limit(1))
+        .scalars()
+        .first()
+        is not None
+    )
+
+
+def _require(scope: str, principal: Principal | None, db: Session) -> Principal:
+    if principal is None:
+        if not get_settings().console_write_token and not _any_keys_exist(db):
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "This deployment cannot authenticate anyone: no API keys "
+                    "exist and CONSOLE_WRITE_TOKEN is not configured. Mint a "
+                    "first key with `python -m mlops_framework.auth.cli` or "
+                    "set CONSOLE_WRITE_TOKEN."
+                ),
+            )
+        raise HTTPException(
+            status_code=401,
+            detail=(
+                "Authentication required: send `Authorization: Bearer "
+                f"<api key>` or the {HEADER_NAME} header."
+            ),
+        )
+    if not principal.has(scope):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"{principal.name!r} does not have the {scope!r} scope "
+                f"(has: {sorted(principal.scopes)})."
+            ),
+        )
+    return principal
+
+
+def require_read(
+    principal: Principal | None = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> Principal:
+    """Guard a route that reads privileged data."""
+    return _require(SCOPE_READ, principal, db)
+
+
+def require_write(
+    principal: Principal | None = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> Principal:
+    """Guard a route that changes state."""
+    return _require(SCOPE_WRITE, principal, db)
+
+
+def require_admin(
+    principal: Principal | None = Depends(get_principal),
+    db: Session = Depends(get_db),
+) -> Principal:
+    """Guard a route that manages credentials."""
+    return _require(SCOPE_ADMIN, principal, db)
+
+
+# Kept as the name every existing route imports. It is now the `write`
+# scope check rather than a bare shared-secret comparison; the routes
+# guarded by it are unchanged, and so is what they refuse.
+require_write_token = require_write
+
+
+def get_actor(principal: Principal | None = Depends(get_principal)) -> str:
+    """Who to record in the audit trail for this request.
+
+    Supersedes ``deps.get_actor``, which read the caller's own
+    ``X-Actor`` header and believed it. With an API key the name comes
+    from the key row, so the audit trail finally records something the
+    caller could not simply assert.
+
+    A shared-secret request still resolves to its ``X-Actor`` value (or
+    ``system``) — see this module's docstring on why that path is kept.
+    ``Principal.via_shared_secret`` is what tells the two apart for
+    anyone auditing the audit trail itself.
+    """
+    return principal.name if principal is not None else ANONYMOUS_ACTOR

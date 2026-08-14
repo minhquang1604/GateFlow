@@ -10,10 +10,12 @@ Public API:
     get_model_version(version_id) -> ModelVersion
     list_model_versions(model_id) -> list[ModelVersion]
     transition_state(version_id, new_state) -> ModelVersion
+    rollback_to(version_id) -> RollbackResult
     update_metrics(version_id, metrics) -> ModelVersion
 """
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import func, select
@@ -30,8 +32,27 @@ from mlops_framework.exceptions import (
     DuplicateModelNameError,
     ModelNotFoundError,
     ModelVersionNotFoundError,
+    RollbackError,
 )
 from mlops_framework.model.lifecycle import validate_transition
+
+
+@dataclass
+class RollbackResult:
+    """What a rollback changed.
+
+    ``previous_production_id`` is ``None`` when the model had no
+    PRODUCTION version at the time — rolling *into* an empty slot is
+    allowed (the incumbent may already have been archived by hand), and
+    the caller usually wants to know that is what happened.
+    """
+
+    model_id: int
+    model_name: str
+    restored_version_id: int
+    restored_version_number: int
+    previous_production_id: int | None
+    previous_production_number: int | None
 
 
 class ModelManager:
@@ -162,6 +183,84 @@ class ModelManager:
                 ) from exc
             raise
         return version
+
+    def rollback_to(self, version_id: int) -> RollbackResult:
+        """Put a previously-retired version back into production.
+
+        The recovery path the registry did not have: a model that
+        reached PRODUCTION and turned out to be bad could only be
+        replaced by training a new one, because ARCHIVED was terminal.
+
+        Deliberately *not* routed through
+        :class:`~mlops_framework.governance.promotion.ModelPromotionPolicy`.
+        That policy answers "is this candidate good enough to replace
+        production", judged on metrics. A rollback answers a different
+        question — "production is broken, put back the version that
+        worked" — and the version being restored has already been
+        through the policy once. Gating it on metrics would block the
+        rollback in exactly the case it exists for: an incumbent whose
+        offline metrics look better than the version you need back.
+        The decision is an operator's; this method records it loudly
+        rather than second-guessing it.
+
+        Ordering matches promotion's: the incumbent is archived *before*
+        the restored version is promoted, because
+        ``uq_model_versions_one_production_per_model`` permits no window
+        with two.
+
+        Args:
+            version_id: the ModelVersion to restore. Must belong to a
+                model, be ARCHIVED or APPROVED, and not already be the
+                production version.
+
+        Returns:
+            :class:`RollbackResult` naming both sides of the swap.
+
+        Raises:
+            ModelVersionNotFoundError: no such version.
+            RollbackError: the version is not in a state a rollback can
+                restore from, or is already in production.
+        """
+        target = self.get_model_version(version_id)
+        model = self.get_model(target.model_id)
+
+        if target.state == ModelState.PRODUCTION:
+            raise RollbackError(
+                f"model_version {version_id} is already the PRODUCTION "
+                f"version of {model.name!r}"
+            )
+        if target.state not in {ModelState.ARCHIVED, ModelState.APPROVED}:
+            raise RollbackError(
+                f"model_version {version_id} is {target.state.value}; only an "
+                "ARCHIVED or APPROVED version can be rolled back to. A "
+                "REJECTED version failed the promotion policy and a "
+                "CANDIDATE has never been in production."
+            )
+
+        current = self._session.execute(
+            select(ModelVersion).where(
+                ModelVersion.model_id == model.id,
+                ModelVersion.state == ModelState.PRODUCTION,
+            )
+        ).scalars().first()
+
+        previous_id = current.id if current is not None else None
+        previous_number = current.version_number if current is not None else None
+
+        if current is not None:
+            self.transition_state(current.id, ModelState.ARCHIVED)
+        if target.state == ModelState.ARCHIVED:
+            self.transition_state(target.id, ModelState.APPROVED)
+        self.transition_state(target.id, ModelState.PRODUCTION)
+
+        return RollbackResult(
+            model_id=model.id,
+            model_name=model.name,
+            restored_version_id=target.id,
+            restored_version_number=target.version_number,
+            previous_production_id=previous_id,
+            previous_production_number=previous_number,
+        )
 
     def update_metrics(self, version_id: int, metrics: dict[str, Any]) -> ModelVersion:
         version = self.get_model_version(version_id)

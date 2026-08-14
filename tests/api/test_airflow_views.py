@@ -342,11 +342,15 @@ class TestTaskControl:
         assert r.status_code == 401
 
     def test_clear_rejects_wrong_token(self, client, fake_airflow, run_on_airflow, write_token):
+        """401, not 403. Since scopes arrived, 403 means "we know who you
+        are and you may not do this"; a secret that matches nobody is an
+        authentication failure. See tests/api/test_write_auth.py's
+        TestScopes for what now produces a 403."""
         r = client.post(
             f"/api/training-runs/{run_on_airflow}/tasks/train/clear",
             headers={"X-Console-Token": "nope"},
         )
-        assert r.status_code == 403
+        assert r.status_code == 401
 
     def test_clear_succeeds_with_correct_token(
         self, client, fake_airflow, run_on_airflow, write_token

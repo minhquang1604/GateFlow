@@ -544,6 +544,82 @@ async function initDatasets() {
   }
 }
 
+// "Run check" on a version's drift panel. The framework cannot compute
+// drift here — it never reads dataset files (see drift.py's module
+// docstring) — so this queues an Airflow DAG that can, and the panel
+// picks the verdict up on the next load. 202 with no result is the
+// honest response, so the button says so rather than pretending to have
+// an answer.
+//
+// Hidden on version 1 of a dataset: with nothing earlier to compare
+// against, the endpoint answers 422, and a button that always fails is
+// worse than no button.
+function driftCheckButton(v) {
+  if (!v.version_number || v.version_number < 2) return null;
+  const btn = el("button", { class: "btn" }, "Run check");
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Queuing…";
+    try {
+      const r = await apiWrite(`/drift/${v.id}/check`, {
+        method: "POST", body: JSON.stringify({}),
+      });
+      flash(
+        `Drift check queued on ${r.dag_id} (v${v.version_number} vs #${r.reference_dataset_version_id}). ` +
+        "The verdict appears here when the DAG finishes.",
+        "ok",
+      );
+    } catch (e) {
+      flash(e.message, "err");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Run check";
+    }
+  });
+  return btn;
+}
+
+// "Train now" on a dataset version. Creates the run and hands it to
+// Airflow in one gated call (POST /training-runs) — the console never
+// touches /api/internal/*, which is the DAG's own callback surface.
+//
+// The entrypoint is asked for rather than guessed: pipeline_id is a
+// dag_id to AirflowOrchestrator, and the module:callable it actually
+// runs is a separate thing the framework cannot infer.
+function trainNowButton(v) {
+  const btn = el("button", { class: "btn primary" }, "Train now");
+  btn.addEventListener("click", async () => {
+    const entrypoint = window.prompt(
+      "Training entrypoint (module:callable) to run on this version:",
+      "case_studies.fraud_detection.pipelines:train_xgboost",
+    );
+    if (!entrypoint) return;
+    const modelName = window.prompt(
+      "Register the result under which model? (blank = train only, register nothing)",
+      "",
+    );
+    btn.disabled = true;
+    btn.textContent = "Starting…";
+    try {
+      const body = { dataset_version_id: v.id, training_entrypoint: entrypoint.trim() };
+      if (modelName && modelName.trim()) body.model_name = modelName.trim();
+      const r = await apiWrite("/training-runs", {
+        method: "POST", body: JSON.stringify(body),
+      });
+      flash(
+        `Training run #${r.training_run_id} queued on ${r.pipeline_id}.`,
+        "ok",
+      );
+      location.href = `/runs/${r.training_run_id}`;
+    } catch (e) {
+      flash(e.message, "err");
+      btn.disabled = false;
+      btn.textContent = "Train now";
+    }
+  });
+  return btn;
+}
+
 // One version's facts/readiness/drift/schema panel — used both for the
 // single-version view (the default) and reused nowhere else, since the
 // two-version compare below needs its fields side by side, not stacked.
@@ -602,7 +678,9 @@ async function datasetVersionSection(v) {
   // evaluation involving this version says.
   const driftFeatures = (drift && drift.details && drift.details.feature_results) || [];
   const driftPanel = el("div", { class: "card" },
-    el("div", { class: "chart-title" }, "Drift"),
+    el("div", { class: "section-head", style: "margin:0 0 10px" },
+      el("div", { class: "chart-title", style: "margin:0" }, "Drift"),
+      driftCheckButton(v)),
     drift
       ? el("div", {},
           el("div", { style: "margin-bottom:8px" }, statusBadge(drift.outcome)),
@@ -622,7 +700,9 @@ async function datasetVersionSection(v) {
   return el("section", {},
     el("div", { class: "section-head" },
       el("h3", {}, `Version ${v.version_number}`),
-      el("span", { class: "faint" }, fmt.ago(v.created_at))),
+      el("div", { class: "row-actions" },
+        el("span", { class: "faint" }, fmt.ago(v.created_at)),
+        trainNowButton(v))),
     el("div", { class: "grid-2" },
       el("div", { class: "card" }, facts),
       el("div", {},
@@ -1096,10 +1176,25 @@ function writeToken(forcePrompt = false) {
   if (forcePrompt) sessionStorage.removeItem("gateflow-write-token");
   let t = sessionStorage.getItem("gateflow-write-token");
   if (!t) {
-    t = window.prompt("Console write token (CONSOLE_WRITE_TOKEN) — required for any action that changes state:");
-    if (t) sessionStorage.setItem("gateflow-write-token", t);
+    t = window.prompt(
+      "Credential for actions that change state.\n\n" +
+      "An API key (mlops_ak_…) is preferred — it names you in the audit " +
+      "trail. CONSOLE_WRITE_TOKEN also works, but records every action " +
+      "as \"system\"."
+    );
+    if (t) sessionStorage.setItem("gateflow-write-token", t.trim());
   }
   return t || null;
+}
+
+// An mlops_ak_ key goes in Authorization: Bearer; anything else is
+// assumed to be the legacy shared secret. Sniffing the prefix rather
+// than asking the user which kind they pasted — the prefix exists
+// precisely so a key is self-identifying (see auth/manager.py).
+function writeAuthHeaders(token) {
+  return token.startsWith("mlops_ak_")
+    ? { Authorization: `Bearer ${token}` }
+    : { "X-Console-Token": token };
 }
 
 // api() plus the write token, for any gated endpoint (see
@@ -1114,7 +1209,7 @@ async function apiWrite(path, options = {}, _retried = false) {
   try {
     return await api(path, {
       ...options,
-      headers: { ...(options.headers || {}), "X-Console-Token": token },
+      headers: { ...(options.headers || {}), ...writeAuthHeaders(token) },
     });
   } catch (e) {
     if (!_retried && /^40[13]/.test(e.message)) {
@@ -1938,6 +2033,45 @@ async function initModels() {
   }
 }
 
+
+// "Roll back to this version" — only offered for a version that could
+// actually take over: ARCHIVED (retired, the normal case) or APPROVED
+// (promoted-adjacent but never served). PRODUCTION is already live and
+// CANDIDATE/REJECTED have never been a known-good production version,
+// so those rows get nothing rather than a button that 409s.
+//
+// Confirmation is deliberate and names both sides: this swaps what is
+// being served, and the endpoint applies no metric policy to second-
+// guess the operator (see ModelManager.rollback_to).
+function rollbackButton(v, reload) {
+  if (v.state !== "ARCHIVED" && v.state !== "APPROVED") return null;
+  const btn = el("button", { class: "btn" }, "Roll back");
+  btn.addEventListener("click", async () => {
+    if (!confirm(
+      `Roll production back to v${v.version_number}?\n\n` +
+      "The current production version will be archived and the serving " +
+      "bridge asked to reload. This is recorded in the audit trail."
+    )) return;
+    btn.disabled = true;
+    btn.textContent = "Rolling back…";
+    try {
+      const r = await apiWrite(`/model-versions/${v.id}/rollback`, { method: "POST" });
+      flash(
+        `${r.model_name}: production is now v${r.restored_version}` +
+        (r.previous_production_version ? ` (v${r.previous_production_version} archived)` : "") +
+        (r.serving_reloaded ? "." : " — the serving bridge did not confirm the reload."),
+        r.serving_reloaded ? "ok" : "warn",
+      );
+      reload();
+    } catch (e) {
+      flash(e.message, "err");
+      btn.disabled = false;
+      btn.textContent = "Roll back";
+    }
+  });
+  return btn;
+}
+
 async function initModelDetail(id) {
   const head = document.getElementById("model-head");
   const body = document.getElementById("model-body");
@@ -1980,7 +2114,7 @@ async function initModelDetail(id) {
           el("th", {}, "Version"), el("th", {}, "State"),
           ...metricKeys.map((k) => el("th", {}, k)),
           el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"),
-          el("th", {}, "Report"))),
+          el("th", {}, "Report"), el("th", {}, ""))),
         el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
           const best = {};
           for (const k of metricKeys) {
@@ -2008,8 +2142,12 @@ async function initModelDetail(id) {
             // triggers a real browser download — no download="" attribute
             // needed here (and Artifact-style sandboxes don't apply to
             // this deployed app, only to claude.ai's own preview).
-            el("td", {}, el("a", { href: `${API}/model-versions/${v.id}/report` }, "report")));
-        }) : [emptyRow(metricKeys.length + 6, "No versions registered yet.")])));
+            el("td", {}, el("a", { href: `${API}/model-versions/${v.id}/report` }, "report")),
+            el("td", { class: "row-actions" },
+              // initModelDetail re-mounts both regions, so re-running
+              // it is the refresh — this page has no load() of its own.
+              rollbackButton(v, () => initModelDetail(id))));
+        }) : [emptyRow(metricKeys.length + 7, "No versions registered yet.")])));
       tableHost.replaceChildren(table);
     }
 
