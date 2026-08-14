@@ -87,6 +87,8 @@ SQLite-only path with no external services.
 - **Promotion Policy** — explicit, explainable APPROVED/REJECTED, configurable per call
 - **Automated Retraining** — one framework-controlled workflow chaining readiness → drift → eligibility → training → promotion
 - **Model Promotion Events** — `EventPublisher` ABC with HTTP and in-memory adapters
+- **Human Approval** — pluggable `ApprovalGate` ABC (Telegram reference adapter), so an
+  automated retrain can block on a real person; denies by default
 - **Serving Bridge** — FastAPI app that atomically reloads a promoted model
 - **Gateflow** — a server-rendered management console (no build step) over all of the above
 - **Python SDK** — `MLOpsProject`, so application code never imports a manager directly
@@ -525,6 +527,39 @@ run — is handled automatically; see
 [Known limitations](#known-limitations) for the one thing that still
 needs the DAG itself to cooperate.
 
+### Human approval
+
+An automated retrain that a policy allows is not always one you want run
+unattended. `RetrainingWorkflow` takes an optional gate, asked *after*
+eligibility and *before* training — no point asking a human about a
+retrain the policies already ruled out, and asking before any compute is
+spent is the value of the gate.
+
+```python
+from mlops_framework.approval.telegram import TelegramApprovalGate
+
+workflow = RetrainingWorkflow(
+    session,
+    training_service=service,
+    approval_gate=TelegramApprovalGate.from_settings(get_settings()),
+)
+outcome = workflow.run(dataset_version=v, model=m)
+# denied -> outcome.blocked_reason == "approval_denied", no TrainingRun created
+```
+
+Every gate **denies by default**: a timeout, an unreachable channel, a
+malformed reply all return `approved=False`. A gate that could not reach
+anyone has not been told yes, and failing open would make it worse than
+having none — it would fail open exactly when something is already
+wrong. A denial is recorded the way a policy block is (a `RUN_BLOCKED`
+event and a `blocked_reason`), because downstream it is the same fact.
+
+`ApprovalGate` is an ABC like `DriftDetector` and `EventPublisher`;
+Telegram is a reference adapter, `AutoApproveGate`/`DenyAllGate` make
+the two outcomes testable without a channel. This used to live only in
+`scripts/_telegram_approval.py`, wired by hand into one demo — that
+module is now a shim re-exporting the framework's version.
+
 ### Serving bridge
 
 ```python
@@ -950,7 +985,7 @@ Framework/
 ## Testing
 
 ```bash
-pytest                         # full suite — 961 passed, 24 skipped (live-service integration tests)
+pytest                         # full suite — 973 passed, 24 skipped (live-service integration tests)
 pytest tests/unit              # unit tests only
 pytest tests/integration       # integration tests only
 pytest -k drift                # by name

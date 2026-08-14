@@ -32,6 +32,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from mlops_framework.approval.base import ApprovalGate, ApprovalRequest
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.governance_event import GovernanceEventSeverity
@@ -152,6 +153,7 @@ class RetrainingWorkflow:
         eligibility_policy: TrainingEligibilityPolicy | None = None,
         promotion_policy: ModelPromotionPolicy | None = None,
         drift_service: DriftService | None = None,
+        approval_gate: ApprovalGate | None = None,
         event_publisher: EventPublisher | None = None,
         event_session: Session | None = None,
         actor: str = "system:retraining-workflow",
@@ -170,6 +172,10 @@ class RetrainingWorkflow:
         # promotion_policy is left exactly as they built it.
         self._promotion = promotion_policy or ModelPromotionPolicy(session=session)
         self._drift_service = drift_service
+        # Optional by design. A workflow with no gate behaves exactly as
+        # it always has — the step is skipped, not auto-approved, and it
+        # does not appear in the step trace at all.
+        self._approval_gate = approval_gate
         self._event_publisher = event_publisher
         # Separate session for persisting events (may be the same as
         # self._session).
@@ -198,6 +204,7 @@ class RetrainingWorkflow:
         pipeline_id: str = "tests._pipelines.e2e_training:main",
         training_entrypoint: str | None = None,
         training_timeout: float = 60.0,
+        approval_timeout: float = 3600.0,
         evaluate_model: Callable[[ModelVersion], dict[str, Any]] | None = None,
         force: bool = False,
     ) -> RetrainingOutcome:
@@ -385,6 +392,75 @@ class RetrainingWorkflow:
                 data=eligibility_decision.to_dict(),
             )
         )
+
+        # 3b. Human approval (optional) ------------------------------------
+        # After eligibility, before training: there is no point asking a
+        # human about a retrain the policies have already ruled out, and
+        # asking before spending any compute is the whole value of the
+        # gate. A denial is recorded the same way a policy block is —
+        # a RunBlockedEvent and a blocked_reason — because from
+        # everything downstream it is the same fact: this retrain did
+        # not happen, and here is why.
+        if self._approval_gate is not None:
+            decision = self._approval_gate.request_approval(
+                ApprovalRequest(
+                    summary=(
+                        f"Retrain {model.name} on dataset version "
+                        f"#{dataset_version.id}?"
+                    ),
+                    action="retrain",
+                    context={
+                        "model": model.name,
+                        "dataset_version_id": dataset_version.id,
+                        "drift_detected": bool(
+                            drift_result is not None and drift_result.drift_detected
+                        ),
+                        "drift_score": (
+                            drift_result.score if drift_result is not None else None
+                        ),
+                    },
+                ),
+                timeout=approval_timeout,
+            )
+            steps.append(
+                StepResult(
+                    "approval",
+                    decision.approved,
+                    detail=decision.reason or ("approved" if decision.approved else "denied"),
+                    data=decision.to_dict(),
+                )
+            )
+            AuditManager(self._session).record(
+                actor=decision.responder or self._actor,
+                action="RETRAIN_APPROVED" if decision.approved else "RETRAIN_DENIED",
+                entity_type="Model",
+                entity_id=model.id,
+                metadata={
+                    "dataset_version_id": dataset_version.id,
+                    "reason": decision.reason,
+                },
+            )
+            if not decision.approved:
+                GovernanceEventStore(self._session).record(
+                    RunBlockedEvent(
+                        reason="approval_denied",
+                        dataset_version_id=dataset_version.id,
+                        model_id=model.id,
+                        reasons=[decision.reason or "denied"],
+                    ),
+                    message=(
+                        f"{model.name}: retrain not approved — "
+                        f"{decision.reason or 'denied'}"
+                    ),
+                    entity_type="Model",
+                    entity_id=model.id,
+                )
+                return self._finalize(
+                    dataset_version,
+                    model,
+                    steps,
+                    blocked_reason="approval_denied",
+                )
 
         # 4. Training ------------------------------------------------------
         mm = ModelManager(self._session)

@@ -112,6 +112,8 @@ if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from case_studies.fraud_detection import data as fraud_data
+from mlops_framework.approval import ApprovalRequest  # noqa: E402
+from mlops_framework.approval.telegram import TelegramApprovalGate  # noqa: E402
 from mlops_framework.config.settings import get_settings
 from mlops_framework.database.base import Base
 from mlops_framework.database.models.dataset_version import DatasetVersion
@@ -143,7 +145,6 @@ from scripts._initial_training import (
     resolve_endpoints,
     run_initial_training,
 )
-from scripts._telegram_approval import TelegramApprovalGate
 
 # --------------------------------------------------------------------- #
 # Constants — calibrated so V1 self-evaluated F1 ≈ 0.92, V1 scored on
@@ -306,7 +307,22 @@ def phase2_request_approval(
         f"Retrain on the drifted data now?"
     )
     gate = TelegramApprovalGate.from_settings(settings)
-    result = gate.request_approval(summary, timeout=settings.telegram_approval_timeout_seconds)
+    # ApprovalRequest, not a bare string: the gate is now the framework's
+    # ApprovalGate ABC (mlops_framework.approval), so the structured
+    # context travels alongside the prose a human reads.
+    result = gate.request_approval(
+        ApprovalRequest(
+            summary=summary,
+            action="retrain",
+            context={
+                "model": MODEL_NAME,
+                "dataset": DATASET_NAME,
+                "drift_score": drift_score,
+                "drifted_features": list(drifted_features),
+            },
+        ),
+        timeout=settings.telegram_approval_timeout_seconds,
+    )
     _detail(f"admin decision: approved={result.approved} ({result.reason})")
     return result.approved
 
