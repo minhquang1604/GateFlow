@@ -155,6 +155,19 @@ class ConcurrentPromotionError(ModelError):
     pass
 
 
+class RollbackError(ModelError):
+    """Raised when a ModelVersion cannot be rolled back to.
+
+    Distinct from :class:`InvalidModelStateTransitionError`: that one is
+    the state machine refusing an edge, this one is
+    ``ModelManager.rollback_to`` refusing the *operation* — the version
+    is already in production, or is CANDIDATE/REJECTED and so has never
+    been a known-good production version to return to.
+    """
+
+    pass
+
+
 # --- Readiness / Eligibility / Drift / Promotion ---------------------- #
 
 

@@ -222,6 +222,46 @@ class MLOpsModel:
                 return v
         return None
 
+    def rollback_to(self, version_number: int) -> MLOpsModelVersion:
+        """Put a previously-retired version of this model back into
+        production, archiving whichever version holds it now.
+
+        Addressed by ``version_number`` — the number a reader sees in
+        the console and in ``versions`` — rather than by the database
+        id every other SDK method hides. The rest of the SDK never asks
+        for an id, and a rollback is the one operation someone types out
+        under pressure.
+
+        Application code that wants the serving bridge reloaded should
+        go through ``POST /api/model-versions/{id}/rollback`` instead:
+        publishing that event needs the API's configuration, and the SDK
+        deliberately holds no opinion about where serving lives. This
+        method changes the framework's own registry only.
+
+        Raises:
+            NotFoundError: no version with that number on this model.
+            RollbackError: that version cannot be rolled back to — see
+                ``ModelManager.rollback_to``.
+        """
+        with self._project._session_scope() as s:
+            self._project._ensure_managers(s)
+            mm = self._project.models
+            match = next(
+                (
+                    v for v in mm.list_model_versions(self.id)
+                    if v.version_number == version_number
+                ),
+                None,
+            )
+            if match is None:
+                raise NotFoundError(
+                    f"{self.name!r} has no version {version_number}"
+                )
+            result = mm.rollback_to(match.id)
+            return MLOpsModelVersion.from_orm(
+                mm.get_model_version(result.restored_version_id)
+            )
+
 
 @dataclass
 class MLOpsLineage:

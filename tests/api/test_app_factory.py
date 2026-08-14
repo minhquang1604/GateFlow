@@ -87,7 +87,11 @@ class TestFullAppBoot:
         # /api/alerts — see events/store.py::GovernanceEventStore).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        assert len(api_paths) == 57, f"Expected 57, got {len(api_paths)}: {api_paths}"
+        # 58, not 57: + POST /api/model-versions/{id}/rollback (see
+        # api/routers/models.py). The two probes /health and /ready are
+        # deliberately absent from this count — they are not /api-
+        # prefixed, on purpose (see api/routers/health.py).
+        assert len(api_paths) == 58, f"Expected 58, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 9, internal
         # The read-only proxy count stays 19: clear/retry are a distinct

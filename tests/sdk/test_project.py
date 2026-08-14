@@ -149,3 +149,51 @@ class TestTrainErrors:
         v = ds.create_version("s3://b/v1", 100)
         with pytest.raises(PipelineNotRegisteredError):
             project.train(dataset_version=v, pipeline="nope", wait=False)
+
+
+class TestRollback:
+    """``MLOpsModel.rollback_to`` — addressed by version_number, which is
+    what a reader sees, not the database id the rest of the SDK hides."""
+
+    def _model_with_history(self, project):
+        ds = project.create_dataset("ds")
+        v = ds.create_version("s3://b/v1", 100)
+        model = project.create_model("clf")
+        from mlops_framework.database.models.model_version import ModelState
+
+        with project._session_scope() as s:
+            project._ensure_managers(s)
+            mm = project.models
+            a = mm.create_model_version(
+                model_id=model.id, dataset_version_id=v.id, state=ModelState.CANDIDATE
+            )
+            b = mm.create_model_version(
+                model_id=model.id, dataset_version_id=v.id, state=ModelState.CANDIDATE
+            )
+            for mv in (a, b):
+                mm.transition_state(mv.id, ModelState.APPROVED)
+            mm.transition_state(a.id, ModelState.PRODUCTION)
+            mm.transition_state(a.id, ModelState.ARCHIVED)
+            mm.transition_state(b.id, ModelState.PRODUCTION)
+        return model
+
+    def test_restores_by_version_number(self, project):
+        model = self._model_with_history(project)
+        assert model.production_version.version_number == 2
+
+        restored = model.rollback_to(1)
+
+        assert restored.version_number == 1
+        assert model.production_version.version_number == 1
+
+    def test_unknown_version_number_raises_not_found(self, project):
+        model = self._model_with_history(project)
+        with pytest.raises(NotFoundError):
+            model.rollback_to(99)
+
+    def test_rolling_back_to_the_live_version_is_refused(self, project):
+        from mlops_framework.exceptions import RollbackError
+
+        model = self._model_with_history(project)
+        with pytest.raises(RollbackError):
+            model.rollback_to(2)

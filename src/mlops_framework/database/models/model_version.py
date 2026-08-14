@@ -59,7 +59,21 @@ VALID_MODEL_STATE_TRANSITIONS: dict[ModelState, set[ModelState]] = {
     ModelState.CANDIDATE: {ModelState.APPROVED, ModelState.REJECTED, ModelState.PRODUCTION},
     ModelState.APPROVED: {ModelState.PRODUCTION, ModelState.ARCHIVED, ModelState.REJECTED},
     ModelState.PRODUCTION: {ModelState.ARCHIVED},
-    ModelState.ARCHIVED: set(),  # terminal
+    # Rollback. ARCHIVED used to be terminal, which meant a model that
+    # reached PRODUCTION and turned out to be bad had no way back to a
+    # known-good version — the registry could only ever move forward,
+    # and recovering meant retraining and hoping. That is the wrong
+    # shape for the one operation an on-call operator most needs.
+    #
+    # The edge added is ARCHIVED -> APPROVED, deliberately not
+    # ARCHIVED -> PRODUCTION. Re-approving a previously-retired version
+    # is the honest description of what a rollback decides, and it
+    # reuses the existing APPROVED -> PRODUCTION edge instead of adding
+    # a second, shorter path into PRODUCTION that other code could
+    # stumble onto. Both steps, plus archiving the incumbent, happen
+    # together in ModelManager.rollback_to() — that is the only thing
+    # that should be walking this edge.
+    ModelState.ARCHIVED: {ModelState.APPROVED},
     ModelState.REJECTED: set(),  # terminal
 }
 

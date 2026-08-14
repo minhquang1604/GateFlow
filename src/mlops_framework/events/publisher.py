@@ -193,6 +193,42 @@ class RunBlockedEvent(Event):
 
 
 @dataclass
+class ModelRolledBackEvent(Event):
+    """Emitted when an operator puts a retired version back into
+    production — see ``api/routers/models.py``'s rollback endpoint.
+
+    Recorded at CRITICAL severity, unlike a normal promotion, which is
+    not recorded as an alert at all: a rollback is a statement that what
+    was in production was wrong. ``actor`` is carried in the payload
+    because this is the one governance event that is always a human
+    decision rather than a policy outcome."""
+
+    def __init__(
+        self,
+        model_id: int,
+        model_name: str,
+        restored_version: int,
+        previous_version: int | None = None,
+        actor: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "model_id": model_id,
+            "model_name": model_name,
+            "restored_version": restored_version,
+        }
+        if previous_version is not None:
+            payload["previous_version"] = previous_version
+        if actor is not None:
+            payload["actor"] = actor
+        super().__init__(
+            event_type="MODEL_ROLLED_BACK",
+            timestamp=timestamp or _now_iso(),
+            payload=payload,
+        )
+
+
+@dataclass
 class ScheduleFailedEvent(Event):
     """Emitted when a due Schedule raised while firing — see
     ``scheduling/runner.py``'s ``_record_failure``.

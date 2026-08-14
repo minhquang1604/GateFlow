@@ -77,7 +77,8 @@ SQLite-only path with no external services.
 - **Training Run Lifecycle** — strict state machine (PENDING → RUNNING → SUCCESS / FAILED / CANCELLED)
 - **Orchestration** — pluggable orchestrators (local subprocess, Airflow, …)
 - **Experiment Tracking** — pluggable trackers (MLflow, in-memory, …)
-- **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle
+- **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle,
+  and a **rollback** path back to a known-good version
 - **Lineage** — full chain: Dataset → DatasetVersion → TrainingRun → ModelVersion → ServingInstance
 - **Dataset Readiness** — explainable READY/BLOCKED decisions, persisted
 - **Training Eligibility** — separates "data is ready" from "training should happen now"
@@ -538,6 +539,37 @@ curl -X POST localhost:8001/internal/model/reload \
 curl localhost:8001/internal/model/active/fraud-model
 ```
 
+### Rolling back
+
+```python
+model = project.get_model("fraud-xgboost")
+model.rollback_to(3)          # v3 back into production, incumbent archived
+```
+
+Or from the console's Model registry page (**Roll back** on any retired
+version), or over HTTP:
+
+```bash
+curl -X POST localhost:8000/api/model-versions/12/rollback \
+  -H "X-Console-Token: $CONSOLE_WRITE_TOKEN" -H "X-Actor: alice"
+```
+
+The promotion policy is deliberately **not** consulted. It answers "is
+this candidate good enough to replace production", judged on metrics; a
+rollback answers "production is broken, put back the version that
+worked", and the version being restored already passed that policy once.
+Gating it on metrics would block the rollback in exactly the case it
+exists for — an incumbent whose offline metrics look better than the
+version you need back. The decision is the operator's; the framework
+records it loudly instead (audit row, CRITICAL alert) rather than
+second-guessing it.
+
+The HTTP route additionally asks the ServingBridge to reload, and
+reports `serving_reloaded` so a caller can tell "the registry rolled
+back and serving followed" from "the registry rolled back and serving
+may not have". `MLOpsModel.rollback_to` changes the framework's own
+registry only — the SDK holds no opinion about where serving lives.
+
 ### Lineage
 
 ```python
@@ -560,7 +592,7 @@ the same FastAPI app as the API, at `/`.
 | Dashboard | `/dashboard` | Dataset/run/model counts, success rate |
 | Datasets | `/datasets/{id}` | Versions, schema, readiness panel, **drift panel** |
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
-| Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download |
+| Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download, and **Roll back** on any retired version |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
 | Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
 | Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
@@ -568,7 +600,8 @@ the same FastAPI app as the API, at `/`.
 
 ### API reference
 
-53 REST endpoints under `/api`, grouped by what they front:
+58 REST endpoints under `/api`, plus the two probes at the root
+(`/health`, `/ready`), grouped by what they front:
 
 | Group | Examples | Purpose |
 |---|---|---|
@@ -580,6 +613,7 @@ the same FastAPI app as the API, at `/`.
 | Settings | `/api/settings` | Effective config + live reachability for the database, MLflow, Airflow |
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
+| Rollback | `/api/model-versions/{id}/rollback` | Put a retired version back into production — archives the incumbent, audits the actor, raises a CRITICAL alert, and asks the ServingBridge to reload. Gated by `CONSOLE_WRITE_TOKEN` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
 | Health | `/health`, `/ready` | Liveness (process only) and readiness (pings the database) — mounted at the root, not under `/api`, for container/load-balancer probes |
 | Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network. Gated by `CONSOLE_WRITE_TOKEN`, whole router, GET included |

@@ -1938,6 +1938,45 @@ async function initModels() {
   }
 }
 
+
+// "Roll back to this version" — only offered for a version that could
+// actually take over: ARCHIVED (retired, the normal case) or APPROVED
+// (promoted-adjacent but never served). PRODUCTION is already live and
+// CANDIDATE/REJECTED have never been a known-good production version,
+// so those rows get nothing rather than a button that 409s.
+//
+// Confirmation is deliberate and names both sides: this swaps what is
+// being served, and the endpoint applies no metric policy to second-
+// guess the operator (see ModelManager.rollback_to).
+function rollbackButton(v, reload) {
+  if (v.state !== "ARCHIVED" && v.state !== "APPROVED") return null;
+  const btn = el("button", { class: "btn" }, "Roll back");
+  btn.addEventListener("click", async () => {
+    if (!confirm(
+      `Roll production back to v${v.version_number}?\n\n` +
+      "The current production version will be archived and the serving " +
+      "bridge asked to reload. This is recorded in the audit trail."
+    )) return;
+    btn.disabled = true;
+    btn.textContent = "Rolling back…";
+    try {
+      const r = await apiWrite(`/model-versions/${v.id}/rollback`, { method: "POST" });
+      flash(
+        `${r.model_name}: production is now v${r.restored_version}` +
+        (r.previous_production_version ? ` (v${r.previous_production_version} archived)` : "") +
+        (r.serving_reloaded ? "." : " — the serving bridge did not confirm the reload."),
+        r.serving_reloaded ? "ok" : "warn",
+      );
+      reload();
+    } catch (e) {
+      flash(e.message, "err");
+      btn.disabled = false;
+      btn.textContent = "Roll back";
+    }
+  });
+  return btn;
+}
+
 async function initModelDetail(id) {
   const head = document.getElementById("model-head");
   const body = document.getElementById("model-body");
@@ -1980,7 +2019,7 @@ async function initModelDetail(id) {
           el("th", {}, "Version"), el("th", {}, "State"),
           ...metricKeys.map((k) => el("th", {}, k)),
           el("th", {}, "Run"), el("th", {}, "Dataset"), el("th", {}, "Created"),
-          el("th", {}, "Report"))),
+          el("th", {}, "Report"), el("th", {}, ""))),
         el("tbody", {}, ...(ordered.length ? ordered.map((v) => {
           const best = {};
           for (const k of metricKeys) {
@@ -2008,8 +2047,12 @@ async function initModelDetail(id) {
             // triggers a real browser download — no download="" attribute
             // needed here (and Artifact-style sandboxes don't apply to
             // this deployed app, only to claude.ai's own preview).
-            el("td", {}, el("a", { href: `${API}/model-versions/${v.id}/report` }, "report")));
-        }) : [emptyRow(metricKeys.length + 6, "No versions registered yet.")])));
+            el("td", {}, el("a", { href: `${API}/model-versions/${v.id}/report` }, "report")),
+            el("td", { class: "row-actions" },
+              // initModelDetail re-mounts both regions, so re-running
+              // it is the refresh — this page has no load() of its own.
+              rollbackButton(v, () => initModelDetail(id))));
+        }) : [emptyRow(metricKeys.length + 7, "No versions registered yet.")])));
       tableHost.replaceChildren(table);
     }
 
