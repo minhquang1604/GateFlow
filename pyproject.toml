@@ -42,6 +42,14 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    # Coverage was never measured, so "is this covered" could only be
+    # answered by reading. `pytest --cov=mlops_framework` now answers it.
+    "pytest-cov>=4.1.0",
+    # Several tests drive real subprocesses, a real local MLflow store
+    # and (when reachable) real Airflow. A hang in one of those had no
+    # bound and simply stalled the run — in CI, until the job's own
+    # 6-hour ceiling. See the timeout in [tool.pytest.ini_options].
+    "pytest-timeout>=2.2.0",
     "ruff>=0.1.0",
     "httpx>=0.25.0",
 ]
@@ -73,9 +81,44 @@ ignore = [
              # change, not a lint sweep.
 ]
 
+[tool.ruff.lint.per-file-ignores]
+# Each entry below is a rule that is *wrong* for this file, not a rule
+# nobody got round to satisfying. CI lints the whole repository, so a
+# deliberate pattern has to be declared here rather than left to
+# accumulate as noise that trains everyone to ignore the output.
+
+# The imports here must come after the sys.path insertion above them,
+# which is the whole reason this file can find the package at all.
+# (F401 used to be ignored here too, for a hand-maintained list of
+# thirteen model imports that looked unused and were load-bearing. That
+# list now lives in one place — see the models package docstring — so a
+# single noqa'd import covers it and the file is otherwise clean.)
+"alembic/env.py" = ["E402"]
+
+# Repo-root and scripts/ entry points prepend the project root to
+# sys.path before importing mlops_framework, so the framework is
+# importable when run as a plain script rather than an installed
+# package. The imports cannot precede the code that makes them work.
+"seed_demo.py" = ["E402"]
+"scripts/*.py" = ["E402"]
+
+# Test modules routinely bind a value purely to assert that producing
+# it does not raise, and `pytest.importorskip` has to run before the
+# imports it guards.
+"tests/**/*.py" = ["E402"]
+"case_studies/**/tests/*.py" = ["E402"]
+
+
 [tool.ruff.lint.isort]
 known-first-party = ["mlops_framework"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "case_studies"]
 asyncio_mode = "auto"
+# A per-test ceiling, not a suite one — the point is to name the test
+# that hung, which a job-level timeout cannot do. Generous on purpose:
+# the slowest honest tests here spawn a real training subprocess and
+# initialise a real MLflow store, which takes tens of seconds on a cold
+# cache. Anything past 300s is stuck, not slow. Override per test with
+# @pytest.mark.timeout(n).
+timeout = 300

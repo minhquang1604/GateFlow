@@ -25,13 +25,12 @@ import hashlib
 import json
 import os
 import tempfile
-from typing import Any, Optional
-
+from typing import Any
 
 _HASH_CHUNK_BYTES = 1024 * 1024
 
 
-def _source_sha256(uri: str) -> Optional[str]:
+def _source_sha256(uri: str) -> str | None:
     """SHA-256 of the bytes behind ``uri``, or None if it cannot be read.
 
     Streams in chunks rather than reading the file in: the deployed

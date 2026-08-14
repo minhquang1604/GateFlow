@@ -45,7 +45,6 @@ import run_end_to_end_demo as demo  # noqa: E402
 # the same file, and patches on it would silently never be seen.
 import scripts._initial_training as core  # noqa: E402
 
-
 # ---------------------------------------------------------------------- #
 # 1. dataset / version wiring
 # ---------------------------------------------------------------------- #
@@ -185,8 +184,8 @@ class TestMainCLI:
         used — ``run_end_to_end_demo`` no longer imports them directly)
         so the script doesn't actually hit Airflow/MLflow.
         """
-        import mlops_framework.tracking.in_memory as in_memory
         import mlops_framework.orchestration.local as local
+        import mlops_framework.tracking.in_memory as in_memory
 
         # Force the script to use the local orchestrator + in-memory
         # tracker so we don't need a live MLflow/Airflow deployment.

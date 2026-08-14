@@ -58,9 +58,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from mlops_framework.dataset.checksum import calculate_file_checksum  # noqa: E402
-
 from case_studies.fraud_detection import data as fraud_data  # noqa: E402
+from mlops_framework.dataset.checksum import calculate_file_checksum  # noqa: E402
 
 DATASET_NAME = "credit-card-fraud"
 MODEL_NAME = "fraud-xgboost"
@@ -80,12 +79,24 @@ class AppClient:
     """Thin wrapper over the deployed app's internal API."""
 
     def __init__(self, base_url: str, timeout: float = 120.0) -> None:
-        self._c = httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
+        # /api/internal/* fails closed behind CONSOLE_WRITE_TOKEN (see
+        # mlops_framework.api.security). Read it from the environment the
+        # same way the DAG does, so running this script against a
+        # configured deployment needs no new flag — and against an
+        # unconfigured one fails with the endpoint's own 503/401 rather
+        # than a confusing mid-flow error.
+        headers = {"X-Actor": "script:run_fraud_detection_deployed"}
+        token = os.environ.get("CONSOLE_WRITE_TOKEN", "")
+        if token:
+            headers["X-Console-Token"] = token
+        self._c = httpx.Client(
+            base_url=base_url.rstrip("/"), timeout=timeout, headers=headers
+        )
 
     def close(self) -> None:
         self._c.close()
 
-    def __enter__(self) -> "AppClient":
+    def __enter__(self) -> AppClient:
         return self
 
     def __exit__(self, *_exc: Any) -> None:

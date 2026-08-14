@@ -192,6 +192,34 @@ class RunBlockedEvent(Event):
         )
 
 
+@dataclass
+class ScheduleFailedEvent(Event):
+    """Emitted when a due Schedule raised while firing — see
+    ``scheduling/runner.py``'s ``_record_failure``.
+
+    Distinct from :class:`TrainingFailedEvent`: that one means a
+    TrainingRun row exists and ended FAILED. This one covers everything
+    that goes wrong *around* the run — an unreachable tracking server, a
+    dataset that vanished, a workflow step that raised — including the
+    cases where no TrainingRun was ever created. Without it those
+    failures reached a container log and nothing else."""
+
+    def __init__(
+        self,
+        schedule_id: int,
+        error_message: str | None = None,
+        timestamp: str | None = None,
+    ) -> None:
+        payload: dict[str, Any] = {"schedule_id": schedule_id}
+        if error_message is not None:
+            payload["error_message"] = error_message
+        super().__init__(
+            event_type="SCHEDULE_FAILED",
+            timestamp=timestamp or _now_iso(),
+            payload=payload,
+        )
+
+
 # ---------------------------------------------------------------------- #
 # ABC
 # ---------------------------------------------------------------------- #

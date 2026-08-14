@@ -8,11 +8,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mlops_framework.sdk import MLOpsProject, NotFoundError
-
 from case_studies.customer_churn import data
-from case_studies.customer_churn.pipelines import train_balanced, train_baseline
-
+from mlops_framework.sdk import MLOpsProject, NotFoundError
 
 PROJECT_NAME = "customer-churn"
 DATASET_NAME = "telco-customers"

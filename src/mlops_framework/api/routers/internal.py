@@ -19,6 +19,18 @@ a training run against the deployed stack has to come through here. The
 handlers are thin: each one calls the same manager an in-process caller
 would, so there is no second implementation of the lifecycle rules.
 
+That network boundary is *not* the access control, though, and treating
+it as such was a hole: docker-compose publishes the app on port 8000, so
+anyone who could reach it could promote a model to PRODUCTION or trigger
+a DAG with no credential at all. The whole router — the ``/context``
+GET included, since it hands out dataset storage URIs — is therefore
+behind :func:`~mlops_framework.api.security.require_write_token`, and
+the DAG sends ``X-Console-Token`` on every call (see
+``infrastructure/airflow/dags/mlops_training_pipeline.py``'s
+``_internal_headers``). The gate fails closed: with no
+``CONSOLE_WRITE_TOKEN`` set, these routes answer 503 rather than serving
+anonymous callers.
+
 Creation endpoints are **get-or-create** where a natural key exists
 (dataset name, model name). Registering the same dataset twice is a
 normal thing for a client script to do on a re-run, and returning 409
@@ -46,6 +58,7 @@ from mlops_framework.api.deps import (
     get_model_manager,
     get_training_manager,
 )
+from mlops_framework.api.security import require_write_token
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.governance_event import GovernanceEventSeverity
@@ -66,7 +79,9 @@ from mlops_framework.training.manager import TrainingManager
 
 _log = logging.getLogger("mlops_framework.api.internal")
 
-router = APIRouter()
+# Router-level, not per-route: a route added here later is gated by
+# default rather than by whoever remembers to repeat the dependency.
+router = APIRouter(dependencies=[Depends(require_write_token)])
 
 
 # ---------------------------------------------------------------------- #

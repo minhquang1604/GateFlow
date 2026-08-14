@@ -2,6 +2,7 @@
 
 import pytest
 
+from mlops_framework.database.models.model_version import ModelState
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.exceptions import (
     ConcurrentPromotionError,
@@ -11,7 +12,6 @@ from mlops_framework.exceptions import (
     ModelVersionNotFoundError,
 )
 from mlops_framework.model.manager import ModelManager
-from mlops_framework.database.models.model_version import ModelState
 
 
 def _setup_dataset_version(db_session):

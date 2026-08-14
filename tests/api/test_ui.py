@@ -19,17 +19,34 @@ from fastapi.testclient import TestClient
 
 from mlops_framework.api.app import create_app
 
-
+# Every route mount_ui registers. It used to be nine of them, which
+# left the newest pages — Scheduling, Pipelines, Settings, Activity,
+# the compare view, the raw-MLflow-run view — with no test that they
+# render at all; a fragment renamed or a template deleted would only
+# have shown up in a browser.
 PAGES = [
     "/",
     "/dashboard",
     "/datasets",
-    "/runs",
-    "/models",
-    "/lineage",
     "/datasets/1",  # even with no data, the page itself loads
+    "/runs",
+    "/runs/compare",  # registered before /runs/{id}; must not 422
     "/runs/1",
+    "/models",
     "/models/1",
+    "/schedules",
+    "/lineage",
+    "/pipelines",
+    "/pipelines/mlops_training_pipeline",  # dag_id, a string not an int
+    "/mlflow-runs/abc123def456",  # opaque MLflow run id
+    "/settings",
+    "/activity",
+]
+
+# Folded into /runs; kept as redirects so old links still land somewhere.
+REDIRECTS = [
+    ("/experiments", "/runs"),
+    ("/experiments/42", "/runs?experiment=42"),
 ]
 
 
@@ -49,6 +66,40 @@ class TestUIPages:
         body = r.text
         assert "<html" in body.lower()
         assert "</html>" in body.lower()
+
+
+class TestTopNav:
+    """The OpenAPI docs must stay reachable from the console.
+
+    ``mount.py``'s ``_sidebar`` docstring gives "the topnav's own API
+    link already covers it" as the reason there is no API entry in the
+    sidebar. That link was once replaced by a GitHub icon, which left
+    /docs unreachable from anywhere in the console while the docstring
+    (and the README's Gateflow section) still said otherwise. This
+    holds the two halves together.
+    """
+
+    def test_docs_link_is_present(self, ui_client):
+        body = ui_client.get("/dashboard").text
+        assert 'href="/docs"' in body
+
+    def test_docs_actually_serves_openapi(self, ui_client):
+        assert ui_client.get("/docs").status_code == 200
+        assert ui_client.get("/openapi.json").status_code == 200
+
+    def test_sidebar_still_has_no_api_entry(self, ui_client):
+        """The other half of the same reasoning: one link, not two."""
+        body = ui_client.get("/dashboard").text
+        sidebar = body.split('class="sidenav"', 1)[1].split("</aside>", 1)[0]
+        assert "/docs" not in sidebar
+
+
+class TestRedirects:
+    @pytest.mark.parametrize("path,target", REDIRECTS)
+    def test_old_experiment_urls_redirect(self, ui_client, path, target):
+        r = ui_client.get(path, follow_redirects=False)
+        assert r.status_code in (307, 308)
+        assert r.headers["location"] == target
 
 
 class TestStaticAssets:

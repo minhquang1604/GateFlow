@@ -16,12 +16,13 @@ adapter (which already has its own suite).
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from mlops_framework.api import airflow_gateway
 from mlops_framework.api.routers import airflow_views
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
-
 
 EXECUTION_ID = "mlops_training_pipeline/mlops-abc123"
 
@@ -64,7 +65,7 @@ class _FakeOrchestrator:
         return [{"task_id": "train", "state": "success", "try_number": 1}]
 
     def get_execution_status(self, execution_id):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         from mlops_framework.orchestration.base import ExecutionState, ExecutionStatus
 
@@ -73,8 +74,8 @@ class _FakeOrchestrator:
             execution_id=execution_id,
             state=ExecutionState.SUCCESS,
             pipeline_id="mlops_training_pipeline",
-            started_at=datetime(2026, 8, 5, tzinfo=timezone.utc),
-            finished_at=datetime(2026, 8, 5, 0, 1, tzinfo=timezone.utc),
+            started_at=datetime(2026, 8, 5, tzinfo=UTC),
+            finished_at=datetime(2026, 8, 5, 0, 1, tzinfo=UTC),
             metadata={"conf": {"max_depth": 6}},
         )
 
@@ -331,8 +332,13 @@ class TestTaskControl:
         assert r.status_code == 503
         get_settings.cache_clear()
 
-    def test_clear_rejects_missing_header(self, client, fake_airflow, run_on_airflow, write_token):
-        r = client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
+    def test_clear_rejects_missing_header(
+        self, anon_client, fake_airflow, run_on_airflow, write_token
+    ):
+        # anon_client, not client: the shared `client` fixture now sends
+        # the token on every request (see conftest), so it cannot express
+        # "no header" — which is exactly what this test is about.
+        r = anon_client.post(f"/api/training-runs/{run_on_airflow}/tasks/train/clear")
         assert r.status_code == 401
 
     def test_clear_rejects_wrong_token(self, client, fake_airflow, run_on_airflow, write_token):

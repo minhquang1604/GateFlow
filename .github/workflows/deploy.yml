@@ -74,11 +74,21 @@ jobs:
         # tests alone would still be blind.
         run: python -m compileall -q src case_studies infrastructure scripts tests
 
+      # The whole repository, not just src/. Everything outside it —
+      # tests, scripts, the Airflow DAG, alembic, the case studies — was
+      # unlinted and had accumulated 288 findings, which is how a test
+      # that asserted nothing at all and a fixture with an order-dependent
+      # missing table both survived. Deliberate exceptions are declared
+      # in pyproject's [tool.ruff.lint.per-file-ignores], with the reason
+      # written down next to each.
       - name: Lint (ruff)
-        run: ruff check src/
+        run: ruff check .
 
+      # case_studies/ too — pyproject's testpaths includes it, so
+      # `pytest tests/` was silently skipping the two reusability
+      # case studies that exist to prove the SDK boundary holds.
       - name: Run the test suite
-        run: pytest tests/ -q
+        run: pytest tests/ case_studies/ -q
 
   build-and-push:
     needs: test

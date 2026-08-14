@@ -19,7 +19,6 @@ import pytest
 
 from case_studies.fraud_detection.pipelines import _source_sha256, train_xgboost
 
-
 pytest.importorskip("pandas")
 pytest.importorskip("xgboost")
 

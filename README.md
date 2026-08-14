@@ -572,7 +572,7 @@ the same FastAPI app as the API, at `/`.
 
 | Group | Examples | Purpose |
 |---|---|---|
-| Framework rows | `/api/dashboard`, `/api/datasets`, `/api/training-runs/{id}`, `/api/models/{id}`, `/api/readiness/{version_id}`, `/api/drift/{version_id}` | Thin façades over the managers — zero new business logic |
+| Framework rows | `/api/dashboard`, `/api/datasets`, `/api/training-runs/{id}`, `/api/models/{id}`, `/api/readiness/{version_id}`, `/api/drift/{version_id}` | Thin façades over the managers — zero new business logic. List endpoints take `limit`/`offset` (default 200, max 1000) and return the unpaged total in `X-Total-Count` |
 | Lineage | `/api/lineage/{dataset-version\|model-version\|training-run}/{id}` | Lineage graph JSON |
 | Airflow proxy | `/api/airflow/health`, `/api/airflow/dags/{id}`, `/api/training-runs/{id}/tasks` | Live DAG/task state for the pipeline detail page |
 | Airflow task control | `/api/training-runs/{id}/tasks/{task_id}/clear`, `.../retry` | Gated write endpoints (`api/security.py::require_write_token`) — fix a stuck task without leaving Gateflow |
@@ -581,7 +581,8 @@ the same FastAPI app as the API, at `/`.
 | Audit trail | `/api/audit` | Who/what triggered a schedule or promotion decision — `audit/manager.py` |
 | Alerts | `/api/alerts` | What the framework itself detected (training failures, drift, blocked retrains) — `events/store.py` |
 | Report | `/api/model-versions/{id}/report` | Download a self-contained reproducibility report (`?format=markdown\|html`) — `sdk/report.py` |
-| Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network |
+| Health | `/health`, `/ready` | Liveness (process only) and readiness (pings the database) — mounted at the root, not under `/api`, for container/load-balancer probes |
+| Internal | `/api/internal/*` | The Airflow DAG's own callbacks (`resolve_context`, `finish`, `promote`) — the only route into the database from outside the docker network. Gated by `CONSOLE_WRITE_TOKEN`, whole router, GET included |
 
 Full list at `/docs` (OpenAPI) once the app is running.
 
@@ -662,7 +663,7 @@ Environment variables (`.env` for host runs / Alembic, `.env.docker` for
 | `MLFLOW_S3_ENDPOINT_URL` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | MinIO/S3 credentials the MLflow **client** needs directly — it talks to the artifact store, bypassing the mlflow server. Missing these fails `log_artifact`/`download_artifacts` with a silent `AccessDenied`, not a crash | unset |
 | `AIRFLOW_BASE_URL` / `AIRFLOW_USERNAME` / `AIRFLOW_PASSWORD` | `AirflowOrchestrator` REST credentials | unset / `airflow` / `airflow` |
 | `SERVING_BRIDGE_URL` | Used by `HttpEventPublisher` | unset |
-| `CONSOLE_WRITE_TOKEN` | Shared secret required in the `X-Console-Token` header for Gateflow's write endpoints (Airflow task Clear/Retry — see `api/security.py`). Unset disables those endpoints entirely | unset |
+| `CONSOLE_WRITE_TOKEN` | Shared secret required in the `X-Console-Token` header by **every** state-changing endpoint: all of `/api/internal/*` (the Airflow DAG's callbacks) and the write half of `/api/schedules`, plus Airflow task Clear/Retry — see `api/security.py`. The gate fails closed: unset, those endpoints answer 503, so the DAG cannot report a run back and Scheduling is read-only. Reads are never gated | unset |
 | `APP_NAME` / `APP_VERSION` | Application metadata | `mlops-framework` / `0.1.0` |
 | `DEBUG` | Debug mode | `false` |
 
@@ -796,12 +797,17 @@ Framework/
 ## Testing
 
 ```bash
-pytest                        # full suite — 469 passed, 24 skipped (live-service integration tests)
+pytest                         # full suite — 831 passed, 24 skipped (live-service integration tests)
 pytest tests/unit              # unit tests only
 pytest tests/integration       # integration tests only
 pytest -k drift                # by name
-pytest --cov=mlops_framework   # coverage
+pytest --cov=mlops_framework   # coverage — currently 91%
 ```
+
+Every test carries a 300s ceiling (`pytest-timeout`, configured in
+`pyproject.toml`). Several drive real subprocesses and a real local
+MLflow store, so a hang there used to stall the whole run with nothing
+naming the test responsible.
 
 The suite is hermetic — no live MLflow, Airflow, or Postgres required:
 
@@ -814,6 +820,13 @@ The suite is hermetic — no live MLflow, Airflow, or Postgres required:
 
 The 24 skipped tests need a live stack (`docker compose up -d`) and are
 opt-in — see `tests/integration/test_airflow_live.py`.
+
+CI runs `ruff check .` over the whole repository, not just `src/`, and
+`pytest tests/ case_studies/` — `pytest tests/` alone was skipping the
+two case studies that exist to prove the SDK boundary holds. Deliberate
+lint exceptions live in `pyproject.toml`'s
+`[tool.ruff.lint.per-file-ignores]`, each with the reason written next
+to it.
 
 ## Known limitations
 
@@ -845,6 +858,14 @@ opt-in — see `tests/integration/test_airflow_live.py`.
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
+6. **`CONSOLE_WRITE_TOKEN` is a shared secret, not authentication.**
+   There is still no user, session, or RBAC concept anywhere in the
+   app: one token gates every write endpoint, and `X-Actor` — what the
+   audit trail records — is caller-supplied and unverified. That is
+   enough to stop an anonymous request promoting a model or handing the
+   orchestrator a `pipeline_id` to run, and not enough to tell two
+   authorized operators apart. Per-principal credentials with RBAC are
+   the intended replacement.
 
 ## License
 

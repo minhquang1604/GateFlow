@@ -4,7 +4,6 @@ from __future__ import annotations
 
 
 def _make_dataset(client, name="d1"):
-    from mlops_framework.dataset.manager import DatasetManager
 
     # The client uses the same DB; we re-use the same engine through
     # the session factory fixture.
@@ -69,7 +68,7 @@ class TestDatasetsList:
         finally:
             s.close()
 
-        r = client.get(f"/api/datasets/1")
+        r = client.get("/api/datasets/1")
         assert r.status_code == 200
         body = r.json()
         assert body["name"] == "d1"

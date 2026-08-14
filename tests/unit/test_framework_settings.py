@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
-
-from sqlalchemy import select
 
 from mlops_framework.audit.manager import AuditManager
 from mlops_framework.database.base import Base

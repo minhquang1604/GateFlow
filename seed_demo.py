@@ -25,7 +25,6 @@ sys.path.insert(0, str(HERE))
 os.environ.setdefault("DATABASE_URL", "sqlite:///./mlops_demo.db")
 print(f"Using DATABASE_URL={os.environ['DATABASE_URL']}")
 
-import sqlite3
 
 from mlops_framework.config.settings import get_settings
 from mlops_framework.database.base import Base
@@ -36,6 +35,7 @@ get_settings.cache_clear()
 # Step 1 — create schema with a one-off engine we dispose immediately
 db_path = str(HERE / "mlops_demo.db")
 from sqlalchemy import create_engine
+
 schema_eng = create_engine(f"sqlite:///{db_path}")
 Base.metadata.create_all(schema_eng)
 schema_eng.dispose()
@@ -62,6 +62,7 @@ print("\n[2/2] Running fraud-advanced end-to-end via the SDK ...")
 # the constant in-place to drive the advanced pipeline on the second
 # pass. The dataset & model are reused.
 import case_studies.fraud_detection.app as fraud_app
+
 fraud_app.PIPELINE = "fraud-advanced"  # type: ignore[attr-defined]
 
 # Wrap main() to override the default pipeline
@@ -97,10 +98,9 @@ print("✓ advanced lifecycle complete")
 # Step 3 — promote the latest model version to PRODUCTION so the UI's
 # Models page has a starred row.
 print("\nPromoting latest model version to PRODUCTION ...")
-from mlops_framework.model.manager import ModelManager
 from mlops_framework.database.models.model_version import ModelState
 from mlops_framework.lineage.manager import LineageManager
-from mlops_framework.sdk import MLOpsProject
+from mlops_framework.model.manager import ModelManager
 
 with mgr.get_session() as s:
     mm = ModelManager(s)

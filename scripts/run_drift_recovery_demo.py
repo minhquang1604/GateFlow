@@ -103,7 +103,7 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -111,6 +111,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from case_studies.fraud_detection import data as fraud_data
 from mlops_framework.config.settings import get_settings
 from mlops_framework.database.base import Base
 from mlops_framework.database.models.dataset_version import DatasetVersion
@@ -133,9 +134,6 @@ from mlops_framework.tracking.mlflow import MLflowTracker
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
 from mlops_framework.workflow.retraining import RetrainingWorkflow
-
-from case_studies.fraud_detection import data as fraud_data
-
 from scripts._initial_training import (
     STEP_SEP,
     _detail,
@@ -361,7 +359,7 @@ def phase2_auto_retrain(db: DatabaseManager, version_id: int, model_id: int, mlf
     return outcome
 
 
-def phase2_governance(db: DatabaseManager, v1_mv_id: int, v1_mlflow_run_id: Optional[str], outcome: Any) -> None:
+def phase2_governance(db: DatabaseManager, v1_mv_id: int, v1_mlflow_run_id: str | None, outcome: Any) -> None:
     """Two different F1s, reported separately: V1 scored live on the
     drifted data (the "V1 collapsed" story) vs the number
     ModelPromotionPolicy actually compared (V2-fresh vs V1-stored)."""

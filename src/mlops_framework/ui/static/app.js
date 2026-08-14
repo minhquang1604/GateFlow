@@ -1096,30 +1096,40 @@ function writeToken(forcePrompt = false) {
   if (forcePrompt) sessionStorage.removeItem("gateflow-write-token");
   let t = sessionStorage.getItem("gateflow-write-token");
   if (!t) {
-    t = window.prompt("Console write token (CONSOLE_WRITE_TOKEN) — required to clear or retry an Airflow task:");
+    t = window.prompt("Console write token (CONSOLE_WRITE_TOKEN) — required for any action that changes state:");
     if (t) sessionStorage.setItem("gateflow-write-token", t);
   }
   return t || null;
 }
 
-// POSTs to the gated clear/retry route (see airflow_views.py). On a 401/403
-// the cached token is dropped and the prompt fires once more — covers both
-// "never set one" and "operator rotated CONSOLE_WRITE_TOKEN since last time".
-async function taskAction(runId, taskId, action, _retried = false) {
+// api() plus the write token, for any gated endpoint (see
+// api/security.py). On a 401/403 the cached token is dropped and the
+// prompt fires once more — covers both "never set one" and "operator
+// rotated CONSOLE_WRITE_TOKEN since last time". A 503 is passed straight
+// through instead: that means the server has no token configured at all,
+// which re-prompting cannot fix and the user needs to read.
+async function apiWrite(path, options = {}, _retried = false) {
   const token = writeToken();
   if (!token) throw new Error("Write token required — action cancelled.");
   try {
-    return await api(`/training-runs/${runId}/tasks/${encodeURIComponent(taskId)}/${action}`, {
-      method: "POST",
-      headers: { "X-Console-Token": token },
+    return await api(path, {
+      ...options,
+      headers: { ...(options.headers || {}), "X-Console-Token": token },
     });
   } catch (e) {
     if (!_retried && /^40[13]/.test(e.message)) {
       writeToken(true);
-      return taskAction(runId, taskId, action, true);
+      return apiWrite(path, options, true);
     }
     throw e;
   }
+}
+
+// POSTs to the gated clear/retry route (see airflow_views.py).
+async function taskAction(runId, taskId, action) {
+  return apiWrite(`/training-runs/${runId}/tasks/${encodeURIComponent(taskId)}/${action}`, {
+    method: "POST",
+  });
 }
 
 // Fetches one task attempt's log and renders it as plain text below the
@@ -2099,7 +2109,7 @@ async function initSchedules() {
         const toggleBtn = el("button", { class: "btn" }, s.enabled ? "Disable" : "Enable");
         toggleBtn.addEventListener("click", async () => {
           try {
-            await api(`/schedules/${s.id}`, {
+            await apiWrite(`/schedules/${s.id}`, {
               method: "PATCH", body: JSON.stringify({ enabled: !s.enabled }),
             });
             flash(`Schedule #${s.id} ${s.enabled ? "disabled" : "enabled"}.`, "ok");
@@ -2112,7 +2122,7 @@ async function initSchedules() {
           runNowBtn.disabled = true;
           runNowBtn.textContent = "Running…";
           try {
-            const result = await api(`/schedules/${s.id}/run-now`, { method: "POST" });
+            const result = await apiWrite(`/schedules/${s.id}/run-now`, { method: "POST" });
             flash(
               result.fired
                 ? `Schedule #${s.id} ran — promoted=${result.promoted} (training run #${result.training_run_id}).`
@@ -2131,7 +2141,7 @@ async function initSchedules() {
         deleteBtn.addEventListener("click", async () => {
           if (!confirm(`Delete schedule #${s.id}? This cannot be undone.`)) return;
           try {
-            await api(`/schedules/${s.id}`, { method: "DELETE" });
+            await apiWrite(`/schedules/${s.id}`, { method: "DELETE" });
             flash(`Schedule #${s.id} deleted.`, "ok");
             load();
           } catch (e) { flash(e.message, "err"); }
@@ -2179,7 +2189,7 @@ async function initSchedules() {
         return;
       }
       try {
-        await api("/schedules", {
+        await apiWrite("/schedules", {
           method: "POST",
           body: JSON.stringify({
             model_id: Number(modelSel.value),
@@ -2253,6 +2263,15 @@ const POLICY_TITLES = {
 };
 const POLICY_ORDER = ["promotion", "eligibility", "training_policy", "drift"];
 
+// Same badge either place a policy's default/customized state shows —
+// the Settings list row and the policy's own detail card (paint()
+// below) — so the two never drift into describing it differently.
+function policyBadge(entry) {
+  return entry.is_default
+    ? el("span", { class: "badge plain" }, "default")
+    : el("span", { class: "badge success" }, "customized");
+}
+
 // api()'s errors carry the raw response body after the status line
 // (see api() above) — for a 4xx from policy_settings.py that's a JSON
 // {"detail": "..."} blob. Pull the message out when it parses as that;
@@ -2277,7 +2296,11 @@ function apiErrorDetail(e) {
 // constructing the dataclass directly would apply (see
 // FrameworkSettingsManager.set_raw), so a malformed edit is rejected
 // with the real reason, not silently coerced.
-function policyCard(key, entry) {
+// `onUpdate`, when given, is told about every successful save/reset —
+// the Settings page's list view uses it to keep the badge it shows for
+// this policy current after a visit to the detail view, without a
+// second fetch.
+function policyCard(key, entry, onUpdate) {
   const textarea = el("textarea", {
     class: "policy-json", spellcheck: "false", rows: "9",
     "aria-label": `${POLICY_TITLES[key] || key} policy JSON`,
@@ -2289,11 +2312,10 @@ function policyCard(key, entry) {
 
   function paint(e) {
     textarea.value = JSON.stringify(e.value, null, 2);
-    mount(badgeSlot, e.is_default
-      ? el("span", { class: "badge plain" }, "default")
-      : el("span", { class: "badge success" }, "customized"));
+    mount(badgeSlot, policyBadge(e));
     resetBtn.disabled = e.is_default;
     mount(errorBox);
+    onUpdate?.(e);
   }
   paint(entry);
 
@@ -2336,18 +2358,77 @@ function policyCard(key, entry) {
     el("div", { class: "policy-actions" }, saveBtn, resetBtn));
 }
 
+// The Settings page's 5 sections — the read-only connectivity panel
+// plus the 4 editable policies — each get one row on the landing list;
+// clicking a row swaps the page into that section's own detail view
+// (a plain in-memory state switch, same idea as initActivity()'s two
+// tabs, not a real navigation) with a breadcrumb back to the list.
+// One line of context per section, shown both on its list row and atop
+// its own detail view, so the two never describe it differently.
+const SETTINGS_SECTION_DESCRIPTIONS = {
+  connectivity: "What Gateflow is pointed at right now — database, MLflow, Airflow — and whether each one actually answered.",
+  promotion: "Thresholds a candidate model version must clear before it can be promoted to production.",
+  eligibility: "Whether a retrain should actually run right now — new data, drift, cooldown, and production-quality gates.",
+  training_policy: "Structural checks a dataset version must pass before training can start.",
+  drift: "Sensitivity of the statistical tests that flag a dataset version as drifted.",
+};
+const SETTINGS_SECTIONS = ["connectivity", ...POLICY_ORDER];
+
+function settingsSectionTitle(key) {
+  return key === "connectivity" ? "Connectivity" : POLICY_TITLES[key];
+}
+
+// "connected" only once every *configured* system actually answered —
+// MLflow/Airflow being unconfigured is the app's normal unconfigured
+// state (reachabilityBadge's own "not configured", neutral), not a
+// reason to warn on the list row; Database is always configured.
+function connectivitySummaryBadge(s) {
+  const attention = [s.database, s.mlflow, s.airflow].some(
+    (sys) => sys.configured && !sys.reachable);
+  return attention
+    ? el("span", { class: "badge failed" }, "needs attention")
+    : el("span", { class: "badge success" }, "connected");
+}
+
+// One clickable row: title + one-line description on the left, a
+// status badge and a chevron (this row leads somewhere, unlike every
+// other badge-bearing row in the app) on the right.
+function settingsMenuItem(title, desc, badge, onClick) {
+  const btn = el("button", { class: "settings-menu-item", type: "button" },
+    el("span", { class: "text" },
+      el("span", { class: "title" }, title),
+      el("span", { class: "desc" }, desc)),
+    el("span", { class: "right" }, badge, el("span", { class: "chevron", "aria-hidden": "true" }, "›")));
+  btn.addEventListener("click", onClick);
+  return btn;
+}
+
 async function initSettings() {
   const out = document.getElementById("settings-out");
+  let s, policies;
 
-  async function load() {
-    let s, policies;
-    try {
-      [s, policies] = await Promise.all([api("/settings"), api("/settings/policies")]);
-    } catch (e) {
-      setError(out, e);
-      return;
-    }
+  function backCrumb(title) {
+    const back = el("a", { href: "#" }, "Settings");
+    back.addEventListener("click", (e) => { e.preventDefault(); goTo(null); });
+    return el("div", { class: "breadcrumb" }, back, " / ", title);
+  }
+
+  function renderList() {
     out.replaceChildren(
+      el("div", { class: "card" },
+        el("div", { class: "settings-menu" },
+          settingsMenuItem(
+            settingsSectionTitle("connectivity"), SETTINGS_SECTION_DESCRIPTIONS.connectivity,
+            connectivitySummaryBadge(s), () => goTo("connectivity", { push: true })),
+          ...POLICY_ORDER.map((key) =>
+            settingsMenuItem(
+              settingsSectionTitle(key), SETTINGS_SECTION_DESCRIPTIONS[key],
+              policyBadge(policies[key]), () => goTo(key, { push: true }))))));
+  }
+
+  function renderConnectivity() {
+    out.replaceChildren(
+      backCrumb("Connectivity"),
       el("div", { class: "grid-2" },
         settingsCard("Database", s.database),
         settingsCard("MLflow", s.mlflow),
@@ -2358,15 +2439,65 @@ async function initSettings() {
             el("dt", {}, "name"), el("dd", {}, s.app_name),
             el("dt", {}, "version"), el("dd", {}, s.app_version),
             el("dt", {}, "scheduler enabled"), el("dd", {}, String(s.scheduler.enabled)),
-            el("dt", {}, "scheduler poll seconds"), el("dd", {}, String(s.scheduler.poll_seconds))))),
-      el("h3", { style: "margin-top:28px" }, "Policies"),
+            el("dt", {}, "scheduler poll seconds"), el("dd", {}, String(s.scheduler.poll_seconds))))));
+  }
+
+  function renderPolicy(key) {
+    out.replaceChildren(
+      backCrumb(POLICY_TITLES[key]),
       el("p", { class: "muted", style: "margin:0 0 14px" },
-        "Governance defaults used when nothing more specific overrides them — a schedule's own " +
-        "min F1, or a manual promote/readiness request's own values, still take precedence over " +
-        "these (see each field's own docstring in the framework for what it does). ",
+        SETTINGS_SECTION_DESCRIPTIONS[key] + " A more specific value — a schedule's own min F1, " +
+        "a manual promote/readiness request's own values — still takes precedence over this. ",
         el("a", { href: "/activity" }, "Every change is on the Activity page"), "."),
-      el("div", { class: "grid-2" },
-        ...POLICY_ORDER.map((key) => policyCard(key, policies[key]))));
+      policyCard(key, policies[key], (updated) => { policies[key] = updated; }));
+  }
+
+  function render(section) {
+    if (section === "connectivity") renderConnectivity();
+    else if (POLICY_ORDER.includes(section)) renderPolicy(section);
+    else renderList();
+  }
+
+  // ?section= makes a detail view directly linkable/refreshable, same
+  // convention as initRuns()'s ?experiment= (see expFilter's change
+  // handler above). List -> detail (a row click) *pushes* a real
+  // history entry — without one, the browser's own back button had
+  // nothing to land on between "viewing a policy" and wherever the
+  // user was before they opened Settings at all, and skipped straight
+  // to that (reported as "back goes to the dashboard, not the list").
+  // Detail -> list (the breadcrumb link) still replaces: it's just
+  // converging back onto the list state that a preceding push already
+  // left one step behind, not a new place to arrive at from two
+  // different directions.
+  function goTo(section, { push = false } = {}) {
+    const url = new URL(location);
+    if (section) url.searchParams.set("section", section);
+    else url.searchParams.delete("section");
+    if (push) history.pushState(null, "", url);
+    else history.replaceState(null, "", url);
+    render(section);
+  }
+
+  // pushState/replaceState never themselves trigger navigation or a
+  // page load — only the browser's actual back/forward does, as a
+  // "popstate" event, which is otherwise invisible to a page that
+  // never listens for it. Without this, following the button back to
+  // a bare /settings after the fix above would leave the *rendered*
+  // content stuck on whatever detail view was last drawn, our own URL
+  // bar the only thing that changed.
+  window.addEventListener("popstate", () => {
+    render(new URLSearchParams(location.search).get("section"));
+  });
+
+  async function load() {
+    try {
+      [s, policies] = await Promise.all([api("/settings"), api("/settings/policies")]);
+    } catch (e) {
+      setError(out, e);
+      return;
+    }
+    const requested = new URLSearchParams(location.search).get("section");
+    render(SETTINGS_SECTIONS.includes(requested) ? requested : null);
   }
 
   document.getElementById("refresh").addEventListener("click", load);

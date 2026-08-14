@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-from typing import Any
 
 
 def train_baseline(config: dict) -> dict:

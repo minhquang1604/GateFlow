@@ -51,7 +51,6 @@ from mlops_framework.config.settings import get_settings
 from mlops_framework.database.base import Base
 from mlops_framework.database.session import DatabaseManager
 from mlops_framework.lineage.manager import LineageManager
-
 from scripts._initial_training import (
     STEP_SEP,
     _print_banner,

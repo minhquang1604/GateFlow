@@ -35,7 +35,6 @@ import json
 
 import pytest
 
-from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_version import ModelState, ModelVersion
@@ -49,9 +48,9 @@ from mlops_framework.orchestration.base import (
     Orchestrator,
 )
 from mlops_framework.readiness.engine import TrainingPolicy
+from mlops_framework.tracking.in_memory import InMemoryTracker
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
-from mlops_framework.tracking.in_memory import InMemoryTracker
 from mlops_framework.workflow.retraining import RetrainingWorkflow
 
 DAG_ID = "mlops_training_pipeline"

@@ -380,22 +380,26 @@ a:hover { color: var(--accent-hover); text-decoration: underline; }
 .topnav-util a:hover,
 .topnav-btn:hover { background: var(--surface-3); color: var(--text); }
 
-/* Sun in light mode, moon in dark — drawn with a box-shadow crescent so
- * the toggle needs no icon asset. */
-.theme-icon {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  border: 1.6px solid currentColor;
-  position: relative;
+/* Real sun/moon icons (mount.py's theme-toggle button), not the old
+ * plain-circle-plus-inset-shadow that read as neither shape at 15px —
+ * both are always in the DOM; only one is ever visible, chosen by the
+ * same three-state rule (system preference, overridden by an explicit
+ * data-theme) the colour tokens above already use, so it never depends
+ * on JS running first to be right. Shows the *destination*, not the
+ * current state — light mode shows the moon (click to go dark), dark
+ * mode shows the sun (click to go light) — the click-target reading a
+ * button icon almost always gets, same as a physical light switch. */
+.theme-icon { width: 16px; height: 16px; }
+.theme-icon-sun { display: none; }
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-icon-sun { display: block; }
+  :root:not([data-theme="light"]) .theme-icon-moon { display: none; }
 }
-.theme-icon::after {
-  content: "";
-  position: absolute;
-  inset: -1.6px;
-  border-radius: 50%;
-  box-shadow: inset -4px -1px 0 0 currentColor;
-}
+:root[data-theme="dark"] .theme-icon-sun { display: block; }
+:root[data-theme="dark"] .theme-icon-moon { display: none; }
+:root[data-theme="light"] .theme-icon-sun { display: none; }
+:root[data-theme="light"] .theme-icon-moon { display: block; }
 
 /* ================================================================== */
 /* 2. Shell — side navigation + content                                */
@@ -1429,6 +1433,40 @@ pre.log {
 }
 .policy-actions { display: flex; gap: 8px; }
 .policy-error:empty { display: none; }
+
+/* Settings page — the 5-row landing list (settingsMenuItem() in
+ * app.js) a click swaps for that section's own detail view. Plain
+ * full-width buttons styled as list rows, not buttons — the border
+ * between rows is what reads as "a list", not a background/shadow per
+ * row the way .card does. */
+.settings-menu { display: flex; flex-direction: column; }
+.settings-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  padding: 16px 4px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-menu-item:last-child { border-bottom: none; }
+.settings-menu-item:hover { background: var(--surface-2); }
+.settings-menu-item .text { min-width: 0; }
+.settings-menu-item .title { display: block; font-weight: 600; color: var(--text); }
+.settings-menu-item .desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+.settings-menu-item .right { display: flex; align-items: center; gap: 10px; flex: none; }
+.settings-menu-item .chevron { color: var(--text-faint); font-size: 16px; }
 
 /* Breadcrumb rendered by app.js on detail pages. */
 .breadcrumb { font-size: 12.5px; color: var(--text-muted); margin-bottom: 10px; }

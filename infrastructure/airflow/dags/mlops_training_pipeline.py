@@ -71,6 +71,26 @@ APP_BASE_URL = os.environ.get("APP_BASE_URL", "http://app:8000")
 SERVING_BRIDGE_URL = os.environ.get("SERVING_BRIDGE_URL", "http://serving:8001")
 
 
+def _internal_headers() -> dict[str, str]:
+    """Auth header for ``/api/internal/*``.
+
+    That router fails closed behind ``CONSOLE_WRITE_TOKEN`` (see
+    ``mlops_framework.api.security``) — being inside the VPC is not the
+    access control. The scheduler and webserver containers get the same
+    value the app container has; missing it here surfaces as a 503/401
+    from the first task rather than a silent skip, which is the intended
+    failure mode: a DAG that cannot authenticate must not look healthy.
+
+    ``X-Actor`` is unverified metadata, not a credential — it only names
+    this DAG in the audit trail instead of the default ``system``.
+    """
+    token = os.environ.get("CONSOLE_WRITE_TOKEN", "")
+    headers = {"X-Actor": "airflow:mlops_training_pipeline"}
+    if token:
+        headers["X-Console-Token"] = token
+    return headers
+
+
 # ---------------------------------------------------------------------- #
 # Helpers
 # ---------------------------------------------------------------------- #
@@ -138,6 +158,7 @@ def resolve_context(**context: Any) -> dict[str, Any]:
 
     response = httpx.get(
         f"{APP_BASE_URL}/api/internal/training-runs/{run_id}/context",
+        headers=_internal_headers(),
         timeout=30.0,
     )
     response.raise_for_status()
@@ -327,6 +348,7 @@ def report_status(**context: Any) -> dict[str, Any]:
     response = httpx.post(
         f"{APP_BASE_URL}/api/internal/training-runs/{run_id}/finish",
         json=body,
+        headers=_internal_headers(),
         timeout=30.0,
     )
     response.raise_for_status()
@@ -380,6 +402,7 @@ def register_and_promote(**context: Any) -> dict[str, Any]:
             "artifact_uri": train_payload["artifact_path"],
             "min_f1": pipeline_meta.get("min_f1", 0.0),
         },
+        headers=_internal_headers(),
         timeout=30.0,
     )
     response.raise_for_status()

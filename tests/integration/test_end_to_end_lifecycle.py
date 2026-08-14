@@ -22,19 +22,16 @@ This test exercises the framework's public surface end-to-end, but
 stays hermetic — no Airflow, no MLflow, no real data.
 """
 
-import time
 
-import pytest
 
 from mlops_framework.database.models.model_version import ModelState
 from mlops_framework.dataset.manager import DatasetManager
 from mlops_framework.model.manager import ModelManager
 from mlops_framework.orchestration.base import ExecutionState
 from mlops_framework.orchestration.local import LocalDockerOrchestrator
+from mlops_framework.tracking.in_memory import InMemoryTracker
 from mlops_framework.training.manager import TrainingManager
 from mlops_framework.training.service import TrainingService
-from mlops_framework.tracking.in_memory import InMemoryTracker
-
 
 E2E_PIPELINE = "tests._pipelines.e2e_training:main"
 

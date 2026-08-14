@@ -1,22 +1,15 @@
 """Pytest configuration and fixtures for integration tests."""
 
-import os
+
 import pytest
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
+# Registers every table on Base.metadata for create_all() below —
+# see the models package docstring.
+from mlops_framework.database import models  # noqa: F401
 from mlops_framework.database.base import Base
-from mlops_framework.database.models.dataset import Dataset
-from mlops_framework.database.models.dataset_version import DatasetVersion
-from mlops_framework.database.models.drift_evaluation import DriftEvaluation
-from mlops_framework.database.models.model import Model
-from mlops_framework.database.models.model_promotion_event import ModelPromotionEvent
-from mlops_framework.database.models.model_version import ModelVersion
-from mlops_framework.database.models.readiness_evaluation import ReadinessEvaluation
-from mlops_framework.database.models.schedule import Schedule
-from mlops_framework.database.models.serving_instance import ServingInstance
-from mlops_framework.database.models.training_run import TrainingRun
 
 
 @pytest.fixture(scope="function")
@@ -36,8 +29,8 @@ def db_engine():
 @pytest.fixture(scope="function")
 def db_session(db_engine):
     """Create a test database session."""
-    Session = sessionmaker(bind=db_engine)
-    session = Session()
+    session_factory = sessionmaker(bind=db_engine)
+    session = session_factory()
     yield session
     session.rollback()
     session.close()

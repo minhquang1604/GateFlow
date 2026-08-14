@@ -6,7 +6,7 @@ Real croniter, real SQLite-backed ORM (via the ``db_session`` fixture)
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -49,15 +49,15 @@ class TestCronValidation:
 
 class TestNextFireTime:
     def test_daily_2am_from_before(self):
-        after = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
+        after = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
         nxt = cron.next_fire_time("0 2 * * *", after)
-        assert nxt == datetime(2026, 1, 1, 2, 0, tzinfo=timezone.utc)
+        assert nxt == datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
 
     def test_daily_2am_from_after_todays_slot(self):
         # Past today's 2am — next fire is tomorrow.
-        after = datetime(2026, 1, 1, 5, 0, tzinfo=timezone.utc)
+        after = datetime(2026, 1, 1, 5, 0, tzinfo=UTC)
         nxt = cron.next_fire_time("0 2 * * *", after)
-        assert nxt == datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc)
+        assert nxt == datetime(2026, 1, 2, 2, 0, tzinfo=UTC)
 
     def test_naive_datetime_treated_as_utc(self):
         after = datetime(2026, 1, 1, 0, 0)  # no tzinfo
@@ -69,22 +69,22 @@ class TestIsDue:
     def test_never_fired_waits_for_next_occurrence_after_creation(self):
         # Created at 2:55am for a 2am-daily cron: must NOT be due
         # immediately (see cron.is_due's docstring on why).
-        created_at = datetime(2026, 1, 1, 2, 55, tzinfo=timezone.utc)
-        now = datetime(2026, 1, 1, 3, 0, tzinfo=timezone.utc)
+        created_at = datetime(2026, 1, 1, 2, 55, tzinfo=UTC)
+        now = datetime(2026, 1, 1, 3, 0, tzinfo=UTC)
         assert not cron.is_due(
             "0 2 * * *", last_triggered_at=None, created_at=created_at, now=now
         )
 
     def test_never_fired_is_due_once_its_first_slot_passes(self):
-        created_at = datetime(2026, 1, 1, 1, 0, tzinfo=timezone.utc)
-        now = datetime(2026, 1, 1, 2, 1, tzinfo=timezone.utc)
+        created_at = datetime(2026, 1, 1, 1, 0, tzinfo=UTC)
+        now = datetime(2026, 1, 1, 2, 1, tzinfo=UTC)
         assert cron.is_due(
             "0 2 * * *", last_triggered_at=None, created_at=created_at, now=now
         )
 
     def test_not_due_again_right_after_firing(self):
-        created_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        last_triggered_at = datetime(2026, 1, 1, 2, 0, tzinfo=timezone.utc)
+        created_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        last_triggered_at = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
         now = last_triggered_at + timedelta(minutes=5)
         assert not cron.is_due(
             "0 2 * * *",
@@ -94,9 +94,9 @@ class TestIsDue:
         )
 
     def test_due_again_after_the_next_full_cycle(self):
-        created_at = datetime(2026, 1, 1, 0, 0, tzinfo=timezone.utc)
-        last_triggered_at = datetime(2026, 1, 1, 2, 0, tzinfo=timezone.utc)
-        now = datetime(2026, 1, 2, 2, 0, tzinfo=timezone.utc)
+        created_at = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
+        last_triggered_at = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
+        now = datetime(2026, 1, 2, 2, 0, tzinfo=UTC)
         assert cron.is_due(
             "0 2 * * *",
             last_triggered_at=last_triggered_at,
@@ -197,7 +197,7 @@ class TestScheduleManagerCRUD:
         ds, model = _setup(db_session)
         mgr = ScheduleManager(db_session)
         schedule = mgr.create_schedule(model.id, ds.id, "x:y", "0 2 * * *")
-        now = datetime(2026, 1, 1, 2, 0, tzinfo=timezone.utc)
+        now = datetime(2026, 1, 1, 2, 0, tzinfo=UTC)
 
         mgr.record_trigger(schedule.id, triggered_at=now, training_run_id=42)
         updated = mgr.get_schedule(schedule.id)

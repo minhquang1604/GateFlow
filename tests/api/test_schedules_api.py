@@ -5,13 +5,17 @@ chain, same technique as test_internal_promote_mlflow_sync.py.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-
 import pytest
-from fastapi.testclient import TestClient
 
 pytest.importorskip("mlflow", reason="mlflow SDK is not installed")
 
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+# tests/api has no __init__.py, so pytest puts this directory on sys.path
+# and the shared fixtures module is importable by its bare name.
+from conftest import authenticated_client  # noqa: E402
 from mlops_framework.api.app import create_app
 from mlops_framework.api.deps import get_db_manager_dep
 from mlops_framework.config.settings import get_settings
@@ -19,9 +23,6 @@ from mlops_framework.database.base import Base
 from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.session import DatabaseManager
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
 PIPELINE_ID = "tests._pipelines.e2e_training:main"
 
@@ -49,7 +50,7 @@ def api(mlflow_uri):
 
     app = create_app(mount_ui=False)
     app.dependency_overrides[get_db_manager_dep] = lambda: mgr
-    yield TestClient(app), session_factory
+    yield authenticated_client(app), session_factory
     Base.metadata.drop_all(engine)
     engine.dispose()
 
