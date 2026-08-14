@@ -111,10 +111,21 @@ _ICONS: dict[str, str] = {
         '<circle cx="9" cy="14.8" r="1.7"/>'
         '<path d="M4.7 4.3L8 13.4M13.3 4.3L10 13.4M4.9 3.2h9.2"/>'
     ),
+    # A ring of 8 short teeth, not rays from the centre — the previous
+    # version read as a sun/asterisk (worse still, right next to a
+    # theme toggle that was *also* an unclear circle) rather than a
+    # gear. Teeth are rects rotated around the centre rather than a
+    # hand-plotted path, so the spacing is exactly even.
     "settings": (
-        '<circle cx="9" cy="9" r="2.6"/>'
-        '<path d="M9 2.5v2.1M9 13.4v2.1M15.5 9h-2.1M4.6 9H2.5'
-        'M13.4 4.6l-1.5 1.5M6.1 11.9l-1.5 1.5M13.4 13.4l-1.5-1.5M6.1 6.1 4.6 4.6"/>'
+        '<circle cx="9" cy="9" r="4.3"/><circle cx="9" cy="9" r="1.6"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(0 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(45 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(90 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(135 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(180 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(225 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(270 9 9)"/>'
+        '<rect x="7.95" y="2.15" width="2.1" height="1.7" rx="0.35" transform="rotate(315 9 9)"/>'
     ),
     "activity": (
         '<path d="M2 9.5h3.2l1.8-5 2.6 9 1.8-6.5 1.4 2.5H16"/>'
@@ -403,9 +414,28 @@ def _document(title: str, active: str, fragment: str) -> str:
   <div class="topnav-spacer"></div>
 
   <nav class="topnav-util" aria-label="Utilities">
-    <a href="/docs" target="_blank" rel="noopener">API</a>
+    <a class="topnav-btn" href="https://github.com/minhquang1604/ML_Framework"
+       target="_blank" rel="noopener" aria-label="View source on GitHub">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+    </a>
     <button id="theme-toggle" class="topnav-btn" aria-label="Toggle colour theme">
-      <span class="theme-icon" aria-hidden="true"></span>
+      <svg class="theme-icon theme-icon-sun" viewBox="0 0 18 18" fill="none"
+           stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true">
+        <circle cx="9" cy="9" r="2.6" fill="currentColor" stroke="none"/>
+        <line x1="13.40" y1="9" x2="15.30" y2="9"/>
+        <line x1="12.11" y1="12.11" x2="13.45" y2="13.45"/>
+        <line x1="9" y1="13.40" x2="9" y2="15.30"/>
+        <line x1="5.89" y1="12.11" x2="4.55" y2="13.45"/>
+        <line x1="4.60" y1="9" x2="2.70" y2="9"/>
+        <line x1="5.89" y1="5.89" x2="4.55" y2="4.55"/>
+        <line x1="9" y1="4.60" x2="9" y2="2.70"/>
+        <line x1="12.11" y1="5.89" x2="13.45" y2="4.55"/>
+      </svg>
+      <svg class="theme-icon theme-icon-moon" viewBox="0 0 18 18" fill="currentColor" aria-hidden="true">
+        <path d="M15.75 9.59A6.75 6.75 0 1 1 8.41 2.25 5.25 5.25 0 0 0 15.75 9.59z"/>
+      </svg>
     </button>
   </nav>
 </header>
