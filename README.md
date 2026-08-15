@@ -39,6 +39,7 @@ print(run.status, run.metrics)
 - [Database schema](#database-schema)
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
+- [Feature specifications](#feature-specifications)
 - [License](#license)
 
 ## Quickstart
@@ -1058,6 +1059,19 @@ to it.
    and keeps it in `sessionStorage` for the tab. Read endpoints are
    ungated, so the console renders for anyone who can reach it —
    gating GETs needs session management the app does not have.
+
+## Feature specifications
+
+`docs/specs/` holds one specification per feature — the problem it
+solves, its data model, the invariants a careless change would break,
+and *why* it is built that way rather than some other way. Written for
+whoever edits the framework next; this README covers using it.
+
+Start at [`docs/specs/README.md`](docs/specs/README.md), which also
+documents the conventions that recur across features: managers only
+`flush()`, state machines instead of direct assignment, lazily-imported
+adapters, the SAVEPOINT behind "never raises", and why the framework
+never reads dataset files itself.
 
 ## License
 
