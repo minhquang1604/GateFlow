@@ -986,6 +986,11 @@ button.primary:disabled, .btn.primary:disabled {
 .run-picker select { font-family: var(--mono); font-size: 12px; }
 
 .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+/* Stacked one-per-line instead of wrapping — the donut tile puts this
+ * beside the ring rather than above it, where a wrapping row would
+ * either run under the ring or force the tile wider than its share of
+ * the dashboard's three-up row. */
+.legend.vertical { flex-direction: column; flex-wrap: nowrap; gap: 8px; align-items: flex-start; }
 .legend-item {
   display: flex;
   align-items: center;
@@ -1116,6 +1121,32 @@ details[open] > summary:before { transform: rotate(90deg); }
 .chart .point.s6 { fill: var(--series-6); }
 .chart .point.s7 { fill: var(--series-7); }
 .chart .point.s8 { fill: var(--series-8); }
+
+/* Dashboard summary row (Platform inventory / Run outcomes / Models) —
+ * three tiles sharing one grid-3 row. .dash-tile-body centres its
+ * content vertically in whatever height the row's row-stretch hands
+ * it, so a 4-row kv list, a small ring and a table read as one
+ * balanced row instead of the shortest tile trailing into blank
+ * space. */
+.dash-tile { display: flex; flex-direction: column; }
+.dash-tile-body { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+
+/* Donut / ring chart (dashboard's "Run outcomes") — Airflow's own DAG
+ * Run States home-page widget, reproduced with this console's existing
+ * status tokens rather than new ones, legend beside the ring (never
+ * color alone) rather than stacked above it so the tile stays compact
+ * enough to share a row with two other cards. Thick flat-capped arcs
+ * with a surface gap between them, total spelled out below. */
+.donut-body { display: flex; align-items: center; justify-content: center; gap: 20px; }
+.donut-chart svg { max-width: 116px; flex: none; }
+.donut-arc { stroke: var(--idle); transition: opacity .15s ease; }
+.donut-arc:hover { opacity: .8; }
+.donut-arc.success { stroke: var(--ok); }
+.donut-arc.failed { stroke: var(--err); }
+.donut-arc.running { stroke: var(--run); }
+.donut-arc.empty { stroke: var(--border-strong); }
+.donut-total { margin-top: 12px; text-align: center; font-size: 13px; color: var(--text-muted); }
+.donut-total strong { color: var(--text); font-family: var(--mono); }
 
 /* The dashboard's run strip lives in a card with its own caption. */
 .card > .chart-title { font-size: 13px; font-weight: 700; margin-bottom: 10px; }

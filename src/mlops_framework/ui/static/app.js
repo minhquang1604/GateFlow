@@ -355,6 +355,73 @@ function barChart(title, entries) {
   return wrap;
 }
 
+// A shared dashboard-row tile: a title pinned to the top over a body
+// that's vertically centred in whatever height the row's equal-height
+// grid (grid-3's default stretch) hands it — so three cards built from
+// very different content (a kv list, a ring, a table) read as one
+// balanced row instead of the shortest one trailing off into a block
+// of empty space. See .dash-tile-body in app.css.
+function dashTile(title, body) {
+  return el("div", { class: "chart dash-tile" },
+    el("div", { class: "chart-title" }, title),
+    el("div", { class: "dash-tile-body" }, body));
+}
+
+// A proportional ring — Airflow's own "DAG Run States" widget on its
+// home page (http://localhost:8080 in local dev), reproduced compactly
+// (legend beside the ring, not stacked above it, and sized to share a
+// dashboard row with two other tiles) with this console's existing
+// status tokens (the same ones statusKind()/badges/the run strip
+// already use) rather than inventing new colors. entries:
+// [{ label, value, kind }], kind one of the statusKind() names so the
+// legend dot and the CSS below already agree on a color.
+function donutChart(title, entries) {
+  const total = entries.reduce((s, e) => s + (e.value || 0), 0);
+
+  const legend = el("div", { class: "legend vertical" },
+    ...entries.map((e) =>
+      el("span", { class: `legend-item ${e.kind || ""}` },
+        el("span", { class: "dot" }), `${e.label} (${fmt.num(e.value)})`)));
+
+  const cx = 60, cy = 60, r = 44, sw = 18;
+  const svg = svgEl("svg", { viewBox: "0 0 120 120", role: "img", "aria-label": `${title}, total ${total}` });
+  const nonzero = entries.filter((e) => (e.value || 0) > 0);
+
+  if (nonzero.length === 0) {
+    // No runs at all yet — an honest "nothing to show" ring rather than
+    // Airflow's own quirky habit of quartering the ring by legend slot
+    // when the total is zero, which looks like data that isn't there.
+    svg.appendChild(svgEl("circle", { class: "donut-arc empty", cx, cy, r, "stroke-width": sw, fill: "none" },
+      svgEl("title", {}, "No runs yet")));
+  } else if (nonzero.length === 1) {
+    svg.appendChild(svgEl("circle", { class: `donut-arc ${nonzero[0].kind || ""}`, cx, cy, r, "stroke-width": sw, fill: "none" },
+      svgEl("title", {}, `${nonzero[0].label}: ${fmt.num(nonzero[0].value)}`)));
+  } else {
+    // Fixed surface gap between segments (the same spacer every other
+    // chart on this page uses to separate marks instead of a border),
+    // expressed as an angle at this radius.
+    const gapAngle = 5 / r;
+    const spanAngle = 2 * Math.PI - gapAngle * nonzero.length;
+    let angle = -Math.PI / 2; // start at 12 o'clock, sweep clockwise
+    for (const e of nonzero) {
+      const sweep = spanAngle * (e.value / total);
+      const start = angle, end = angle + sweep;
+      const x1 = cx + r * Math.cos(start), y1 = cy + r * Math.sin(start);
+      const x2 = cx + r * Math.cos(end), y2 = cy + r * Math.sin(end);
+      svg.appendChild(svgEl("path", {
+        class: `donut-arc ${e.kind || ""}`,
+        d: `M ${x1} ${y1} A ${r} ${r} 0 ${sweep > Math.PI ? 1 : 0} 1 ${x2} ${y2}`,
+        "stroke-width": sw, fill: "none",
+      }, svgEl("title", {}, `${e.label}: ${fmt.num(e.value)} (${fmt.pct(e.value / total)})`)));
+      angle = end + gapAngle;
+    }
+  }
+
+  return dashTile(title, el("div", { class: "donut-chart" },
+    el("div", { class: "donut-body" }, legend, svg),
+    el("div", { class: "donut-total" }, "on a total of ", el("strong", {}, fmt.num(total)))));
+}
+
 /* ------------------------------------------------------------------ */
 /* Sortable table helper                                               */
 /* ------------------------------------------------------------------ */
@@ -404,8 +471,9 @@ function makeSortable(table, rows, columns, render) {
 
 async function initDashboard() {
   const grid = document.getElementById("kpi-grid");
-  const inventory = document.getElementById("inventory-stats");
+  const inventory = document.getElementById("inventory-card");
   const outcomes = document.getElementById("outcomes-chart");
+  const modelsCard = document.getElementById("models-card");
   let d;
   try {
     d = await api("/dashboard");
@@ -457,24 +525,61 @@ async function initDashboard() {
   // list run-detail already uses) rather than four more equal-weight
   // tiles.
   if (inventory) {
-    inventory.replaceChildren(
-      el("dt", {}, "Datasets"), el("dd", {}, String(d.datasets)),
-      el("dt", {}, "Dataset versions"), el("dd", {}, String(d.dataset_versions)),
-      el("dt", {}, "Total runs"), el("dd", {}, String(d.total_runs)),
-      el("dt", {}, "Models"), el("dd", {}, String(d.models)));
+    inventory.replaceChildren(dashTile("Platform inventory",
+      el("dl", { class: "kv" },
+        el("dt", {}, "Datasets"), el("dd", {}, String(d.datasets)),
+        el("dt", {}, "Dataset versions"), el("dd", {}, String(d.dataset_versions)),
+        el("dt", {}, "Total runs"), el("dd", {}, String(d.total_runs)),
+        el("dt", {}, "Models"), el("dd", {}, String(d.models)))));
   }
 
-  // Outcomes: the same success/failed/active counts as above, as a
-  // chart instead of a sentence — reuses barChart() rather than a new
-  // chart type, and needs no data beyond what /dashboard already
-  // returns.
+  // Outcomes: the same success/failed/active counts as above, as the
+  // Airflow-style "run states" ring (see donutChart()) instead of a
+  // sentence — needs no data beyond what /dashboard already returns.
+  // kind names match statusKind() (success/failed/running) so the
+  // legend dot and the .donut-arc CSS agree with the rest of the
+  // console's status colors instead of the kpi tiles' own ok/err/warn.
   if (outcomes) {
     outcomes.replaceChildren(
-      barChart("Run outcomes", [
-        { label: "Successful", value: d.success_runs, kind: "ok" },
-        { label: "Failed", value: d.failed_runs, kind: "err" },
-        { label: "Active", value: d.active_runs, kind: "warn" },
+      donutChart("Run outcomes", [
+        { label: "Successful", value: d.success_runs, kind: "success" },
+        { label: "Failed", value: d.failed_runs, kind: "failed" },
+        { label: "Active", value: d.active_runs, kind: "running" },
       ]));
+  }
+
+  // Models: which ones are actually in production right now and how
+  // they're performing — the "In production" KPI tile above only has
+  // room for a count, and inventory only has room for a total. In-
+  // production models sort first (the one list a reader opens this
+  // card to check); best-effort like the activity fetch below, so a
+  // failed call here doesn't blank out the tiles above it.
+  if (modelsCard) {
+    try {
+      const models = await api("/models");
+      const rows = models
+        .slice()
+        .sort((a, b) => (b.production_version ? 1 : 0) - (a.production_version ? 1 : 0))
+        .slice(0, 5);
+      modelsCard.replaceChildren(dashTile("Models",
+        rows.length
+          ? el("div", { class: "table-wrap" },
+              el("table", {},
+                el("thead", {}, el("tr", {},
+                  el("th", {}, "Model"), el("th", {}, "Production"), el("th", {}, "Key metric"))),
+                el("tbody", {},
+                  ...rows.map((m) => {
+                    const prod = m.production_version;
+                    const best = prod ? bestMetric({ metrics: prod.metrics }) : null;
+                    return el("tr", {},
+                      el("td", { class: "truncate" }, el("a", { href: `/models/${m.id}` }, m.name)),
+                      el("td", {}, prod ? statusBadge("PRODUCTION") : el("span", { class: "faint" }, "none")),
+                      el("td", { class: "mono" }, best ? `${best.name} ${fmt.metric(best.value)}` : "—"));
+                  }))))
+          : el("div", { class: "empty" }, "No models yet")));
+    } catch (e) {
+      setError(modelsCard, e);
+    }
   }
 
   // Recent activity — the Airflow-style run strip plus the latest rows.
