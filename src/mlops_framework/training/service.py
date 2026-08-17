@@ -93,6 +93,34 @@ class TrainingService:
                 tags={"training_run_id": str(run_id), "pipeline_id": run.pipeline_id or ""},
             )
 
+        # Persist the tracker run id (and where to reach the tracker)
+        # *before* triggering, not after. An out-of-process orchestrator
+        # re-reads this metadata over HTTP to decide which MLflow run to
+        # log into — see the Airflow DAG's ``train`` task, which reads
+        # metadata["tracker_run_id"] / metadata["tracking_uri"] from
+        # GET /internal/training-runs/{id}/context. Handing these to
+        # ``build_pipeline_config`` alone is enough for
+        # LocalDockerOrchestrator, whose subprocess receives the config
+        # directly, but leaves an Airflow-side pipeline unable to find the
+        # run this service just created: it starts its own instead, and
+        # TrainingRun.mlflow_run_id then points at an empty run while the
+        # metrics live somewhere else entirely.
+        pre_trigger_metadata: dict[str, Any] = {}
+        if tracker_run_id is not None:
+            pre_trigger_metadata["tracker_run_id"] = tracker_run_id
+        tracking_uri = getattr(self._tracker, "tracking_uri", None)
+        if tracking_uri:
+            # Only if the caller has not already recorded one. A caller
+            # driving a remote orchestrator may know an address reachable
+            # from *the worker* that differs from the one this process
+            # uses (localhost:5000 here vs mlflow:5000 on the container
+            # network); theirs is the correct one for the pipeline.
+            existing = self._manager.get_run_metadata(run_id)
+            if not existing.get("tracking_uri"):
+                pre_trigger_metadata["tracking_uri"] = tracking_uri
+        if pre_trigger_metadata:
+            self._manager.update_metadata(run_id, pre_trigger_metadata)
+
         execution_id = self._orchestrator.trigger_pipeline(
             pipeline_id=run.pipeline_id or "",
             config=self.build_pipeline_config(run_id, tracker_run_id=tracker_run_id),

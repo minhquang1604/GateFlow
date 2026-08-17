@@ -1,10 +1,9 @@
 """Telegram implementation of :class:`~mlops_framework.approval.base.ApprovalGate`.
 
 Sends an Approve/Deny prompt to one admin chat and blocks until it is
-answered or the timeout elapses. Lifted almost verbatim out of
-``scripts/_telegram_approval.py``, where it worked but was reachable
-only by that one demo script; the behaviour is unchanged, and the
-script now imports it from here.
+answered or the timeout elapses. This began life inside a single demo
+script, where it worked but was reachable only from there; the
+behaviour is unchanged now that it is part of the framework.
 
 ``httpx`` is imported lazily and Telegram is never a hard dependency —
 same treatment ``MLflowTracker`` gets. The framework must stay

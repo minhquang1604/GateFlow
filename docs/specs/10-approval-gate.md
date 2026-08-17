@@ -7,9 +7,9 @@
 
 Mọi quyết định **của máy** trong framework đều đã có kết quả giải thích
 được — readiness, drift, eligibility, promotion. Quyết định **của con
-người** thì chưa. Nó chỉ tồn tại trong `scripts/_telegram_approval.py`,
-đấu dây bằng tay vào đúng một demo, nên một lần retrain mà chính sách cho
-phép không thể bị bắt phải đợi một con người ở bất kỳ chỗ nào khác.
+người** thì chưa. Nó chỉ tồn tại bên trong đúng một demo script, đấu dây
+bằng tay, nên một lần retrain mà chính sách cho phép không thể bị bắt
+phải đợi một con người ở bất kỳ chỗ nào khác.
 
 ## 2. Hợp đồng
 
@@ -79,8 +79,19 @@ RetrainingWorkflow(session, training_service=service,
 
 ## 6. Quyết định thiết kế
 
-**Vì sao script cũ trở thành shim?** `scripts/_telegram_approval.py` giờ
-chỉ re-export bản của framework. Giữ hai bản sao là cách chúng lệch nhau.
+**Vì sao script cũ bị xoá?** `scripts/_telegram_approval.py` từng
+re-export bản của framework cho demo cũ. Khi demo đó được thay bằng
+`demo/`, shim không còn ai dùng — giữ lại chỉ là một bản sao thứ hai chờ
+lệch khỏi bản chính.
+
+**Vì sao có `RecordedDecisionGate`?** `RetrainingWorkflow` hỏi cổng sau
+bước eligibility, ngay trước khi train. Một caller phải hỏi *sớm hơn*
+thế — demo closed-loop chỉ dựng dataset V2 sau khi được duyệt, vì dựng
+trước là làm việc có thể bị bác — sẽ kẹt giữa hai lựa chọn tồi: hỏi con
+người hai lần, hoặc không truyền cổng nào và mất dòng audit
+`RETRAIN_APPROVED`. Gate này là lựa chọn thứ ba: hỏi một lần, đưa câu
+trả lời cho workflow, giữ nguyên audit trail. Nó mang cả quyết định từ
+chối, nên không phải `AutoApproveGate` trá hình.
 
 **Vì sao `context` tách khỏi `summary`?** Kênh nào cũng cần văn xuôi cho
 người đọc; nhưng dữ kiện có cấu trúc (tên model, điểm drift) là thứ một

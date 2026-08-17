@@ -1,0 +1,50 @@
+name: Build and deploy docs
+
+# Builds docs-site/ (mkdocs.yml) and publishes it to GitHub Pages, on the
+# gh-pages branch — the "web docs" linked from Gateflow's own top nav
+# (see src/mlops_framework/ui/mount.py) and from README.md.
+#
+# Separate from deploy.yml on purpose: that workflow builds and ships the
+# application images to AWS ECR/ECS; this one only ever touches GitHub
+# Pages and never needs AWS credentials. A docs typo should not be able
+# to fail, or need permission to touch, the production deploy pipeline.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs-site/**"
+      - "mkdocs.yml"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # mkdocs gh-deploy pushes to the gh-pages branch
+
+concurrency:
+  group: docs-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11" # match infrastructure/app/Dockerfile
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install docs dependencies
+        run: pip install -e ".[docs]"
+
+      - name: Build (strict — a broken internal link fails the job, not silently ships)
+        run: mkdocs build --strict
+
+      - name: Deploy to the gh-pages branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          mkdocs gh-deploy --force

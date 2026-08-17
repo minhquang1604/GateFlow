@@ -53,6 +53,13 @@ dev = [
     "ruff>=0.1.0",
     "httpx>=0.25.0",
 ]
+# Builds the hosted documentation site (docs-site/, mkdocs.yml) — kept
+# out of `dev` since neither pytest nor CI needs it; only a docs edit or
+# the gh-pages deploy workflow does. See docs-site/README.md.
+docs = [
+    "mkdocs>=1.6.0",
+    "mkdocs-material>=9.5.0",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -110,7 +117,7 @@ ignore = [
 
 
 [tool.ruff.lint.isort]
-known-first-party = ["mlops_framework"]
+known-first-party = ["mlops_framework", "demo", "case_studies"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "case_studies"]

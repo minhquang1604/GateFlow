@@ -83,6 +83,9 @@ htmlcov/
 # --------------------------------------------------------------------- #
 tests/
 docs/
+docs-site/
+site/
+mkdocs.yml
 .vscode/
 .idea/
 *.swp

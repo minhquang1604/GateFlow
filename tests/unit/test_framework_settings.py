@@ -108,7 +108,15 @@ class TestSetAndGet:
     def test_set_raw_returns_normalized_value(self, session):
         mgr = FrameworkSettingsManager(session)
         normalized = mgr.set_raw(DRIFT, {"threshold": 0.2})
-        assert normalized == {"threshold": 0.2, "min_samples": 30, "methods": ["ks", "chi2"]}
+        assert normalized == {
+            "threshold": 0.2,
+            "min_samples": 30,
+            "methods": ["ks", "chi2"],
+            # "none" preserves the historical any-feature-significant
+            # behaviour for callers that do not opt in — see
+            # DriftConfig.correction.
+            "correction": "none",
+        }
 
     def test_second_set_updates_in_place_not_duplicates(self, session):
         mgr = FrameworkSettingsManager(session)

@@ -87,14 +87,16 @@ class TestFullAppBoot:
         # /api/alerts — see events/store.py::GovernanceEventStore).
         spec = client.get("/openapi.json").json()
         api_paths = [p for p in spec["paths"] if p.startswith("/api/")]
-        # 64, not 57: + 3 for /api/api-keys (admin scope — see
+        # 65, not 57: + 3 for /api/api-keys (admin scope — see
         # routers/api_keys.py), + POST /api/model-versions/{id}/rollback,
         # + POST /api/drift/{id}/check, + POST /api/internal/drift,
         # + GET /api/internal/dataset-versions/{id} (the last two are
-        # what mlops_drift_check.py calls). The two probes /health and
-        # /ready are deliberately absent from this count — they are not
-        # /api-prefixed, on purpose (see api/routers/health.py).
-        assert len(api_paths) == 64, f"Expected 64, got {len(api_paths)}: {api_paths}"
+        # what mlops_drift_check.py calls), + GET /api/lineage/dataset/{id}
+        # (the whole-dataset, every-version-in-parallel lineage view —
+        # see LineageManager.graph_for_dataset). The two probes /health
+        # and /ready are deliberately absent from this count — they are
+        # not /api-prefixed, on purpose (see api/routers/health.py).
+        assert len(api_paths) == 65, f"Expected 65, got {len(api_paths)}: {api_paths}"
         internal = [p for p in api_paths if p.startswith("/api/internal/")]
         assert len(internal) == 11, internal
         # The read-only proxy count stays 19: clear/retry are a distinct

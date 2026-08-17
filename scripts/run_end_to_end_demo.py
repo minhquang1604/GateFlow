@@ -19,7 +19,7 @@ the running Docker Compose stack:
                     -> Lineage graph
 
 That flow itself lives in :mod:`scripts._initial_training` — shared
-with ``run_drift_recovery_demo.py``'s Phase 1, which trains the same
+with the closed-loop demo's first phase, which trains the same
 way before injecting drift. This script just supplies the fraud-demo's
 dataset/model names and prints the lineage graph + a final summary
 afterwards.

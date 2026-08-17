@@ -40,7 +40,15 @@ from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.training_run import RunStatus, TrainingRun
 
-DRIFT_DEFAULT = {"threshold": 0.05, "min_samples": 30, "methods": ["ks", "chi2"]}
+DRIFT_DEFAULT = {
+    "threshold": 0.05,
+    "min_samples": 30,
+    "methods": ["ks", "chi2"],
+    # "none" keeps the historical any-feature-significant behaviour for
+    # callers that have not opted into a correction — see
+    # DriftConfig.correction.
+    "correction": "none",
+}
 
 
 # ---------------------------------------------------------------------- #
@@ -69,10 +77,10 @@ class TestPolicyCrud:
         resp = client.put("/api/settings/policies/drift", json={"value": {"threshold": 0.2}})
         assert resp.status_code == 200
         body = resp.json()
-        # min_samples/methods weren't in the request — normalized back to
-        # their own defaults, same as constructing DriftConfig(threshold=0.2)
-        # directly would.
-        assert body["value"] == {"threshold": 0.2, "min_samples": 30, "methods": ["ks", "chi2"]}
+        # min_samples/methods/correction weren't in the request —
+        # normalized back to their own defaults, same as constructing
+        # DriftConfig(threshold=0.2) directly would.
+        assert body["value"] == {**DRIFT_DEFAULT, "threshold": 0.2}
         assert body["is_default"] is False
 
         listed = client.get("/api/settings/policies").json()

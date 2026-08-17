@@ -28,6 +28,7 @@ những ràng buộc mà một thay đổi vô ý sẽ phá vỡ.
 | [14](14-security.md) | Xác thực, phân quyền, write gate | `auth/`, `api/security.py` |
 | [15](15-configuration.md) | Cấu hình tĩnh & chính sách lưu trong DB | `config/`, `framework_settings/` |
 | [16](16-sdk-api-console.md) | SDK, HTTP API, console Gateflow | `sdk/`, `api/`, `ui/` |
+| [17](17-closed-loop-demo.md) | Demo vòng lặp khép kín: drift → duyệt → retrain → promote | `demo/` |
 
 ## Quy ước chung trong toàn framework
 

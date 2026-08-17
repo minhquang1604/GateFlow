@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -57,6 +57,23 @@ class DriftConfig:
     threshold: float = 0.05
     min_samples: int = 30
     methods: list[str] = field(default_factory=lambda: ["ks", "chi2"])
+    #: How to correct ``threshold`` for testing many features at once.
+    #:
+    #: ``"none"`` tests every feature at ``threshold`` and declares drift
+    #: if any one of them is significant. That is the historical
+    #: behaviour and remains the default, but it is only sound for a
+    #: handful of features: across *n* independent tests at alpha=0.05
+    #: the probability of at least one false positive is 1-0.95**n, which
+    #: is 40% at ten features and 79% at thirty. A monitor that cries
+    #: drift four runs in five is worse than no monitor, because the
+    #: response to it is to stop believing it.
+    #:
+    #: ``"bonferroni"`` divides the threshold by the number of features
+    #: actually tested, holding the *family-wise* error rate at
+    #: ``threshold``. Conservative — it will miss shifts too small to
+    #: survive the division — which is the right trade for a signal whose
+    #: job is to interrupt a human and authorise spending compute.
+    correction: str = "none"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> DriftConfig:
@@ -66,6 +83,7 @@ class DriftConfig:
             threshold=float(data.get("threshold", 0.05)),
             min_samples=int(data.get("min_samples", 30)),
             methods=list(data.get("methods") or ["ks", "chi2"]),
+            correction=str(data.get("correction", "none")),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -73,6 +91,7 @@ class DriftConfig:
             "threshold": self.threshold,
             "min_samples": self.min_samples,
             "methods": list(self.methods),
+            "correction": self.correction,
         }
 
 
@@ -184,16 +203,32 @@ class ScipyDriftDetector(DriftDetector):
         config: DriftConfig | None = None,
     ) -> DriftResult:
         cfg = config or DriftConfig()
+        features = sorted(set(reference_data) | set(current_data))
+
+        # The correction has to be decided before any feature is judged,
+        # so count the features that will actually receive a statistical
+        # test. Ones that fall to `insufficient_samples` produce no
+        # p-value and so contribute no chance of a false positive —
+        # counting them would only weaken the threshold for everything
+        # else.
+        testable = [
+            f
+            for f in features
+            if len(reference_data.get(f, [])) >= cfg.min_samples
+            and len(current_data.get(f, [])) >= cfg.min_samples
+        ]
+        effective_threshold = self._corrected_threshold(cfg, len(testable))
+        applied = replace(cfg, threshold=effective_threshold)
+
         feature_results: list[FeatureDrift] = []
         method_summary: dict[str, int] = {}
-
-        for feature in sorted(set(reference_data) | set(current_data)):
+        for feature in features:
             ref = list(reference_data.get(feature, []))
             cur = list(current_data.get(feature, []))
             if self._is_categorical(ref, cur):
-                res = self._chi2_drift(feature, ref, cur, cfg)
+                res = self._chi2_drift(feature, ref, cur, applied)
             else:
-                res = self._numerical_drift(feature, ref, cur, cfg)
+                res = self._numerical_drift(feature, ref, cur, applied)
             feature_results.append(res)
             method_summary[res.method] = method_summary.get(res.method, 0) + 1
 
@@ -202,18 +237,44 @@ class ScipyDriftDetector(DriftDetector):
             score = max((r.score for r in feature_results), default=0.0)
         else:
             score = 0.0
+
+        backing = (
+            "scipy-backed" if self._scipy_stats is not None
+            else "fallback mean/std detector"
+        )
+        if cfg.correction == "bonferroni":
+            notes = (
+                f"{backing}; Bonferroni correction over {len(testable)} "
+                f"tested feature(s): alpha {cfg.threshold} -> "
+                f"{effective_threshold:.3e}"
+            )
+        else:
+            notes = backing
+
         return DriftResult(
             drift_detected=drift_detected,
+            # The threshold that was actually applied, not the nominal
+            # one — this is the number someone needs to reproduce the
+            # verdict, and `notes` records where it came from.
+            threshold=effective_threshold,
             score=score,
             method="mixed",
-            threshold=cfg.threshold,
             feature_results=feature_results,
             method_summary=method_summary,
-            notes=(
-                "scipy-backed" if self._scipy_stats is not None
-                else "fallback mean/std detector"
-            ),
+            notes=notes,
         )
+
+    @staticmethod
+    def _corrected_threshold(cfg: DriftConfig, n_tested: int) -> float:
+        """Apply the multiple-comparisons correction, if any."""
+        if cfg.correction == "bonferroni":
+            return cfg.threshold / max(n_tested, 1)
+        if cfg.correction not in ("none", "", None):
+            raise ValueError(
+                f"unknown drift correction {cfg.correction!r}; "
+                f"expected 'none' or 'bonferroni'"
+            )
+        return cfg.threshold
 
     # ------------------------------------------------------------------ #
     # Feature-level detection

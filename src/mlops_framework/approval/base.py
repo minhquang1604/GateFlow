@@ -4,7 +4,7 @@ A retrain that a policy says should happen is not always a retrain
 someone wants to happen unattended. The framework already models every
 *machine* decision — readiness, drift, eligibility, promotion — with an
 explainable result; a human's decision was the one gap, and it lived
-only in ``scripts/_telegram_approval.py``, wired by hand into one demo.
+only inside a single demo script, wired up by hand.
 
 This is the same shape as :class:`~mlops_framework.drift.detector.DriftDetector`
 and :class:`~mlops_framework.events.publisher.EventPublisher`: an ABC
@@ -108,3 +108,33 @@ class DenyAllGate(ApprovalGate):
         return ApprovalDecision(
             approved=False, reason="denied by DenyAllGate", responder="deny-all"
         )
+
+
+class RecordedDecisionGate(ApprovalGate):
+    """Replays a decision a human already gave through another channel.
+
+    For callers that must ask *before* the point
+    :class:`~mlops_framework.workflow.retraining.RetrainingWorkflow`
+    consults its gate. The workflow asks after eligibility and before
+    training, which is the right default — but a caller that builds the
+    training data itself only once a retrain is authorised (the
+    closed-loop demo constructs dataset V2 = V1 + the drifted production
+    data only after approval) has to get the answer earlier than that.
+
+    Without this, such a caller has two bad options: ask the human twice,
+    or pass no gate at all and lose the ``RETRAIN_APPROVED`` audit row
+    the workflow writes. This is the third: ask once, hand the workflow
+    the answer, and keep the audit trail intact.
+
+    Not an auto-approve in disguise — it carries a real decision, denial
+    included, and preserves the original responder so the audit row
+    still names the person rather than the machinery that relayed them.
+    """
+
+    def __init__(self, decision: ApprovalDecision) -> None:
+        self._decision = decision
+
+    def request_approval(
+        self, request: ApprovalRequest, *, timeout: float = 3600.0
+    ) -> ApprovalDecision:
+        return self._decision

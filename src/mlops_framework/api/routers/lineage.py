@@ -7,12 +7,29 @@ from sqlalchemy.orm import Session
 
 from mlops_framework.api.deps import get_db
 from mlops_framework.api.schemas import LineageGraphOut
+from mlops_framework.database.models.dataset import Dataset
 from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.lineage.manager import LineageManager
 
 router = APIRouter()
+
+
+@router.get("/lineage/dataset/{dataset_id}", response_model=LineageGraphOut)
+def dataset_lineage(
+    dataset_id: int,
+    db: Session = Depends(get_db),
+) -> LineageGraphOut:
+    """Return the whole-family lineage graph for a ``Dataset`` — every
+    version it has, side by side, not just one. See
+    ``LineageManager.graph_for_dataset``."""
+    if db.get(Dataset, dataset_id) is None:
+        raise HTTPException(
+            status_code=404, detail=f"Dataset {dataset_id} not found"
+        )
+    graph = LineageManager(db).graph_for_dataset(dataset_id)
+    return LineageGraphOut.from_graph(graph)
 
 
 @router.get(

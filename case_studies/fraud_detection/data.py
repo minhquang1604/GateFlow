@@ -115,6 +115,90 @@ def write_csv(
     return p
 
 
+def drift_parameters(
+    drift_shift: float, seed: int, n_rows: int, fraud_ratio: float
+) -> dict:
+    """Describe a :func:`generate` call as a reproducible drift record.
+
+    The closed-loop demo persists this alongside the drift evaluation so
+    the injected shift is auditable rather than implied by a constant
+    somewhere in a script — a reader can reproduce the exact production
+    window from this dict and nothing else.
+
+    ``affected_records`` is the count of *legitimate* rows, because
+    :func:`generate` shifts only those; fraud rows are generated
+    identically at every ``drift_shift`` (see that function's docstring
+    on why the fraud population is deliberately held still).
+    """
+    # Mirrors generate()'s own n_fraud calculation, so the two cannot
+    # disagree about how many rows the shift left alone.
+    n_fraud = max(1, int(n_rows * fraud_ratio)) if n_rows else 0
+    return {
+        "noise_type": "covariate_shift_legit_traffic",
+        "parameters": {
+            "drift_shift": drift_shift,
+            # What generate() actually does with drift_shift, spelled out
+            # so the record stands alone.
+            "legit_amount_scale": 1 + drift_shift,
+            "legit_v_feature_mean_shift": drift_shift * 0.5,
+            "legit_v_feature_shift_std": 0.15,
+        },
+        "random_seed": seed,
+        "fraud_ratio": fraud_ratio,
+        "affected_features": ["amount"] + [f"v{i}" for i in sorted(_DRIFT_FEATURES)],
+        "unaffected_features": [
+            f"v{i}" for i in range(1, 29) if i not in _DRIFT_FEATURES
+        ],
+        "n_rows": n_rows,
+        "affected_records": n_rows - n_fraud,
+        "generator": "case_studies.fraud_detection.data:generate",
+    }
+
+
+def concat_csv(sources: list[str | Path], out: str | Path) -> Path:
+    """Concatenate fraud CSVs into one file, header written once.
+
+    How dataset V2 is built in the retraining loop: V2 is V1 *plus* the
+    production data that drifted, not a regenerated replacement for V1.
+    That distinction is the whole point — a model retrained on the drift
+    alone would forget the population it already served correctly.
+
+    Rows are appended in the order given and never reordered or
+    deduplicated, so the output is a deterministic function of its
+    inputs and ``row_count`` is exactly the sum of the parts.
+
+    Raises:
+        ValueError: if a source's header does not match the first
+            source's — concatenating misaligned columns would silently
+            produce a corrupt training set.
+    """
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    header: list[str] | None = None
+
+    with out_path.open("w", newline="") as sink:
+        writer: Any = None
+        for source in sources:
+            with Path(source).open(newline="") as handle:
+                reader = csv.reader(handle)
+                source_header = next(reader, None)
+                if source_header is None:
+                    continue
+                if header is None:
+                    header = source_header
+                    writer = csv.writer(sink)
+                    writer.writerow(header)
+                elif source_header != header:
+                    raise ValueError(
+                        f"{Path(source).name} has header {source_header}, "
+                        f"expected {header} — refusing to concatenate "
+                        f"misaligned columns"
+                    )
+                for row in reader:
+                    writer.writerow(row)
+    return out_path
+
+
 def schema_metadata() -> dict:
     """Return the dataset-version metadata for fraud data.
 
@@ -132,6 +216,24 @@ def schema_metadata() -> dict:
 def feature_columns() -> list[str]:
     """Return the feature columns used by ``train_xgboost``."""
     return ["time", "amount"] + [f"v{i}" for i in range(1, 29)]
+
+
+def monitored_feature_columns() -> list[str]:
+    """The columns drift monitoring should compare. Excludes ``time``.
+
+    ``time`` is seconds since the first transaction — a counter, not a
+    covariate. Any two windows of different length or different position
+    in the stream have different ``time`` distributions *by
+    construction*, so a KS test on it reports drift every single run and
+    reports nothing about the data. Monitoring it would guarantee a false
+    positive and, worse, would make the honest ones unbelievable.
+
+    It stays in :func:`feature_columns` because the *model* may still
+    learn from it. "What the model reads" and "what we monitor for
+    distribution shift" are different questions, and this is the case
+    study answering the second one.
+    """
+    return [c for c in feature_columns() if c != "time"]
 
 
 def target_column() -> str:

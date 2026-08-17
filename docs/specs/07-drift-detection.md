@@ -53,6 +53,31 @@ version đó — ở **cả hai phía** của phép so sánh (reference hoặc c
 không coi đó là lỗi. 404 dành riêng cho dataset version thật sự không
 tồn tại.
 
+## 4b. So sánh bội và `DriftConfig.correction`
+
+Bộ dò kết luận drift nếu **bất kỳ** đặc trưng nào có ý nghĩa thống kê.
+Với ít đặc trưng thì hợp lý; với nhiều thì không. Qua *n* kiểm định độc
+lập ở α, xác suất có ít nhất một dương tính giả là `1 - (1-α)ⁿ` — 40% ở
+mười đặc trưng, 79% ở ba mươi. Một bộ giám sát báo động bốn lần trên năm
+tệ hơn không có, vì phản ứng đúng với nó là ngừng tin nó.
+
+| `correction` | Ngưỡng áp dụng | Kiểm soát |
+|---|---|---|
+| `"none"` (mặc định) | `threshold` | không |
+| `"bonferroni"` | `threshold / số đặc trưng được kiểm định` | sai số toàn cục ở mức `threshold` |
+
+Chỉ những đặc trưng **thật sự được kiểm định** mới vào mẫu số; đặc trưng
+rơi vào `insufficient_samples` không sinh p-value nên không góp xác suất
+dương tính giả, tính chúng vào chỉ làm ngưỡng chặt vô cớ.
+
+`DriftResult.threshold` báo cáo ngưỡng **đã áp dụng**, không phải ngưỡng
+danh nghĩa — đó là con số cần để tái lập kết luận — còn `notes` ghi lại
+nó đến từ đâu.
+
+Mặc định giữ `"none"` để không đổi hành vi của caller sẵn có. Xem spec 17
+§5 để biết vì sao demo vòng lặp khép kín bật `"bonferroni"`, kèm số đo
+trước/sau.
+
 ## 5. Chạy drift theo yêu cầu — và vì sao nó đi qua Airflow
 
 Framework **không đọc file dataset**. `DriftService` nhận sẵn giá trị đặc
@@ -126,3 +151,8 @@ và một nút luôn luôn lỗi còn tệ hơn không có nút.
   drift phân loại qua đường DAG là việc còn phải làm.
 - Lấy mẫu không phân tầng — với dữ liệu rất mất cân bằng, mẫu 5000 dòng
   có thể chứa rất ít lớp thiểu số.
+- Chỉ có Bonferroni; chưa có Benjamini-Hochberg (FDR), vốn ít bảo thủ
+  hơn khi số đặc trưng lớn.
+- Không có khái niệm "đặc trưng nào đáng giám sát". Một cột chỉ là bộ
+  đếm (ví dụ `time` trong case study fraud) sẽ luôn bị gắn cờ; việc loại
+  nó ra thuộc về caller — xem `monitored_feature_columns()` và spec 17 §5.

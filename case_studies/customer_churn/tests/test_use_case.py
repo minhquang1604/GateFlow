@@ -146,9 +146,12 @@ class TestCaseStudyLifecycle:
             dataset_version=v, pipeline="balanced", wait=True, timeout=30
         )
         assert run2.status == "SUCCESS"
+        # The dataset's identity lives on the DatasetVersion node's own
+        # label now, not a separate Dataset node — see LineageManager's
+        # module docstring.
         g = project.lineage.for_dataset_version(v.id)
         types = {n["type"] for n in g["nodes"]}
-        assert {"Dataset", "DatasetVersion", "TrainingRun"} <= types
+        assert {"DatasetVersion", "TrainingRun"} <= types
 
     def test_failing_pipeline_raises(self, project, tmp_path):
         csv_path = data.write_csv(tmp_path / "churn.csv", n_rows=100)

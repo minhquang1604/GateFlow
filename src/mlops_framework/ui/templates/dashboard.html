@@ -11,12 +11,15 @@
 
     <div id="kpi-grid" class="kpi-grid" style="margin-bottom:20px"></div>
 
-    <div class="grid-2" style="margin-bottom:20px">
-      <div class="card">
-        <div class="chart-title">Platform inventory</div>
-        <dl id="inventory-stats" class="kv"></dl>
-      </div>
+    <!-- Three equal-width tiles (grid-3's default row-stretch), each
+         built by initDashboard() as chart-title + a vertically-centred
+         body (see .dash-tile-body) — so a 4-row key-value list, a
+         donut, and a table end up the same height without the shorter
+         ones trailing into a block of empty space at the bottom. -->
+    <div class="grid-3" style="margin-bottom:20px">
+      <div id="inventory-card"></div>
       <div id="outcomes-chart"></div>
+      <div id="models-card"></div>
     </div>
 
     <h3>Activity</h3>

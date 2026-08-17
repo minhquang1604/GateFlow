@@ -49,7 +49,7 @@ from mlops_framework.database.models.training_run import (
     TrainingRun,
 )
 from mlops_framework.dataset.manager import DatasetManager
-from mlops_framework.drift.detector import DriftService
+from mlops_framework.drift.detector import DriftConfig, DriftService
 from mlops_framework.events.publisher import (
     DriftDetectedEvent,
     EventPublisher,
@@ -198,11 +198,14 @@ class RetrainingWorkflow:
         training_policy: TrainingPolicy | dict[str, Any] | None = None,
         eligibility_config: EligibilityConfig | dict[str, Any] | None = None,
         promotion_config: PromotionConfig | dict[str, Any] | None = None,
+        drift_config: DriftConfig | None = None,
+        trigger_type: str | None = None,
         # Hooks
         reference_data: dict[str, list[float]] | None = None,
         current_data: dict[str, list[float]] | None = None,
         pipeline_id: str = "tests._pipelines.e2e_training:main",
         training_entrypoint: str | None = None,
+        run_metadata: dict[str, Any] | None = None,
         training_timeout: float = 60.0,
         approval_timeout: float = 3600.0,
         evaluate_model: Callable[[ModelVersion], dict[str, Any]] | None = None,
@@ -216,6 +219,22 @@ class RetrainingWorkflow:
             training_policy: Policy used by the readiness engine.
             eligibility_config: Policy used by the eligibility step.
             promotion_config: Policy used by the promotion step.
+            drift_config: Policy used by the drift step. ``None`` resolves
+                the framework's persisted default, same as every other
+                ``DriftService`` caller. Worth setting explicitly when the
+                caller has already measured drift elsewhere under a
+                specific configuration — two thresholds for "drift" in one
+                run is not a defensible audit trail.
+            trigger_type: What to record as the reason this run exists.
+                Defaults to inferring it from this workflow's own drift
+                step — "DRIFT" when that step detected drift, otherwise
+                "SCHEDULED". That inference is only as good as the
+                comparison available here, and a caller that already
+                knows why it is retraining (it detected drift on a
+                production window, a human approved it) should say so:
+                the alternative is an audit trail that labels a
+                drift-driven retrain "SCHEDULED" because a *different*
+                comparison came back quiet.
             reference_data / current_data: Optional, used by the
                 drift detector. If both are provided, drift detection
                 runs; otherwise the eligibility step treats drift as
@@ -237,6 +256,18 @@ class RetrainingWorkflow:
                 ``_resolve_entrypoint``). Leave unset for
                 ``LocalDockerOrchestrator``, which imports ``pipeline_id``
                 directly and has no use for this.
+            run_metadata: Extra keys to merge into the ``TrainingRun``'s
+                metadata. The workflow's own keys (``owned_by_workflow``,
+                ``training_entrypoint``) win on conflict, since they are
+                what keeps the workflow and an Airflow DAG from both
+                trying to own the same run. Needed because a training
+                pipeline may require context the workflow itself has no
+                opinion about — an Airflow-side pipeline reads its MLflow
+                ``tracking_uri`` and its hyperparameters back out of this
+                metadata over HTTP (see
+                ``infrastructure/airflow/dags/mlops_training_pipeline.py``'s
+                ``train`` task), and without them it trains unparameterised
+                and logs nowhere.
             training_timeout: Seconds to wait for the training execution.
                 The 60s default is generous for
                 ``LocalDockerOrchestrator``'s in-process subprocess; a real
@@ -314,6 +345,7 @@ class RetrainingWorkflow:
                     current_version=dataset_version,
                     reference_data=reference_data,
                     current_data=current_data,
+                    config=drift_config,
                 )
                 steps.append(
                     StepResult(
@@ -477,14 +509,22 @@ class RetrainingWorkflow:
         # complete_run() the same TrainingRun and create+promote two
         # separate ModelVersions for the same training run. Harmless (and
         # unread) with LocalDockerOrchestrator, which has no such tasks.
-        run_metadata: dict[str, Any] = {"owned_by_workflow": True}
+        # Caller keys first, then the workflow's own — see run_metadata's
+        # docstring on why the workflow's must win a conflict.
+        merged_metadata: dict[str, Any] = dict(run_metadata or {})
+        merged_metadata["owned_by_workflow"] = True
         if training_entrypoint:
-            run_metadata["training_entrypoint"] = training_entrypoint
+            merged_metadata["training_entrypoint"] = training_entrypoint
         run = self._service.create_run(
             dataset_version_id=dataset_version.id,
             pipeline_id=pipeline_id,
-            trigger_type="DRIFT" if drift_result is not None and drift_result.drift_detected else "SCHEDULED",
-            metadata=run_metadata,
+            trigger_type=trigger_type
+            or (
+                "DRIFT"
+                if drift_result is not None and drift_result.drift_detected
+                else "SCHEDULED"
+            ),
+            metadata=merged_metadata,
         )
         try:
             self._service.start_run(run.id)

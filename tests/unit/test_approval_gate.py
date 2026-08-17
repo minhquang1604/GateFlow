@@ -1,6 +1,6 @@
 """The approval gate as a framework concern.
 
-Human approval used to live only in ``scripts/_telegram_approval.py``,
+Human approval used to live only in a single demo script,
 wired by hand into one demo. It is now an ABC the workflow depends on,
 with adapters that do not depend on it — the same shape ``DriftDetector``
 and ``EventPublisher`` already have.

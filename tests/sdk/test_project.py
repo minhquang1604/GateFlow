@@ -139,8 +139,12 @@ class TestLineage:
         g = project.lineage.for_dataset_version(v.id)
         assert g["root_kind"] == "DatasetVersion"
         types = {n["type"] for n in g["nodes"]}
-        assert "Dataset" in types
-        assert "DatasetVersion" in types
+        # The dataset's name lives on the version node's own label now,
+        # not on a separate Dataset identity node — see LineageManager's
+        # module docstring.
+        assert types == {"DatasetVersion"}
+        node = next(n for n in g["nodes"] if n["id"] == f"DatasetVersion:{v.id}")
+        assert node["label"] == "ds v1"
 
 
 class TestTrainErrors:

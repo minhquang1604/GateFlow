@@ -10,6 +10,7 @@ from mlops_framework.approval.base import (
     ApprovalRequest,
     AutoApproveGate,
     DenyAllGate,
+    RecordedDecisionGate,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "ApprovalRequest",
     "AutoApproveGate",
     "DenyAllGate",
+    "RecordedDecisionGate",
 ]
