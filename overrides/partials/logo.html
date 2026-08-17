@@ -3,10 +3,10 @@
   mark — same SVG paths as src/mlops_framework/ui/mount.py's console
   header, not a generic Material icon or an image file. Colour comes
   from docs-site/stylesheets/extra.css (.gf-mark .lm-accent/.lm-deep),
-  which uses currentColor rather than the console's own fixed
-  --logo-accent/--logo-deep blues — see that file's own comment for why
-  a colour that's guaranteed to contrast against Material's header bar
-  matters more here than reproducing the console's exact hue.
+  the same --logo-accent/--logo-deep two-tone blue the console itself
+  uses — that file also repaints the header's own background to match
+  the console's light/neutral .topnav, which is what the mark's colours
+  are actually designed to sit on.
 
   The mark *is* the wordmark's "G" — see header.html's override in this
   same directory, which renders "ateflow" as the adjacent title text

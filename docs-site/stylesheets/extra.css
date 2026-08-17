@@ -2,28 +2,58 @@
  * overrides/partials/logo.html, header.html, and nav.html render in
  * place of Material's default logo + full site name.
  *
- * Colour: `currentColor`, not the console's own fixed --logo-accent/
- * --logo-deep blues. The console's .topnav has a light/neutral
- * background, so a medium blue mark reads fine there — but Material's
- * header bar is a *solid* primary-colour bar (blue, here), and
- * Material's own default logo already relies on `fill: currentcolor`
- * (see the installed theme's .md-logo rule) specifically so it always
- * contrasts against whatever primary colour a site picks. Hardcoding
- * the console's blues over that broke exactly the case it was solving:
- * a medium blue mark on a blue bar reads as barely-there. `currentColor`
- * resolves to `--md-primary-bg-color` (white) in the header and to the
- * default text colour in the (light-background) mobile drawer, so it's
- * never fighting its own background in either place. The two paths
- * keep a *little* visual depth via opacity rather than a second hue —
- * a wrong hue can clash, a lower-opacity version of a colour that's
- * already guaranteed to contrast cannot.
+ * Background: the header itself, not just the mark. The console's own
+ * .topnav is a light/neutral surface (#fff / #2f2f2f dark), never a
+ * solid colour bar — the real two-tone blue mark is designed to sit on
+ * that, the way it does in the screenshot this is matching. Material's
+ * default header is a solid *primary*-colour bar instead (blue, here),
+ * and no colour chosen for the mark reads right against a background
+ * it wasn't designed for: painting the mark white (an earlier revision
+ * of this fix) traded "wrong colour" for "no colour", and neither
+ * looked like the actual brand.
  *
- * Spacing: Material's `.md-header__title` ships `margin-left: 1rem`,
- * sized for an icon and an unrelated site name — not a wordmark where
- * the mark stands in for the word's own first letter. Tightened to
- * read as one word, "Gateflow", rather than two things sharing a
- * header.
+ * The right fix is scoped to the header, not a global palette change
+ * (this site's blue links/buttons/nav-tabs stay as they are) — Material
+ * computes the header's own background/text/icon colours from
+ * --md-primary-fg-color / --md-primary-bg-color, so redefining just
+ * those two custom properties on `.md-header` (they cascade to every
+ * descendant that reads them: search box, hamburger, source link,
+ * palette toggle) repaints the whole bar to match the console's
+ * surface/text tokens without touching anything outside it.
+ *
+ * With that in place the mark and title text go back to the console's
+ * actual --logo-accent/--logo-deep two-tone blues (app.css), because
+ * now they're sitting on the same kind of background those colours were
+ * designed for.
  */
+
+.md-header {
+  --md-primary-fg-color: #ffffff;   /* console's light --surface */
+  --md-primary-bg-color: #0f172a;   /* console's light --text */
+}
+[data-md-color-scheme="slate"] .md-header {
+  --md-primary-fg-color: #2f2f2f;   /* console's dark --surface */
+  --md-primary-bg-color: #ececec;   /* console's dark --text */
+}
+/* Material draws a shadow under a non-transparent header on scroll;
+ * against a light bar that reads as a stray dark line rather than
+ * depth. The console's own .topnav uses a hairline border instead. */
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid #e5e7eb;
+}
+[data-md-color-scheme="slate"] .md-header {
+  border-bottom: 1px solid #3f3f3f;
+}
+
+:root {
+  --gf-accent: #2e7dd1;
+  --gf-deep: #23528d;
+}
+[data-md-color-scheme="slate"] {
+  --gf-accent: #5aa8f0;
+  --gf-deep: #b8d4f5;
+}
 
 .gf-mark {
   /* Matches Material's own logo slot sizing (the default icon there is
@@ -32,17 +62,17 @@
   width: 1.2rem;
   height: 1.2rem;
 }
-.gf-mark .lm-accent { fill: currentColor; }
-.gf-mark .lm-deep { fill: currentColor; opacity: .74; }
+.gf-mark .lm-accent { fill: var(--gf-accent); }
+.gf-mark .lm-deep { fill: var(--gf-deep); }
 
-.gf-accent { color: currentColor; }
-.gf-deep { color: currentColor; opacity: .8; }
+.gf-accent { color: var(--gf-accent); }
+.gf-deep { color: var(--gf-deep); }
 
 /* The gap this actually fixes: Material's own .md-header__title class,
- * not one of ours — see the module comment. Applied once to the whole
- * title block, not per letter-span, so "ate" and "flow" themselves stay
- * touching; .gf-title is the equivalent wrapper nav.html's mobile-drawer
- * title uses, which has no Material class of its own to hook. */
+ * not one of ours. Applied once to the whole title block, not per
+ * letter-span, so "ate" and "flow" themselves stay touching; .gf-title
+ * is the equivalent wrapper nav.html's mobile-drawer title uses, which
+ * has no Material class of its own to hook. */
 .md-header__title {
   margin-left: .15rem;
 }
