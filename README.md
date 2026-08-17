@@ -7,6 +7,10 @@ console called **Gateflow** (dashboard, datasets, runs, models, pipelines,
 lineage), a Python SDK, an HTTP API, and two runnable case studies that
 prove the abstractions hold up on real, different problems.
 
+📚 **[Full documentation](https://minhquang1604.github.io/ML_Framework/)** —
+a browsable, searchable version of everything below, organized by topic
+rather than one long scroll.
+
 ```python
 from mlops_framework.sdk import MLOpsProject
 
@@ -81,7 +85,7 @@ SQLite-only path with no external services.
 - **Experiment Tracking** — pluggable trackers (MLflow, in-memory, …)
 - **Model Registry** — `Model` and `ModelVersion` with a promotion lifecycle,
   and a **rollback** path back to a known-good version
-- **Lineage** — full chain: Dataset → DatasetVersion → TrainingRun → ModelVersion → ServingInstance
+- **Lineage** — full chain: DatasetVersion → TrainingRun → ModelVersion → ServingInstance, every version of a dataset shown in parallel (see docs/specs/12-lineage.md)
 - **Dataset Readiness** — explainable READY/BLOCKED decisions, persisted
 - **Training Eligibility** — separates "data is ready" from "training should happen now"
 - **Drift Detection** — pluggable `DriftDetector` ABC, scipy KS-test / chi-square reference implementation
@@ -126,7 +130,7 @@ ReadinessEngine  Eligibility  PromotionPolicy  EventPublisher ─▶ ServingBrid
    │              ▼
    │          DriftService ─▶ DriftDetector (scipy-backed)
    ▼
-LineageManager  ◀── walks the full chain (Dataset → TrainingRun → Model → Serving)
+LineageManager  ◀── walks the full chain (DatasetVersion → TrainingRun → ModelVersion → Serving)
                      surfaced by the Gateflow API + console
 ```
 
@@ -359,8 +363,8 @@ Python callable travels separately, in
 `resolve_context`/`train` tasks read back over HTTP (see
 `infrastructure/airflow/dags/mlops_training_pipeline.py`). Get this
 backwards and `AirflowOrchestrator` 404s trying to trigger a DAG named
-after your Python module path. `scripts/run_end_to_end_demo.py` and
-`scripts/run_drift_recovery_demo.py` both show the correct pattern.
+after your Python module path. `scripts/run_end_to_end_demo.py` and `demo/steps/retrain.py` both
+show the correct pattern.
 
 ### Model registry and lifecycle
 
@@ -483,7 +487,9 @@ if decision.approved:
 being a fair bar once the production model's real-world data has
 drifted — pass `must_beat_production=False` with an absolute
 `min_metrics` floor instead when retraining in reaction to drift (see
-`scripts/run_drift_recovery_demo.py`).
+[the closed-loop demo](demo/README.md#how-model-v2-is-validated), which
+also re-scores the production model on the drifted data to show why the
+stored number is not the bar).
 
 ### Automated retraining workflow
 
@@ -557,9 +563,11 @@ event and a `blocked_reason`), because downstream it is the same fact.
 
 `ApprovalGate` is an ABC like `DriftDetector` and `EventPublisher`;
 Telegram is a reference adapter, `AutoApproveGate`/`DenyAllGate` make
-the two outcomes testable without a channel. This used to live only in
-`scripts/_telegram_approval.py`, wired by hand into one demo — that
-module is now a shim re-exporting the framework's version.
+the two outcomes testable without a channel, and `RecordedDecisionGate`
+carries a decision obtained earlier through another channel — for a
+caller that must ask before the workflow's own gate point, without
+either asking twice or losing the audit row. This used to live inside a
+single demo script, wired up by hand.
 
 ### Serving bridge
 
@@ -746,7 +754,7 @@ the same FastAPI app as the API, at `/`.
 | Training runs | `/runs/{id}` | Params, metrics, error, MLflow panel, Airflow task grid (per-task Clear/Retry, gated — see [Configuration](#configuration)'s `CONSOLE_WRITE_TOKEN`) |
 | Models | `/models/{id}` | Versions, metrics, production state, per-version **reproducibility report** download, and **Roll back** on any retired version |
 | Pipelines | `/pipelines/{dag_id}` | Airflow DAG Graph View + task-instance history grid |
-| Lineage | `/lineage` | Full Dataset → …→ ServingInstance graph, click-through |
+| Lineage | `/lineage` | Full DatasetVersion → … → ServingInstance graph, every dataset version in parallel, click-through |
 | Settings | `/settings` | Effective MLflow/Airflow/database config, secrets masked, live reachability ping |
 | Activity | `/activity` | Two tabs: **Audit trail** (who/what triggered a schedule or promotion decision — see `audit/manager.py`) and **Alerts** (what the framework itself detected — training failures, drift, blocked retrains — see `events/store.py`) |
 
@@ -758,7 +766,7 @@ the same FastAPI app as the API, at `/`.
 | Group | Examples | Purpose |
 |---|---|---|
 | Framework rows | `/api/dashboard`, `/api/datasets`, `/api/training-runs/{id}`, `/api/models/{id}`, `/api/readiness/{version_id}`, `/api/drift/{version_id}` | Thin façades over the managers — zero new business logic. List endpoints take `limit`/`offset` (default 200, max 1000) and return the unpaged total in `X-Total-Count` |
-| Lineage | `/api/lineage/{dataset-version\|model-version\|training-run}/{id}` | Lineage graph JSON |
+| Lineage | `/api/lineage/{dataset\|dataset-version\|model-version\|training-run}/{id}` | Lineage graph JSON |
 | Airflow proxy | `/api/airflow/health`, `/api/airflow/dags/{id}`, `/api/training-runs/{id}/tasks` | Live DAG/task state for the pipeline detail page |
 | Airflow task control | `/api/training-runs/{id}/tasks/{task_id}/clear`, `.../retry` | Gated write endpoints (`api/security.py::require_write_token`) — fix a stuck task without leaving Gateflow |
 | MLflow proxy | `/api/training-runs/{id}/mlflow`, `/api/mlflow/experiments`, `/api/mlflow/registered-models` | Live run/experiment data for the run detail page |
@@ -777,7 +785,7 @@ Full list at `/docs` (OpenAPI) once the app is running.
 
 ## Real end-to-end demos
 
-Three scripts, each proving a different slice against the **real**
+Three entry points, each proving a different slice against the **real**
 Docker Compose stack — no mocks. All assume
 `docker compose --env-file .env.docker up -d` has been run (see
 [Quickstart](#quickstart)) and, when run from the host rather than
@@ -788,7 +796,7 @@ present in `.env.example` — `cp .env.example .env` covers a host run).
 |---|---|---|
 | `scripts/run_end_to_end_demo.py` | The full governance chain — dataset → readiness → eligibility → training → promotion → serving reload → lineage — on a synthetic dataset | `AirflowOrchestrator` (real DAG) |
 | `scripts/run_fraud_detection_e2e.py` | The same chain on the **real** 284,807-row Kaggle credit-card-fraud dataset; gates promotion on `average_precision` (the metric that actually matters at a 0.17% positive rate) | `LocalDockerOrchestrator` (training) + `AirflowOrchestrator` (adapter proof only) |
-| `scripts/run_drift_recovery_demo.py` | **Drift & self-healing**, two phases: (1) a rich, Airflow-driven initial training; (2) inject a real covariate shift, detect it with a real KS-test, and watch `RetrainingWorkflow` retrain and auto-promote a recovered model — all one call | Phase 1: `AirflowOrchestrator`. Phase 2: `LocalDockerOrchestrator` — a deliberate choice now (`RetrainingWorkflow` + `AirflowOrchestrator` both work, see [Automated retraining workflow](#automated-retraining-workflow)), not a forced one: Phase 2's `DatasetVersion` is registered with a host-local `storage_uri`, valid for a local subprocess but not for a path inside the Airflow containers |
+| `demo/run_closed_loop_demo.py` | **The closed loop**, end to end: Dataset V1 → Model V1 → production monitoring (a baseline window that must *not* flag) → a controlled covariate shift → real KS-test detection → Telegram approval → Dataset V2 = V1 + the drifted data → retrain → validate → archive V1 → promote V2. Has its own [README](demo/README.md). | `AirflowOrchestrator` (real DAG) for **both** training runs — the generated datasets live on a bind mount both sides can read |
 
 ```bash
 # 1. Full governance chain (synthetic data, ~5s)
@@ -800,16 +808,12 @@ MLFLOW_TRACKING_URI=http://localhost:5000 AIRFLOW_BASE_URL=http://localhost:8080
   AIRFLOW_USERNAME=airflow AIRFLOW_PASSWORD=airflow \
   PYTHONPATH=src:. .venv/bin/python -m scripts.run_fraud_detection_e2e
 
-# 3. Drift & self-healing — one-time setup: the Airflow image bakes
-#    case_studies/ in at BUILD time, so drift_demo_v1.csv must exist
-#    *before* rebuilding it (already committed; only re-run if you
-#    change case_studies/fraud_detection/data.py's generator):
-docker compose --env-file .env.docker build airflow-webserver airflow-scheduler
-docker compose --env-file .env.docker up -d
-MLFLOW_TRACKING_URI=http://localhost:5000 MLFLOW_S3_ENDPOINT_URL=http://localhost:9000 \
-  AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
-  AIRFLOW_BASE_URL=http://localhost:8080 \
-  PYTHONPATH=src:. .venv/bin/python -m scripts.run_drift_recovery_demo
+# 3. The closed loop — drift, human approval, retrain, promote.
+#    No setup step: the datasets it generates (including V2, which is
+#    built during the run) live on the demo/data bind mount, which the
+#    Airflow containers see at /opt/demo_data.
+docker compose --env-file .env.docker --profile demo run --rm \
+  -e DEMO_ARGS="--mode interactive" demo
 ```
 
 Every script's own module docstring documents its exact flow — read it
@@ -889,11 +893,17 @@ alembic downgrade -1        # roll back one revision
 Framework/
 ├── src/mlops_framework/     # framework source — see Module layout above
 ├── case_studies/            # fraud_detection/, customer_churn/ — SDK consumers
-├── scripts/                 # real end-to-end demo entry points
+├── demo/                    # closed-loop demo — runner, steps/, its own README
+│   ├── run_closed_loop_demo.py
+│   ├── config.py             # every seed/threshold, in one place
+│   ├── steps/                # one module per lifecycle phase
+│   └── data/                 # generated datasets (gitignored, bind-mounted)
+├── scripts/                 # other end-to-end demo entry points
 ├── tests/
 │   ├── unit/                 # unit tests
 │   ├── integration/          # integration + governance e2e tests
 │   ├── api/                  # FastAPI TestClient tests
+│   ├── demo/                 # closed-loop lifecycle + safety-invariant tests
 │   └── _pipelines/           # fixture pipelines for orchestrator tests
 ├── infrastructure/
 │   ├── airflow/               # Dockerfile, entrypoint.sh, dags/
@@ -922,6 +932,8 @@ Framework/
                         │ row_count         │         │ started_at    │
                         │ metadata_json     │         │ completed_at  │
                         │ is_immutable      │         │ mlflow_run_id │
+                        │ parent_version_id │         │               │
+                        │   (FK, self)      │         │               │
                         │ created_at        │         │ error_message │
                         │ updated_at        │         │ metadata_json │
                         └────┬──────────────┘         │ created_at    │
@@ -1038,16 +1050,26 @@ to it.
    doesn't check that flag would double-register a ModelVersion and
    evaluate it against two different promotion policies. See that DAG's
    module docstring.
-3. **Airflow "cancel" deletes the DAG run.** Airflow 2.x has no clean
+3. **MLflow registry writes are not transactional with the framework
+   database.** `RetrainingWorkflow` registers and stages a version in
+   MLflow (`tracking/mlflow_registry.py`) inside the same block that
+   later commits the framework's own rows. If that transaction rolls
+   back — a crash between promotion and `commit()` — the framework
+   correctly keeps the previous model in PRODUCTION, but MLflow retains
+   the registered version, so the two registries disagree until the next
+   successful run. The framework side is the source of truth and stays
+   safe; the MLflow side needs manual tidying. Observed in practice, not
+   theoretical.
+4. **Airflow "cancel" deletes the DAG run.** Airflow 2.x has no clean
    REST endpoint to cancel a running DAG run; deletion is the
    documented workaround (`AirflowOrchestrator.cancel_execution`).
-4. **`TrainingService.wait_for_completion` polls** rather than using a
+5. **`TrainingService.wait_for_completion` polls** rather than using a
    callback/event bus.
-5. **MLflow is optional.** The framework never requires it to import or
+6. **MLflow is optional.** The framework never requires it to import or
    run — `MLflowTracker` fails with a clear framework-level error if
    `mlflow` isn't installed, and `InMemoryTracker` is a drop-in for
    tests.
-6. **`CONSOLE_WRITE_TOKEN` is still accepted, and is not
+7. **`CONSOLE_WRITE_TOKEN` is still accepted, and is not
    authentication.** Scoped API keys are now the real credential (see
    [Authentication](#authentication)); the shared secret is kept because
    it is what every existing deployment — the Airflow DAG included — is
@@ -1055,7 +1077,7 @@ to it.
    keys would break all of them at once. A request authenticated that
    way still records the unverified `X-Actor` header as its actor.
    Migrate the DAG and any scripts to keys, then unset it.
-7. **There is no browser login.** The console prompts for a credential
+8. **There is no browser login.** The console prompts for a credential
    and keeps it in `sessionStorage` for the tab. Read endpoints are
    ungated, so the console renders for anyone who can reach it —
    gating GETs needs session management the app does not have.

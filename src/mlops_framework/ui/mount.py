@@ -130,6 +130,12 @@ _ICONS: dict[str, str] = {
     "activity": (
         '<path d="M2 9.5h3.2l1.8-5 2.6 9 1.8-6.5 1.4 2.5H16"/>'
     ),
+    # A code-bracket mark for the OpenAPI/Swagger reference — see the
+    # "External" section note below on why this lives in the sidebar
+    # rather than the topnav.
+    "api-docs": (
+        '<path d="M6.5 4.5 2 9l4.5 4.5M11.5 4.5 16 9l-4.5 4.5"/>'
+    ),
 }
 
 # (section label, [(nav key, href, label)]). The nav key is what a route
@@ -175,6 +181,17 @@ _NAV: list[tuple[str, list[tuple[str, str, str]]]] = [
         [
             ("activity", "/activity", "Activity"),
             ("settings", "/settings", "Settings"),
+        ],
+    ),
+    (
+        "External",
+        [
+            # Same origin (FastAPI serves this itself), so a plain
+            # in-tab navigation — unlike the topnav's hosted-docs-site
+            # and GitHub links, which are actually external and open in
+            # a new tab. See _sidebar()'s docstring for why this entry
+            # exists at all.
+            ("api-docs", "/docs", "API reference"),
         ],
     ),
 ]
@@ -348,11 +365,16 @@ def _nav_link(key: str, href: str, label: str, active: str) -> str:
 def _sidebar(active: str) -> str:
     """Render the contextual left navigation for the active page.
 
-    No trailing "External / API reference" section: the topnav's own
-    "API" link already covers it, and duplicating it here just repeated
-    the same link twice on every page for no second purpose. That link
-    is load-bearing for this reasoning, so it has to stay in the topnav
-    — ``tests/api/test_ui.py::TestTopNav`` holds both halves together.
+    Ends with a trailing "External" section holding one entry — the
+    Swagger/OpenAPI reference at ``/docs``. That link used to live in
+    the topnav instead (no sidebar duplication needed), but the topnav
+    slot next to the GitHub link now points at the hosted documentation
+    site (see ``_document()``'s header markup), which left ``/docs``
+    reachable from nowhere in the console — the same regression
+    ``tests/api/test_ui.py::TestTopNav`` was written to catch the first
+    time this link moved. This is the fix: one entry here instead of a
+    second link in the topnav, so ``/docs`` has exactly one place it
+    lives rather than an inconsistent second copy.
     """
     blocks: list[str] = []
     for section, items in _NAV:
@@ -416,7 +438,15 @@ def _document(title: str, active: str, fragment: str) -> str:
   <div class="topnav-spacer"></div>
 
   <nav class="topnav-util" aria-label="Utilities">
-    <a class="topnav-btn" href="/docs" target="_blank" rel="noopener">API</a>
+    <!-- The hosted docs site (docs-site/, mkdocs.yml), built and deployed
+         by .github/workflows/docs.yml on every push to docs-site/. Used
+         to point at this app's own Swagger UI (/docs) — the interactive
+         API reference is still there and still linked from the REST API
+         Reference page, but the framework's actual "how do I use this"
+         guide belongs in the nav slot next to the repo link, not the
+         other way around. -->
+    <a class="topnav-btn" href="https://minhquang1604.github.io/ML_Framework/"
+       target="_blank" rel="noopener">Docs</a>
     <a class="topnav-btn" href="https://github.com/minhquang1604/ML_Framework"
        target="_blank" rel="noopener" aria-label="View source on GitHub">
       <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">

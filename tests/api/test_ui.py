@@ -69,29 +69,39 @@ class TestUIPages:
 
 
 class TestTopNav:
-    """The OpenAPI docs must stay reachable from the console.
+    """The OpenAPI docs must stay reachable from the console, and the
+    topnav's "Docs" slot must point at the hosted documentation site.
 
-    ``mount.py``'s ``_sidebar`` docstring gives "the topnav's own API
-    link already covers it" as the reason there is no API entry in the
-    sidebar. That link was once replaced by a GitHub icon, which left
-    /docs unreachable from anywhere in the console while the docstring
-    (and the README's Gateflow section) still said otherwise. This
-    holds the two halves together.
+    ``/docs`` (Swagger UI) used to be linked directly from the topnav,
+    next to the GitHub link. That slot was repointed at the hosted docs
+    site (``docs-site/``, deployed by ``.github/workflows/docs.yml``),
+    which would have made ``/docs`` unreachable from anywhere in the
+    console — the same regression this test class already caught once
+    before, when the topnav's API link was briefly replaced outright
+    with no replacement anywhere. This time the link moved rather than
+    vanished: it now lives in the sidebar's "External" section instead
+    (see ``mount.py``'s ``_sidebar`` docstring) — one place, not two,
+    not zero.
     """
 
-    def test_docs_link_is_present(self, ui_client):
+    def test_topnav_links_to_the_hosted_docs_site(self, ui_client):
         body = ui_client.get("/dashboard").text
-        assert 'href="/docs"' in body
+        assert 'href="https://minhquang1604.github.io/ML_Framework/"' in body
+
+    def test_docs_link_is_present_in_the_sidebar(self, ui_client):
+        body = ui_client.get("/dashboard").text
+        sidebar = body.split('class="sidenav"', 1)[1].split("</aside>", 1)[0]
+        assert 'href="/docs"' in sidebar
 
     def test_docs_actually_serves_openapi(self, ui_client):
         assert ui_client.get("/docs").status_code == 200
         assert ui_client.get("/openapi.json").status_code == 200
 
-    def test_sidebar_still_has_no_api_entry(self, ui_client):
+    def test_topnav_no_longer_carries_the_docs_link_directly(self, ui_client):
         """The other half of the same reasoning: one link, not two."""
         body = ui_client.get("/dashboard").text
-        sidebar = body.split('class="sidenav"', 1)[1].split("</aside>", 1)[0]
-        assert "/docs" not in sidebar
+        topnav = body.split('class="topnav-util"', 1)[1].split("</nav>", 1)[0]
+        assert 'href="/docs"' not in topnav
 
 
 class TestRedirects:

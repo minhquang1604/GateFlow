@@ -53,6 +53,10 @@ htmlcov/
 *.sqlite
 *.sqlite3
 
+# Docs site build output (mkdocs.yml, docs-site/) — the gh-pages deploy
+# workflow builds this in CI; it is never committed to main.
+site/
+
 # OS
 .DS_Store
 Thumbs.db

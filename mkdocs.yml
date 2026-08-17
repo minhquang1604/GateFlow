@@ -1,0 +1,116 @@
+site_name: MLOps Framework
+site_description: >-
+  A reusable MLOps framework for datasets, training runs, model
+  lifecycle, experiment tracking, and governed automated retraining —
+  with a management console, a Python SDK, and an HTTP API.
+site_url: https://minhquang1604.github.io/ML_Framework/
+repo_url: https://github.com/minhquang1604/ML_Framework
+repo_name: minhquang1604/ML_Framework
+edit_uri: edit/main/docs-site/
+
+docs_dir: docs-site
+site_dir: site
+
+# Kept separate from docs-site/ on purpose: docs/specs/ is a different
+# audience (whoever edits the framework next, in Vietnamese, "why built
+# this way") from this site (framework users, in English, "how to use
+# it"). Pointing mkdocs at docs/ would also pull docs/aws-deployment-plan.md
+# and every spec into the build as orphan pages nothing in nav links to.
+
+theme:
+  name: material
+  # Close to Gateflow's own accent (#2563eb light / #4a9eff dark) — the
+  # console and the docs reading like the same product rather than two
+  # unrelated blues.
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: blue
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Quickstart: getting-started/quickstart.md
+      - Installation: getting-started/installation.md
+  - Concepts:
+      - Architecture: concepts/architecture.md
+      - Datasets & Versions: concepts/datasets.md
+      - Training Runs & Orchestration: concepts/training.md
+      - Model Registry: concepts/models.md
+      - Experiment Tracking: concepts/tracking.md
+      - Serving Bridge: concepts/serving.md
+      - Lineage: concepts/lineage.md
+  - Governance:
+      - Overview: governance/index.md
+      - Dataset Readiness: governance/readiness.md
+      - Drift Detection: governance/drift.md
+      - Training Eligibility: governance/eligibility.md
+      - Promotion Policy: governance/promotion.md
+      - Automated Retraining Workflow: governance/retraining-workflow.md
+      - Human Approval: governance/approval.md
+      - Rolling Back: governance/rollback.md
+  - Using the SDK:
+      - Application Code (SDK): sdk/using-the-sdk.md
+      - Using the Framework Directly: sdk/framework-directly.md
+  - HTTP API:
+      - Authentication: api/authentication.md
+      - REST API Reference: api/reference.md
+      - Starting a Training Run: api/start-training.md
+      - Running a Drift Check: api/drift-check.md
+  - Gateflow Console: console.md
+  - Demos & Case Studies:
+      - Real End-to-End Demos: demos/overview.md
+      - Closed-Loop Demo: demos/closed-loop-demo.md
+      - Fraud Detection Case Study: demos/fraud-detection.md
+      - Customer Churn Case Study: demos/customer-churn.md
+  - Deployment & Operations:
+      - Configuration: operations/configuration.md
+      - Database Migrations: operations/migrations.md
+      - Testing: operations/testing.md
+      - Known Limitations: operations/known-limitations.md
+  - Reference:
+      - Project Structure: reference/project-structure.md
+      - Database Schema: reference/database-schema.md
