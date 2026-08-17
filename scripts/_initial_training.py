@@ -21,11 +21,11 @@ trail to browse afterwards in the Management UI ("Gateflow"): the run
 detail page, the DAG's Graph View + task history, the model's metrics,
 the lineage graph.
 
-``run_end_to_end_demo.py`` (train-once demo) and
-``run_drift_recovery_demo.py`` (train + drift + retrain demo)'s Phase 1
-both call :func:`run_initial_training` instead of hand-rolling their
-own copy of this — they only differ in *which* dataset/model names,
-CSV generation params, and training hyperparameters they pass in.
+``run_end_to_end_demo.py`` (train-once demo) and the closed-loop demo's
+first phase (``demo/steps/initial_training.py``) both call
+:func:`run_initial_training` instead of hand-rolling their own copy of
+this — they only differ in *which* dataset/model names, CSV generation
+params, and training hyperparameters they pass in.
 """
 
 from __future__ import annotations

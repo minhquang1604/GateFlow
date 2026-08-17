@@ -110,7 +110,7 @@ ignore = [
 
 
 [tool.ruff.lint.isort]
-known-first-party = ["mlops_framework"]
+known-first-party = ["mlops_framework", "demo", "case_studies"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "case_studies"]

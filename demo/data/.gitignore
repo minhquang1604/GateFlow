@@ -1,0 +1,5 @@
+# Datasets this demo generates at run time. Regenerating them from the
+# seeds in demo/config.py reproduces them byte-for-byte, so there is
+# nothing here worth committing — and dataset_v2.csv is built during the
+# run by definition.
+*.csv

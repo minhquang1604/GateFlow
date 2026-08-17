@@ -180,6 +180,18 @@ services:
       - airflow_logs:/opt/airflow/logs
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
+      # Datasets the closed-loop demo generates at run time, bind-mounted
+      # from the repo so the demo process and Airflow see the same files.
+      # This is what lets dataset V2 train through the real DAG at all:
+      # case_studies/ is COPY'd into this image at build time (see
+      # infrastructure/airflow/Dockerfile), so a path under it exists
+      # inside Airflow only for files committed *before* the build. V2 is
+      # by definition built during the run — V1 plus the production data
+      # that drifted — so it can never satisfy that. The previous demo
+      # worked around it by training V2 in a local subprocess while V1
+      # went through Airflow; this mount removes the split and the
+      # "commit the CSV, then rebuild the images" step that came with it.
+      - ./demo/data:/opt/demo_data
     depends_on:
       postgres:
         condition: service_healthy
@@ -232,6 +244,9 @@ services:
       - airflow_logs:/opt/airflow/logs
       - airflow_plugins:/opt/airflow/plugins
       - ./infrastructure/airflow/dags:/opt/airflow/dags_local:ro
+      # The `train` task runs here (LocalExecutor), so this is the mount
+      # that actually matters — see airflow-webserver's copy for why.
+      - ./demo/data:/opt/demo_data
     depends_on:
       airflow-webserver:
         condition: service_healthy
@@ -273,6 +288,11 @@ services:
       # development value; set CONSOLE_WRITE_TOKEN in .env.docker (and
       # anywhere reachable from outside a laptop) to something else.
       CONSOLE_WRITE_TOKEN: ${CONSOLE_WRITE_TOKEN:-dev-console-token}
+      DEMO_DATA_DIR: /opt/demo_data
+    volumes:
+      # Shared with the Airflow containers — see airflow-webserver's
+      # volumes comment for why this is a bind mount.
+      - ./demo/data:/opt/demo_data
     ports:
       - "8000:8000"
     # /ready, not /health: the app runs `alembic upgrade head` before
@@ -344,7 +364,7 @@ services:
     command: >
       /bin/bash -c "
       cd /opt/framework;
-      PYTHONPATH=/opt/framework/src python -m scripts.run_end_to_end_demo;
+      PYTHONPATH=/opt/framework/src python -m demo.run_closed_loop_demo $${DEMO_ARGS:---mode auto};
       "
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:postgres@postgres:5432/mlops_framework
@@ -357,6 +377,23 @@ services:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
       AWS_SECRET_ACCESS_KEY: minioadmin
+      DEMO_DATA_DIR: /opt/demo_data
+      # `$$` above, not `$`: Compose substitutes `${...}` when it parses
+      # this file, which would bake the default in and make a later
+      # `run -e DEMO_ARGS=...` silently do nothing. Escaping it defers
+      # the expansion to bash inside the container, where the -e value
+      # actually exists. The passthrough below covers the other route,
+      # setting DEMO_ARGS in the shell or .env before `compose run`.
+      DEMO_ARGS: ${DEMO_ARGS:-}
+      # Both read from .env.docker; absent, the demo falls back to
+      # --decision approve rather than blocking on a chat nobody is
+      # watching. Never baked into the image — see .env.example.
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
+    volumes:
+      # Shared with the Airflow containers — see airflow-webserver's
+      # volumes comment for why this is a bind mount.
+      - ./demo/data:/opt/demo_data
     depends_on:
       postgres:
         condition: service_healthy

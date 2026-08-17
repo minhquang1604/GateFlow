@@ -1,6 +1,6 @@
 """Hermetic tests for ``scripts.run_end_to_end_demo`` and the shared
-``scripts._initial_training`` module it (and ``run_drift_recovery_demo``'s
-Phase 1) is built on.
+``scripts._initial_training`` module it (and the closed-loop demo's
+first phase) is built on.
 
 The full end-to-end demo exercises real MLflow, Airflow, and a
 ServingBridge. These tests verify the *logic* of the demo script — the
