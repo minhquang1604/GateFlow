@@ -86,7 +86,7 @@ class TestTopNav:
 
     def test_topnav_links_to_the_hosted_docs_site(self, ui_client):
         body = ui_client.get("/dashboard").text
-        assert 'href="https://minhquang1604.github.io/GateFlow/"' in body
+        assert 'href="https://minhquang1604.github.io/Gateflow/"' in body
 
     def test_docs_link_is_present_in_the_sidebar(self, ui_client):
         body = ui_client.get("/dashboard").text

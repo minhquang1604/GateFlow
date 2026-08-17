@@ -21,7 +21,7 @@ print(run.status, run.metrics)
 ```
 
 [:octicons-rocket-24: Quickstart](getting-started/quickstart.md){ .md-button .md-button--primary }
-[:octicons-mark-github-16: View source](https://github.com/minhquang1604/GateFlow){ .md-button }
+[:octicons-mark-github-16: View source](https://github.com/minhquang1604/Gateflow){ .md-button }
 
 ## What it does
 
@@ -125,7 +125,7 @@ print(run.status, run.metrics)
 
 For *why* the framework is built the way it is — the problem each
 feature solves, its data model, the invariants a careless change would
-break — see [`docs/specs/`](https://github.com/minhquang1604/GateFlow/tree/main/docs/specs)
+break — see [`docs/specs/`](https://github.com/minhquang1604/Gateflow/tree/main/docs/specs)
 in the repository. That tree is written for whoever edits the framework
 next; this site covers using it.
 

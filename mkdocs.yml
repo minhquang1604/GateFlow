@@ -1,11 +1,11 @@
-site_name: GateFlow
+site_name: Gateflow
 site_description: >-
   A reusable MLOps framework for datasets, training runs, model
   lifecycle, experiment tracking, and governed automated retraining —
   with a management console, a Python SDK, and an HTTP API.
-site_url: https://minhquang1604.github.io/GateFlow/
-repo_url: https://github.com/minhquang1604/GateFlow
-repo_name: minhquang1604/GateFlow
+site_url: https://minhquang1604.github.io/Gateflow/
+repo_url: https://github.com/minhquang1604/Gateflow
+repo_name: minhquang1604/Gateflow
 edit_uri: edit/main/docs-site/
 
 docs_dir: docs-site
