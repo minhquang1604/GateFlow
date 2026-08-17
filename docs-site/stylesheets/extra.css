@@ -68,14 +68,22 @@
 .gf-accent { color: var(--gf-accent); }
 .gf-deep { color: var(--gf-deep); }
 
-/* The gap this actually fixes: Material's own .md-header__title class,
- * not one of ours. Applied once to the whole title block, not per
- * letter-span, so "ate" and "flow" themselves stay touching; .gf-title
- * is the equivalent wrapper nav.html's mobile-drawer title uses, which
- * has no Material class of its own to hook. */
+/* The gap: two separate sources, both Material's own, neither ours.
+ * `.md-header__title`'s default 1rem margin-left was the obvious one
+ * and got tightened first — but `.md-logo` carries its own .2rem
+ * margin + .4rem padding on every side (sized for a click target, not
+ * a wordmark), which alone is still nearly a full character of space
+ * on the logo's trailing edge. Zeroing just that edge (left/top/bottom
+ * stay, so the click target and vertical centring are untouched) is
+ * what actually closes it — .15rem alone on the title wasn't enough,
+ * confirmed against the live page, not just reasoned about. */
+.md-header .md-logo {
+  margin-right: 0;
+  padding-right: 0;
+}
 .md-header__title {
-  margin-left: .15rem;
+  margin-left: 0;
 }
 .gf-title {
-  margin-left: .15rem;
+  margin-left: .1rem;
 }
