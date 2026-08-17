@@ -1,0 +1,19 @@
+{#-
+  Overrides Material's default logo.html to render the actual Gateflow
+  mark — same SVG paths as src/mlops_framework/ui/mount.py's console
+  header, not a generic Material icon or an image file. Colours come
+  from docs-site/stylesheets/extra.css (.gf-mark .lm-accent/.lm-deep),
+  which mirrors app.css's --logo-accent/--logo-deep for light and dark.
+
+  The mark *is* the wordmark's "G" — see header.html's override in this
+  same directory, which renders "ateflow" as the adjacent title text
+  rather than the full site name, exactly as the console's own
+  .brand-name span does.
+-#}
+<svg class="gf-mark" viewBox="95 95 693 714" fill="none" aria-hidden="true">
+  <path class="lm-accent"
+        d="M708.8 204A357 357 0 1 0 525 801.5V688A247 247 0 1 1 629.7 280.4Z"/>
+  <path class="lm-deep"
+        d="M450 424H788V610A400 400 0 0 1 612 800V616L533 536L612 566V524H450Z"/>
+  <path class="lm-deep" d="M573 638a7 7 0 0 1 7 7v20a7 7 0 0 1-14 0v-20a7 7 0 0 1 7-7Z"/>
+</svg>

@@ -1,4 +1,4 @@
-site_name: MLOps Framework
+site_name: GateFlow
 site_description: >-
   A reusable MLOps framework for datasets, training runs, model
   lifecycle, experiment tracking, and governed automated retraining —
@@ -19,6 +19,12 @@ site_dir: site
 
 theme:
   name: material
+  # overrides/partials/{logo,header,nav}.html swap Material's default
+  # logo + full site name for the actual Gateflow wordmark — the "G"
+  # mark plus "ateflow" as text, exactly what the console's own
+  # .brand-name renders. See those files' own comments for why each is
+  # a full-file shadow rather than a block override.
+  custom_dir: overrides
   # Close to Gateflow's own accent (#2563eb light / #4a9eff dark) — the
   # console and the docs reading like the same product rather than two
   # unrelated blues.
@@ -69,6 +75,9 @@ markdown_extensions:
 
 plugins:
   - search
+
+extra_css:
+  - stylesheets/extra.css
 
 nav:
   - Home: index.md

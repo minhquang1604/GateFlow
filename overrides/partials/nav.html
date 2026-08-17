@@ -1,0 +1,36 @@
+{#-
+  Full copy of Material's stock partials/nav.html (the mobile drawer),
+  same single change as this directory's header.html override: the
+  title row next to the drawer's logo renders the split "ateflow"
+  wordmark instead of the plain site name, so the mobile drawer matches
+  the desktop header rather than showing "GateFlow" full in one place
+  and the split mark in the other. See header.html's own comment for
+  why this has to be a full-file shadow and the re-sync note.
+-#}
+{% import "partials/nav-item.html" as item with context %}
+{% set class = "md-nav md-nav--primary" %}
+{% if "navigation.tabs" in features %}
+  {% set class = class ~ " md-nav--lifted" %}
+{% endif %}
+{% if "toc.integrate" in features %}
+  {% set class = class ~ " md-nav--integrated" %}
+{% endif %}
+<nav class="{{ class }}" aria-label="{{ lang.t('nav') }}" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="{{ config.extra.homepage | d(nav.homepage.url, true) | url }}" title="{{ config.site_name | e }}" class="md-nav__button md-logo" aria-label="{{ config.site_name }}" data-md-component="logo">
+      {% include "partials/logo.html" %}
+    </a>
+    <span title="{{ config.site_name | e }}"><span class="gf-accent">ate</span><span class="gf-deep">flow</span></span>
+  </label>
+  {% if config.repo_url %}
+    <div class="md-nav__source">
+      {% include "partials/source.html" %}
+    </div>
+  {% endif %}
+  <ul class="md-nav__list" data-md-scrollfix>
+    {% for nav_item in nav.items %}
+      {% set path = "__nav_" ~ loop.index %}
+      {{ item.render(nav_item, path, 1) }}
+    {% endfor %}
+  </ul>
+</nav>
