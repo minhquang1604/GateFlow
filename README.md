@@ -7,7 +7,7 @@ console called **Gateflow** (dashboard, datasets, runs, models, pipelines,
 lineage), a Python SDK, an HTTP API, and two runnable case studies that
 prove the abstractions hold up on real, different problems.
 
-📚 **[Full documentation](https://minhquang1604.github.io/ML_Framework/)** —
+📚 **[Full documentation](https://minhquang1604.github.io/GateFlow/)** —
 a browsable, searchable version of everything below, organized by topic
 rather than one long scroll.
 
