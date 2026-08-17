@@ -172,6 +172,7 @@ class DatasetManager:
         storage_uri: str,
         row_count: int,
         metadata: dict[str, Any] | None = None,
+        parent_version_id: int | None = None,
     ) -> DatasetVersion:
         """Create a new version for a dataset.
 
@@ -183,15 +184,30 @@ class DatasetManager:
             storage_uri: URI to the dataset storage
             row_count: Number of rows in this version
             metadata: Optional metadata (can include 'columns' for schema)
+            parent_version_id: The version this one was *derived from* —
+                set it when the new version extends an earlier one (the
+                retraining case, where V2 is V1 plus newly observed data)
+                rather than standing on its own. Recording it is what
+                lets ``LineageManager`` trace a model back past the data
+                it trained on to the data that caused that data.
 
         Returns:
             DatasetVersion: Created version
 
         Raises:
             DatasetNotFoundError: If dataset not found
+            DatasetVersionNotFoundError: If ``parent_version_id`` is given
+                but no such version exists.
         """
         # Verify dataset exists
         self.get_dataset(dataset_id)
+
+        # Verify the parent exists before writing a row that points at it.
+        # The FK would catch this on flush, but only as an opaque
+        # IntegrityError — and not at all on SQLite, where foreign keys
+        # are off by default.
+        if parent_version_id is not None:
+            self.get_version(parent_version_id)
 
         # Get next version number
         version_number = self._get_next_version_number(dataset_id)
@@ -210,6 +226,7 @@ class DatasetManager:
             row_count=row_count,
             metadata_json=json.dumps(metadata) if metadata else None,
             is_immutable=True,
+            parent_version_id=parent_version_id,
         )
 
         self._session.add(version)

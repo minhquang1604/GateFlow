@@ -1,6 +1,6 @@
 """Unit tests for ``mlops_framework.approval.telegram.TelegramApprovalGate``.
 
-The gate moved out of ``scripts/_telegram_approval.py`` and into the
+The gate moved out of a single demo script and into the
 framework when human approval became an ``ApprovalGate`` the retraining
 workflow can be given — these tests moved with it, unchanged in what
 they cover: the polling loop, and that a click from a chat other than

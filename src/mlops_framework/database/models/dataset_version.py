@@ -25,6 +25,15 @@ class DatasetVersion(Base, TimestampMixin):
         - schema_hash: Deterministic hash of the data schema (columns, types, order)
         - row_count: Number of rows in this version
         - is_immutable: Always True, enforced at application level
+        - parent_version_id: The version this one was *derived from*, if any
+
+    ``parent_version_id`` is what distinguishes "a new version of this
+    dataset" from "a new version built by extending an earlier one". The
+    retraining loop produces the latter: V2 is V1 plus the production
+    data that drifted, and recording that lets
+    :class:`~mlops_framework.lineage.manager.LineageManager` answer why a
+    model trained on V2 exists at all. ``None`` — the common case — means
+    the version stands on its own.
     """
 
     __tablename__ = "dataset_versions"
@@ -42,11 +51,31 @@ class DatasetVersion(Base, TimestampMixin):
     row_count: Mapped[int] = mapped_column(BigInteger, nullable=False)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     is_immutable: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # SET NULL, not CASCADE — see migration 011's docstring: losing an
+    # ancestor must orphan the edge, never delete the descendant.
+    parent_version_id: Mapped[int | None] = mapped_column(
+        ForeignKey("dataset_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Relationship to Dataset
     dataset: Mapped["Dataset"] = relationship(
         "Dataset",
         back_populates="versions",
+    )
+
+    # Self-referencing lineage. remote_side pins which end of the join is
+    # the "one" side — without it SQLAlchemy cannot tell a self-join's
+    # direction and treats both ends as collections.
+    parent: Mapped["DatasetVersion | None"] = relationship(
+        "DatasetVersion",
+        remote_side=[id],
+        back_populates="derived_versions",
+    )
+    derived_versions: Mapped[list["DatasetVersion"]] = relationship(
+        "DatasetVersion",
+        back_populates="parent",
     )
 
     # Relationship to TrainingRuns

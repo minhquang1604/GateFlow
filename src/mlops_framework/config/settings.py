@@ -105,7 +105,7 @@ class Settings(BaseSettings):
 
     # Telegram admin-approval gate (used by the drift/retrain demo script
     # to block an automated retrain behind a human Approve/Deny before it
-    # runs — see scripts/_telegram_approval.py).
+    # runs — see mlops_framework/approval/telegram.py).
     telegram_bot_token: str | None = Field(
         default=None,
         description="Telegram bot token used to send the retrain approval request.",
