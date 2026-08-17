@@ -35,8 +35,8 @@ python -m case_studies.fraud_detection.app
 Expected output:
 
 ```
-Run 1 finished with status=SUCCESS; pipeline_id=case_studies.fraud_detection.pipelines:train_baseline
-Lineage node types: ['Dataset', 'DatasetVersion', 'TrainingRun']
+Run 1 finished with status=RunStatus.SUCCESS; pipeline_id=case_studies.fraud_detection.pipelines:train_baseline
+Lineage node types: ['DatasetVersion', 'TrainingRun']
 ```
 
 ## Data

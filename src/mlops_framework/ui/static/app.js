@@ -2881,9 +2881,11 @@ async function renderLineagePicker(out) {
     .filter((d) => d.latest_version)
     .map((d) => el("tr", {},
       el("td", {},
-        el("a", { href: `/lineage?kind=dataset-version&id=${d.latest_version.id}` },
-          `${d.name} — v${d.latest_version.version_number}`)),
-      el("td", { class: "muted" }, "DatasetVersion")));
+        el("a", { href: `/lineage?kind=dataset&id=${d.id}` },
+          // Whole-family view — every version of this dataset side by
+          // side, not just the latest. See LineageManager.graph_for_dataset.
+          `${d.name} — v${d.latest_version.version_number} and history`)),
+      el("td", { class: "muted" }, "Dataset")));
 
   const rows = [...modelRows, ...datasetRows];
   if (rows.length === 0) {
@@ -2902,56 +2904,37 @@ async function renderLineagePicker(out) {
         el("tbody", {}, ...rows))));
 }
 
-// Layers lineage nodes into columns exactly like dagLevels() layers
-// tasks — level(root) = 0, level(n) = 1 + max(level(upstream)) over
-// every incoming edge — except it works off `edges` (source/target ids)
-// rather than a `downstream_task_ids` field, since that's the shape the
-// lineage API serves, and it never bails to null: an edge pointing at
-// an id not in `nodes`, or a node no root reaches, still gets placed
-// (at column 0) rather than losing the whole graph the way an
-// unrenderable pipeline DAG falls back to a plain table. Lineage graphs
-// are walked out of live foreign keys, not authored by hand, so treating
-// an odd shape as fatal would trade a usable-if-imperfect graph for a
-// blank page over something the viewer can't fix anyway.
-function lineageLevels(nodes, edges) {
-  const ids = nodes.map((n) => n.id);
-  const idSet = new Set(ids);
-  const indegree = new Map(ids.map((id) => [id, 0]));
-  const outgoing = new Map(ids.map((id) => [id, []]));
-  for (const e of edges) {
-    if (!idSet.has(e.source) || !idSet.has(e.target)) continue;
-    outgoing.get(e.source).push(e.target);
-    indegree.set(e.target, indegree.get(e.target) + 1);
-  }
+// Fixed column per node *type* — every DatasetVersion lines up in one
+// column, every TrainingRun in the next, and so on — rather than a
+// column per graph depth. An earlier version computed columns the way
+// dagLevels() layers tasks (level(root) = 0, level(n) = 1 +
+// max(level(upstream))), which is right for a DAG whose shape *is* the
+// question, but wrong here: since the lineage graph now shows a
+// dataset's whole version history in parallel (LineageManager.
+// graph_for_dataset), a later version sits at a deeper topological
+// level than an earlier one purely because it has one more hop of
+// derived_from ancestry behind it — so V1's TrainingRun and V2's
+// TrainingRun landed in different columns despite being the exact same
+// *kind* of thing, which read as misaligned rather than as two
+// branches of one story. Same type, same column, fixes that outright.
+const LINEAGE_TYPE_COLUMN = {
+  DatasetVersion: 0,
+  TrainingRun: 1,
+  ModelVersion: 2,
+  ServingInstance: 3,
+};
 
-  const level = new Map();
-  const remaining = new Map(indegree);
-  const placed = new Set();
-  let frontier = ids.filter((id) => (indegree.get(id) || 0) === 0);
-  frontier.forEach((id) => { level.set(id, 0); placed.add(id); });
-
-  while (frontier.length) {
-    const next = [];
-    for (const id of frontier) {
-      for (const d of outgoing.get(id)) {
-        level.set(d, Math.max(level.get(d) ?? 0, level.get(id) + 1));
-        remaining.set(d, remaining.get(d) - 1);
-        if (remaining.get(d) === 0 && !placed.has(d)) {
-          placed.add(d);
-          next.push(d);
-        }
-      }
-    }
-    frontier = next;
-  }
-  // Cycle or a node whose only incoming edges point back into one — put
-  // it at column 0 rather than dropping it silently.
-  for (const id of ids) if (!placed.has(id)) level.set(id, 0);
-
+function lineageLevels(nodes) {
+  // Row order within a column follows node-array order, which is the
+  // backend's own discovery order — dataset version 1's whole branch
+  // (its training run, its model version, its serving instance) before
+  // version 2's — so branches stack into aligned rows without this
+  // function needing to know anything about edges at all. An unknown
+  // future type falls through to column 0 rather than being dropped.
   const columns = [];
   for (const n of nodes) {
-    const lvl = level.get(n.id) || 0;
-    (columns[lvl] || (columns[lvl] = [])).push(n.id);
+    const col = LINEAGE_TYPE_COLUMN[n.type] ?? 0;
+    (columns[col] || (columns[col] = [])).push(n.id);
   }
   return columns;
 }
@@ -2975,33 +2958,29 @@ function lineageNodeMeta(n) {
   return null;
 }
 
-// The lineage chain's six node types read as four *families* — dataset
-// identity, execution, model identity, deployment — and colouring +
-// iconing by family (rather than one hue per type) is what actually
-// makes a branchy graph scannable: DatasetVersion sits right next to
-// Dataset in the chain, so giving it the same green says "still the
-// dataset thread" at a glance, where a fifth unrelated hue would just
-// be one more colour to learn. Every lookup here is total (an unknown
-// type falls through to "task"/grey) so a graph never renders a blank
-// icon.
+// The lineage chain's four node types read as three *families* —
+// dataset, execution, model+serving — and colouring + iconing by family
+// (rather than one hue per type) is what actually makes a branchy graph
+// scannable. Every lookup here is total (an unknown type falls through
+// to "task"/grey) so a graph never renders a blank icon.
+//
+// Only four types now: a dataset's/model's name lives inside its own
+// version node's label (see LineageManager's module docstring on why
+// the separate Dataset/Model identity nodes were folded away), so
+// there's no longer a second, un-versioned node per family to give its
+// own icon or colour.
 const LINEAGE_FAMILY = {
-  Dataset: "dataset", DatasetVersion: "dataset",
+  DatasetVersion: "dataset",
   TrainingRun: "task",
-  Model: "model", ModelVersion: "model",
+  ModelVersion: "model",
   ServingInstance: "serving",
 };
 
-// Minimal stroke icons (feather/lucide-style paths, currentColor) — one
-// visual family per lineage family, plus a distinct mark for the
-// "version" half of a family (a small tag/commit glyph) so Dataset vs
-// DatasetVersion and Model vs ModelVersion stay tell-apart-able without
-// spending a second hue on it.
+// Minimal stroke icons (feather/lucide-style paths, currentColor).
 const LINEAGE_ICON_PATHS = {
-  Dataset: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
-  DatasetVersion: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/><circle cx="18.5" cy="17.5" r="3.6" fill="var(--surface)" stroke-width="1.6"/><path d="M17.1 17.5l1 1 1.8-2" stroke-width="1.6"/>',
+  DatasetVersion: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
   TrainingRun: '<polyline points="3 12 8 12 10 18 14 6 16 12 21 12"/>',
-  Model: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/>',
-  ModelVersion: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/><circle cx="18.5" cy="17.5" r="3.6" fill="var(--surface)" stroke-width="1.6"/><path d="M17.1 17.5l1 1 1.8-2" stroke-width="1.6"/>',
+  ModelVersion: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/>',
   ServingInstance: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/>',
 };
 
@@ -3022,6 +3001,35 @@ function lineageIcon(type, small) {
   return span;
 }
 
+// The four anchor/control points for one edge's cubic bezier — shared
+// by the path draw and the label placement pass below so the label
+// always sits on the exact curve that got drawn, not a curve shaped
+// like it.
+//
+// Two shapes:
+// - Different columns (the common case): left-to-right, control points
+//   pinned to the horizontal midpoint between the two nodes — same
+//   curve every lineage graph has always drawn.
+// - Same column (currently only `derived_from`, DatasetVersion ->
+//   DatasetVersion — see LINEAGE_TYPE_COLUMN on why same type now
+//   means same column): a same-rank edge has nowhere to the side to
+//   run through, so it bows out to the right of the column instead —
+//   exits and re-enters each node's right edge, arcing through a
+//   point past both nodes rather than between them. Reads as "loops
+//   back into this lane," not as a normal downstream hop.
+function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
+  const from = pos.get(e.source), to = pos.get(e.target);
+  const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H / 2;
+  if (colOf.get(e.source) === colOf.get(e.target)) {
+    const x1 = from.x + NODE_W, x2 = to.x + NODE_W;
+    const bowX = Math.max(x1, x2) + 64;
+    return { x1, y1, x2, y2, c1x: bowX, c1y: y1, c2x: bowX, c2y: y2 };
+  }
+  const x1 = from.x + NODE_W, x2 = to.x;
+  const midX = (x1 + x2) / 2;
+  return { x1, y1, x2, y2, c1x: midX, c1y: y1, c2x: midX, c2y: y2 };
+}
+
 // The node-link graph itself: positions come straight from
 // (column, row) on a fixed grid via lineageLevels(), same approach as
 // renderDagGraph, with one SVG overlay drawing an arrowed, labelled
@@ -3040,7 +3048,7 @@ function renderLineageGraph(nodes, edges, rootId) {
   // columns gives every curve (and its label) real room to separate
   // before the next node's edge starts.
   const COL_W = 496, ROW_H = 112, NODE_W = 208, NODE_H = 64, PAD = 12;
-  const levels = lineageLevels(nodes, edges);
+  const levels = lineageLevels(nodes);
   const pos = new Map();
   const colOf = new Map();
   levels.forEach((col, ci) => {
@@ -3062,12 +3070,9 @@ function renderLineageGraph(nodes, edges, rootId) {
 
   const validEdges = edges.filter((e) => pos.has(e.source) && pos.has(e.target));
   for (const e of validEdges) {
-    const from = pos.get(e.source), to = pos.get(e.target);
-    const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
-    const x2 = to.x, y2 = to.y + NODE_H / 2;
-    const midX = (x1 + x2) / 2;
+    const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
     svg.appendChild(svgEl("path", {
-      class: "lineage-edge", d: `M${x1},${y1} C${midX},${y1} ${midX},${y2} ${x2},${y2}`,
+      class: "lineage-edge", d: `M${g.x1},${g.y1} C${g.c1x},${g.c1y} ${g.c2x},${g.c2y} ${g.x2},${g.y2}`,
       fill: "none", "marker-end": "url(#lineage-arrow)",
     }));
   }
@@ -3102,14 +3107,11 @@ function renderLineageGraph(nodes, edges, rootId) {
   for (const group of groups.values()) {
     const n = group.length;
     group.forEach((e, i) => {
-      const from = pos.get(e.source), to = pos.get(e.target);
-      const x1 = from.x + NODE_W, y1 = from.y + NODE_H / 2;
-      const x2 = to.x, y2 = to.y + NODE_H / 2;
-      const midX = (x1 + x2) / 2;
+      const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
       const t = n === 1 ? 0.5 : 0.3 + (0.4 * i) / (n - 1);
       const mt = 1 - t;
-      const x = mt ** 3 * x1 + 3 * mt * mt * t * midX + 3 * mt * t * t * midX + t ** 3 * x2;
-      const y = mt ** 3 * y1 + 3 * mt * mt * t * y1 + 3 * mt * t * t * y2 + t ** 3 * y2;
+      const x = mt ** 3 * g.x1 + 3 * mt * mt * t * g.c1x + 3 * mt * t * t * g.c2x + t ** 3 * g.x2;
+      const y = mt ** 3 * g.y1 + 3 * mt * mt * t * g.c1y + 3 * mt * t * t * g.c2y + t ** 3 * g.y2;
       const text = e.type.replace(/_/g, " ");
       labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
     });
@@ -3165,7 +3167,7 @@ function renderLineageGraph(nodes, edges, rootId) {
 // nodes themselves use so the legend is a real key and not a second
 // vocabulary to cross-reference.
 function renderLineageLegend(nodes) {
-  const order = ["Dataset", "DatasetVersion", "TrainingRun", "Model", "ModelVersion", "ServingInstance"];
+  const order = ["DatasetVersion", "TrainingRun", "ModelVersion", "ServingInstance"];
   const present = order.filter((t) => nodes.some((n) => n.type === t));
   return el("div", { class: "legend lineage-legend" },
     el("span", { class: "legend-label" }, "Legend"),

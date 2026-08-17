@@ -1174,10 +1174,13 @@ details[open] > summary:before { transform: rotate(90deg); }
 }
 
 .lineage-node .label { font-weight: 600; margin-top: 0; }
-.lineage-node.Dataset { border-left: 3px solid var(--accent); }
+/* Dataset/Model identity used to be their own node type each, styled
+ * separately from their version — folded into the version node's own
+ * label since (see LineageManager's module docstring), so only four
+ * lineage types remain. */
 .lineage-node.DatasetVersion { border-left: 3px solid var(--run); }
 .lineage-node.TrainingRun { border-left: 3px solid var(--warn); }
-.lineage-node.Model, .lineage-node.ModelVersion { border-left: 3px solid var(--violet); }
+.lineage-node.ModelVersion { border-left: 3px solid var(--violet); }
 .lineage-node.ServingInstance { border-left: 3px solid var(--ok); }
 .lineage-node.Task { border-left: 3px solid var(--text-muted); }
 
@@ -1276,14 +1279,13 @@ details[open] > summary:before { transform: rotate(90deg); }
   background: var(--surface);
   box-shadow: var(--shadow);
 }
-/* The base per-type rules a few lines up (.lineage-node.Dataset etc.)
- * give the DAG-graph's plain nodes a 3px colour bar; same specificity
- * (two classes) as this override, so pin the win with a third class
- * rather than relying on this block staying below them in the file. */
-.lineage-graph .lineage-node.Dataset,
+/* The base per-type rules a few lines up (.lineage-node.DatasetVersion
+ * etc.) give the DAG-graph's plain nodes a 3px colour bar; same
+ * specificity (two classes) as this override, so pin the win with a
+ * third class rather than relying on this block staying below them in
+ * the file. */
 .lineage-graph .lineage-node.DatasetVersion,
 .lineage-graph .lineage-node.TrainingRun,
-.lineage-graph .lineage-node.Model,
 .lineage-graph .lineage-node.ModelVersion,
 .lineage-graph .lineage-node.ServingInstance {
   border-left-width: 1px;

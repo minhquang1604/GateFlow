@@ -162,10 +162,11 @@ class TestCaseStudyLifecycle:
         )
         assert run2.status == "SUCCESS"
 
-        # Lineage graph contains the dataset and both runs
+        # Lineage graph contains the dataset and both runs. The dataset's
+        # identity lives on the DatasetVersion node's own label now, not
+        # a separate Dataset node — see LineageManager's module docstring.
         g = project.lineage.for_dataset_version(v.id)
         types = {n["type"] for n in g["nodes"]}
-        assert "Dataset" in types
         assert "DatasetVersion" in types
         assert "TrainingRun" in types
 
