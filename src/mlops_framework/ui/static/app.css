@@ -590,6 +590,62 @@ h3 {
 .mono { font-family: var(--mono); font-size: 12.5px; }
 .nowrap { white-space: nowrap; }
 
+/* Switches between different *views* of the same page (Activity's Audit
+ * trail / Alerts is the only user of this so far) — deliberately not
+ * `.btn`. A plain button next to "Refresh" in .page-actions reads as one
+ * more one-off action in a row of them, easy to never notice is actually
+ * a second whole view of the page with its own content (see Activity's
+ * own report: someone not looking closely has no reason to expect
+ * "Alerts" is clickable at all, let alone that it swaps the table under
+ * it). An underlined tab strip is a shape people already recognize as
+ * "there is more than one section here" without reading any label. */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin: -4px 0 20px;
+}
+.tab {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 4px;
+  margin-bottom: -1px;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  border-bottom: 2px solid transparent;
+}
+.tab + .tab { margin-left: 16px; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* The count on the Alerts tab — how many exist, coloured by the worst
+ * severity among them, so the tab itself says "there's something here
+ * and it's serious" before anyone clicks it. Hidden (not "0") when
+ * there's nothing to report; a badge is a claim something needs
+ * attention, and an empty one is just noise next to the label. */
+.tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--idle);
+  background: var(--idle-bg);
+}
+.tab-count.warning { color: var(--warn); background: var(--warn-bg); }
+.tab-count.critical { color: var(--err); background: var(--err-bg); }
+
 /* ================================================================== */
 /* 4. Containers and cards                                             */
 /* ================================================================== */

@@ -2786,6 +2786,29 @@ async function initActivity() {
   const desc = document.getElementById("activity-desc");
   const auditBtn = document.getElementById("tab-audit");
   const alertsBtn = document.getElementById("tab-alerts");
+  const alertsCount = document.getElementById("alerts-count");
+
+  // Fetched once and cached — refreshed only by refetch() below, called
+  // on page load regardless of which tab is open (its count/severity is
+  // what makes the Alerts *tab* worth noticing before anyone clicks it;
+  // see the badge update at the bottom) and again whenever the Alerts
+  // tab is actually opened or "Refresh" is pressed while on it, same as
+  // the audit tab has always done. One promise shared by both callers
+  // (the eager badge fetch and tab.fetch()) rather than two independent
+  // requests racing to fill the same cache.
+  let alertsCache = null;
+  function refetchAlerts() {
+    alertsCache = api("/alerts?limit=200").then((rows) => {
+      if (!rows.length) { alertsCount.hidden = true; return rows; }
+      const worst = rows.some((r) => r.severity === "CRITICAL") ? "critical"
+        : rows.some((r) => r.severity === "WARNING") ? "warning" : "";
+      alertsCount.textContent = String(rows.length);
+      alertsCount.className = `tab-count ${worst}`.trim();
+      alertsCount.hidden = false;
+      return rows;
+    });
+    return alertsCache;
+  }
 
   const TABS = {
     audit: {
@@ -2808,7 +2831,7 @@ async function initActivity() {
       title: "Alerts",
       desc: "Conditions the framework itself detected — a training run failing, a dataset " +
         "drifting, a retrain blocked before it started — not something anyone triggered.",
-      fetch: () => api("/alerts?limit=200"),
+      fetch: () => alertsCache || refetchAlerts(),
       columns: ["When", "Severity", "Type", "Entity", "Message"],
       row: (e) => el("tr", {},
         el("td", { class: "muted nowrap" }, fmt.ago(e.created_at)),
@@ -2826,8 +2849,10 @@ async function initActivity() {
     const tab = TABS[active];
     title.textContent = tab.title;
     desc.innerHTML = tab.desc;
-    auditBtn.className = active === "audit" ? "btn primary" : "btn";
-    alertsBtn.className = active === "alerts" ? "btn primary" : "btn";
+    auditBtn.className = active === "audit" ? "tab active" : "tab";
+    auditBtn.setAttribute("aria-selected", String(active === "audit"));
+    alertsBtn.className = active === "alerts" ? "tab active" : "tab";
+    alertsBtn.setAttribute("aria-selected", String(active === "alerts"));
 
     let entries;
     try {
@@ -2845,7 +2870,22 @@ async function initActivity() {
 
   auditBtn.addEventListener("click", () => { active = "audit"; load(); });
   alertsBtn.addEventListener("click", () => { active = "alerts"; load(); });
-  document.getElementById("refresh").addEventListener("click", load);
+  document.getElementById("refresh").addEventListener("click", () => {
+    // The badge has to stay live even while sitting on Audit trail, so
+    // it's refetched here independently of whichever tab load() is
+    // about to reload — on the Alerts tab that would otherwise be two
+    // requests racing for the same cache; forcing the cache clear first
+    // makes tab.fetch()'s alertsCache-miss path do that refetch instead.
+    if (active === "alerts") alertsCache = null;
+    else refetchAlerts();
+    load();
+  });
+
+  // Regardless of which tab is open at load — the whole point of the
+  // badge is earning the Alerts tab a second look from someone sitting
+  // on Audit trail who would otherwise have no reason to click it.
+  if (active !== "alerts") refetchAlerts();
+
   await load();
 }
 

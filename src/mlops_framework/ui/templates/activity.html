@@ -9,10 +9,15 @@
         </p>
       </div>
       <div class="page-actions">
-        <button id="tab-audit" class="btn primary">Audit trail</button>
-        <button id="tab-alerts" class="btn">Alerts</button>
         <button id="refresh" class="btn">Refresh</button>
       </div>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Activity view">
+      <button id="tab-audit" class="tab active" role="tab" aria-selected="true">Audit trail</button>
+      <button id="tab-alerts" class="tab" role="tab" aria-selected="false">
+        Alerts<span id="alerts-count" class="tab-count" hidden></span>
+      </button>
     </div>
 
     <div id="activity-out"></div>
