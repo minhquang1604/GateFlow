@@ -59,7 +59,7 @@ class TestSettings:
     def test_app_metadata(self):
         s = Settings()
         assert s.app_name == "mlops-framework"
-        assert s.app_version == "0.1.0"
+        assert s.app_version == "1.0.0"
         assert s.debug is False
 
     def test_get_settings_returns_instance(self):

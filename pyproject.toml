@@ -1,6 +1,6 @@
 [project]
 name = "mlops-framework"
-version = "0.1.0"
+version = "1.0.0"
 description = "A reusable MLOps Framework for managing datasets, training runs, and model lifecycle"
 readme = "README.md"
 requires-python = ">=3.11"

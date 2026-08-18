@@ -44,7 +44,7 @@ _log = logging.getLogger("mlops_framework.api.scheduler")
 def create_app(
     *,
     title: str = "MLOps Framework Management API",
-    version: str = "0.1.0",
+    version: str = "1.0.0",
     mount_ui: bool = True,
     ui_templates_dir: Path | None = None,
 ) -> FastAPI:
