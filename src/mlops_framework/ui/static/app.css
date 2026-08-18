@@ -1301,6 +1301,23 @@ details[open] > summary:before { transform: rotate(90deg); }
   border-color: var(--accent-border);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
+
+/* Nodes that resolve to a real detail page render as an <a> rather than
+ * a div (app.js's lineageNodeHref) — `color: inherit` neutralises the
+ * global `a { color: var(--accent) }` reset so a clickable node still
+ * reads exactly like a static one at rest (the .type/.label children
+ * have no colour of their own; without this they'd inherit the anchor's
+ * accent blue instead of the card's normal text colour). The hover/focus
+ * ring reuses .root's own treatment at one size down, so "clickable" and
+ * "the graph's starting point" read as the same family of highlight
+ * without being visually identical. */
+.lineage-graph .lineage-node[href] { color: inherit; }
+.lineage-graph .lineage-node[href]:hover,
+.lineage-graph .lineage-node[href]:focus-visible {
+  text-decoration: none;
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
 .lineage-graph .lineage-node .meta { display: block; margin-top: 6px; }
 
 .lineage-edge { stroke: var(--border-strong); stroke-width: 1.5; }

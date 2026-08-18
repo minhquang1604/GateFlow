@@ -2958,6 +2958,35 @@ function lineageNodeMeta(n) {
   return null;
 }
 
+// Where clicking a node actually goes — its owning entity's own detail
+// page, the way the rest of the console cross-links (the Run column on
+// the Models page, the Dataset column on the Runs page, ...). Every node
+// type has one except DatasetVersion/ModelVersion, which fold into the
+// page for the Dataset/Model they belong to (no standalone
+// version-detail route exists — see LineageManager's module docstring on
+// why identity and version are one node) and ServingInstance, which has
+// no page of its own at all; it links to the ModelVersion that's serving
+// it instead, found by walking the one `served_by` edge that always
+// points at it rather than trusting anything baked into the id string.
+// Returns null — not a broken link — for anything unresolvable, so a
+// node with data the graph can't fully explain still renders, just not
+// clickable.
+function lineageNodeHref(n, byId, edges) {
+  const a = n.attributes || {};
+  if (n.type === "DatasetVersion" && a.dataset_id != null) return `/datasets/${a.dataset_id}`;
+  if (n.type === "ModelVersion" && a.model_id != null) return `/models/${a.model_id}`;
+  if (n.type === "TrainingRun") {
+    const runId = n.id.split(":")[1];
+    return runId ? `/runs/${runId}` : null;
+  }
+  if (n.type === "ServingInstance") {
+    const servedBy = edges.find((e) => e.target === n.id && e.type === "served_by");
+    const modelId = servedBy && byId.get(servedBy.source)?.attributes?.model_id;
+    return modelId != null ? `/models/${modelId}` : null;
+  }
+  return null;
+}
+
 // The lineage chain's four node types read as three *families* —
 // dataset, execution, model+serving — and colouring + iconing by family
 // (rather than one hue per type) is what actually makes a branchy graph
@@ -3141,14 +3170,17 @@ function renderLineageGraph(nodes, edges, rootId) {
     }, lb.text));
   }
 
+  const byId = new Map(nodes.map((n) => [n.id, n]));
   const nodeEls = nodes.map((n) => {
     const p = pos.get(n.id);
     if (!p) return null;
     const meta = lineageNodeMeta(n);
-    return el("div", {
+    const href = lineageNodeHref(n, byId, edges);
+    return el(href ? "a" : "div", {
       class: `lineage-node ${n.type}${n.id === rootId ? " root" : ""}`,
       style: `position:absolute;left:${p.x}px;top:${p.y}px;width:${NODE_W}px`,
-      title: n.label || n.id,
+      title: href ? `${n.label || n.id} — open detail page` : (n.label || n.id),
+      ...(href ? { href } : {}),
     },
       lineageIcon(n.type),
       el("div", { class: "text" },
