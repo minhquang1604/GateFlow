@@ -42,6 +42,9 @@ mlruns/
 *.swo
 *~
 
+# Claude Code — local session/permission state, not shared config
+.claude/
+
 # Testing
 .pytest_cache/
 .coverage
@@ -71,3 +74,4 @@ alembic/versions/*.pyc
 # 144 MB, past GitHub's 100 MB per-file limit. See
 # case_studies/fraud_detection/README.md for how to fetch it.
 case_studies/*/data/creditcard.csv
+
