@@ -92,8 +92,32 @@
   padding-right: 0;
 }
 .md-header .md-header__title {
-  margin-left: 0;
+  /* Flush (0) actually touched the mark's curve — a wordmark needs the
+   * same small breathing room a letter would have next to another
+   * letter, just not Material's button-sized 1rem click-target gap. */
+  margin-left: .15rem;
 }
 .gf-title {
-  margin-left: .1rem;
+  margin-left: .15rem;
+}
+
+/* Material swaps the visible title on scroll: the site name (what's
+ * rendered above) fades out and the current page's title ("Home",
+ * "Architecture", ...) fades in, via a `--active` class its own JS
+ * toggles on `.md-header__title`. Gateflow is a wordmark, not a
+ * breadcrumb — it should read the same regardless of scroll position.
+ * Both rules below match Material's own active-state selectors
+ * exactly (same 3-class specificity), so loading after them is enough
+ * to win the tie and pin the first topic (site name) permanently
+ * visible and the second (page title) permanently hidden. */
+.md-header__title--active .md-header__topic:first-child {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  z-index: 0;
+}
+.md-header__title--active .md-header__topic + .md-header__topic {
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
 }
