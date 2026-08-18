@@ -69,19 +69,29 @@
 .gf-deep { color: var(--gf-deep); }
 
 /* The gap: two separate sources, both Material's own, neither ours.
- * `.md-header__title`'s default 1rem margin-left was the obvious one
- * and got tightened first — but `.md-logo` carries its own .2rem
- * margin + .4rem padding on every side (sized for a click target, not
- * a wordmark), which alone is still nearly a full character of space
+ * `.md-header__title`'s default margin-left was the obvious one and
+ * got tightened first — but `.md-logo` carries its own .2rem margin +
+ * .4rem padding on every side (sized for a click target, not a
+ * wordmark), which alone is still nearly a full character of space
  * on the logo's trailing edge. Zeroing just that edge (left/top/bottom
  * stay, so the click target and vertical centring are untouched) is
  * what actually closes it — .15rem alone on the title wasn't enough,
- * confirmed against the live page, not just reasoned about. */
+ * confirmed against the live page, not just reasoned about.
+ *
+ * A THIRD source, found only by inspecting computed styles (headless
+ * Chromium) rather than reasoning from the source CSS: Material ships
+ * `[dir="ltr"] .md-header__title { margin-left: 1rem; ... }`, and an
+ * attribute selector counts the same as a class for specificity — two
+ * selectors beats the one-class `.md-header__title` rule below no
+ * matter which stylesheet loads later. It kept computing to 20px
+ * (1rem) even after that rule was "overridden". Scoping under
+ * `.md-header` (two classes, matching that rule's specificity) is what
+ * actually wins the tie via load order. */
 .md-header .md-logo {
   margin-right: 0;
   padding-right: 0;
 }
-.md-header__title {
+.md-header .md-header__title {
   margin-left: 0;
 }
 .gf-title {
