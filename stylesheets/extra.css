@@ -1,0 +1,123 @@
+/* Gateflow wordmark — the "G" mark plus the "ateflow" title text that
+ * overrides/partials/logo.html, header.html, and nav.html render in
+ * place of Material's default logo + full site name.
+ *
+ * Background: the header itself, not just the mark. The console's own
+ * .topnav is a light/neutral surface (#fff / #2f2f2f dark), never a
+ * solid colour bar — the real two-tone blue mark is designed to sit on
+ * that, the way it does in the screenshot this is matching. Material's
+ * default header is a solid *primary*-colour bar instead (blue, here),
+ * and no colour chosen for the mark reads right against a background
+ * it wasn't designed for: painting the mark white (an earlier revision
+ * of this fix) traded "wrong colour" for "no colour", and neither
+ * looked like the actual brand.
+ *
+ * The right fix is scoped to the header, not a global palette change
+ * (this site's blue links/buttons/nav-tabs stay as they are) — Material
+ * computes the header's own background/text/icon colours from
+ * --md-primary-fg-color / --md-primary-bg-color, so redefining just
+ * those two custom properties on `.md-header` (they cascade to every
+ * descendant that reads them: search box, hamburger, source link,
+ * palette toggle) repaints the whole bar to match the console's
+ * surface/text tokens without touching anything outside it.
+ *
+ * With that in place the mark and title text go back to the console's
+ * actual --logo-accent/--logo-deep two-tone blues (app.css), because
+ * now they're sitting on the same kind of background those colours were
+ * designed for.
+ */
+
+.md-header {
+  --md-primary-fg-color: #ffffff;   /* console's light --surface */
+  --md-primary-bg-color: #0f172a;   /* console's light --text */
+}
+[data-md-color-scheme="slate"] .md-header {
+  --md-primary-fg-color: #2f2f2f;   /* console's dark --surface */
+  --md-primary-bg-color: #ececec;   /* console's dark --text */
+}
+/* Material draws a shadow under a non-transparent header on scroll;
+ * against a light bar that reads as a stray dark line rather than
+ * depth. The console's own .topnav uses a hairline border instead. */
+.md-header {
+  box-shadow: none;
+  border-bottom: 1px solid #e5e7eb;
+}
+[data-md-color-scheme="slate"] .md-header {
+  border-bottom: 1px solid #3f3f3f;
+}
+
+:root {
+  --gf-accent: #2e7dd1;
+  --gf-deep: #23528d;
+}
+[data-md-color-scheme="slate"] {
+  --gf-accent: #5aa8f0;
+  --gf-deep: #b8d4f5;
+}
+
+.gf-mark {
+  /* Matches Material's own logo slot sizing (the default icon there is
+   * 1.2rem); the mark's viewBox has its own side bearing built in, same
+   * as .brand-mark in the console. */
+  width: 1.2rem;
+  height: 1.2rem;
+}
+.gf-mark .lm-accent { fill: var(--gf-accent); }
+.gf-mark .lm-deep { fill: var(--gf-deep); }
+
+.gf-accent { color: var(--gf-accent); }
+.gf-deep { color: var(--gf-deep); }
+
+/* The gap: two separate sources, both Material's own, neither ours.
+ * `.md-header__title`'s default margin-left was the obvious one and
+ * got tightened first — but `.md-logo` carries its own .2rem margin +
+ * .4rem padding on every side (sized for a click target, not a
+ * wordmark), which alone is still nearly a full character of space
+ * on the logo's trailing edge. Zeroing just that edge (left/top/bottom
+ * stay, so the click target and vertical centring are untouched) is
+ * what actually closes it — .15rem alone on the title wasn't enough,
+ * confirmed against the live page, not just reasoned about.
+ *
+ * A THIRD source, found only by inspecting computed styles (headless
+ * Chromium) rather than reasoning from the source CSS: Material ships
+ * `[dir="ltr"] .md-header__title { margin-left: 1rem; ... }`, and an
+ * attribute selector counts the same as a class for specificity — two
+ * selectors beats the one-class `.md-header__title` rule below no
+ * matter which stylesheet loads later. It kept computing to 20px
+ * (1rem) even after that rule was "overridden". Scoping under
+ * `.md-header` (two classes, matching that rule's specificity) is what
+ * actually wins the tie via load order. */
+.md-header .md-logo {
+  margin-right: 0;
+  padding-right: 0;
+}
+.md-header .md-header__title {
+  /* Flush (0) actually touched the mark's curve — a wordmark needs the
+   * same small breathing room a letter would have next to another
+   * letter, just not Material's button-sized 1rem click-target gap. */
+  margin-left: .15rem;
+}
+.gf-title {
+  margin-left: .15rem;
+}
+
+/* Material swaps the visible title on scroll: the site name (what's
+ * rendered above) fades out and the current page's title ("Home",
+ * "Architecture", ...) fades in, via a `--active` class its own JS
+ * toggles on `.md-header__title`. Gateflow is a wordmark, not a
+ * breadcrumb — it should read the same regardless of scroll position.
+ * Both rules below match Material's own active-state selectors
+ * exactly (same 3-class specificity), so loading after them is enough
+ * to win the tie and pin the first topic (site name) permanently
+ * visible and the second (page title) permanently hidden. */
+.md-header__title--active .md-header__topic:first-child {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  z-index: 0;
+}
+.md-header__title--active .md-header__topic + .md-header__topic {
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
