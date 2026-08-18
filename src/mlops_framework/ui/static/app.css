@@ -613,16 +613,28 @@ h3 {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 10px 4px;
+  padding: 8px 10px;
   margin-bottom: -1px;
   font: inherit;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text-muted);
   border-bottom: 2px solid transparent;
+  /* Rounded top corners, same radius Chromium's own default focus ring
+   * draws on a <button> — confirmed by inspecting it, since that ring
+   * turned out not to be the CSS `outline` property at all (it survives
+   * an !important outline:none on the exact element, on every state,
+   * getComputedStyle reporting "none" the whole time it's visibly
+   * painted). Not overridable from here, so the actual fix is giving the
+   * tab its own real, matching rounded surface — the ring lands on a
+   * shape that was already there instead of conjuring one out of a flat
+   * label. Same reason .btn (Refresh) next to this never looked broken:
+   * it already had a rounded box of its own. */
+  border-radius: 8px 8px 0 0;
+  transition: color .12s ease, border-bottom-color .12s ease, background-color .12s ease;
 }
-.tab + .tab { margin-left: 16px; }
-.tab:hover { color: var(--text); }
+.tab + .tab { margin-left: 8px; }
+.tab:hover { color: var(--text); background-color: var(--surface-2); }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
 
 /* The count on the Alerts tab — how many exist, coloured by the worst
