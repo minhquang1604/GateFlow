@@ -3172,23 +3172,35 @@ function lineageIcon(type, small) {
   return span;
 }
 
-// The four anchor/control points for one edge's cubic bezier — shared
-// by the path draw and the label placement pass below so the label
-// always sits on the exact curve that got drawn, not a curve shaped
-// like it.
+// Orthogonal (Manhattan) routing — horizontal and vertical runs joined
+// at right angles, never a curve, the convention EDA schematic tools
+// (Quartus, KiCad, ...) draw wires in. A smooth bezier reads fine for
+// one edge in isolation but gets genuinely ambiguous in a dense fan —
+// which of several softly-curving lines is which stays a real question
+// right up until you trace one with a finger. A right-angle joint has
+// no such question: a wire is either running along this row or that
+// column, never something in between the two.
 //
-// Two shapes:
-// - Different columns (the common case): left-to-right, control points
-//   pinned to the horizontal midpoint between the two nodes — same
-//   curve every lineage graph has always drawn.
-// - Same column (`derived_from` between two dataset versions — the only
-//   edge left that connects two nodes of the same type, now that
+// Returns { points }: a polyline from source to target as [x, y]
+// pairs, shared by the path draw and the label-placement pass below so
+// a label always sits on the exact path that got drawn. Three shapes:
+// - Adjacent columns (the common case): out the source's right edge,
+//   one vertical jog at the horizontal midpoint, into the target's
+//   left edge.
+// - A skip edge (more than one column apart — every trained_with edge,
+//   now that RetrainingDecision sits between DatasetVersion and
+//   TrainingRun) whose straight path would run through a node sitting
+//   in a column in between: the same shape with an extra horizontal
+//   leg at a row clear of that node — above or below it, whichever
+//   side is already closer to this edge's own path, so the detour
+//   stays small rather than every such edge routing to the same side
+//   regardless of where it was headed.
+// - Same column (`derived_from` between two dataset versions — the
+//   only edge left connecting two nodes of the same type, now that
 //   RetrainingDecision has its own column; see LINEAGE_TYPE_COLUMN): a
-//   same-rank edge has nowhere to the side to run through, so it bows
-//   out to the right of the column instead — exits and re-enters each
-//   node's right edge, arcing through a point past both nodes rather
-//   than between them. Reads as "loops back into this lane," not as a
-//   normal downstream hop.
+//   same-rank edge has nowhere to the side to run through, so it exits
+//   and re-enters the node's own right edge — a loop out and back,
+//   square-cornered instead of a bow.
 function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const from = pos.get(e.source), to = pos.get(e.target);
   if (colOf.get(e.source) === colOf.get(e.target)) {
@@ -3198,36 +3210,23 @@ function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
     // that node already uses (trained_with, authorized, ...) — a node
     // fanning out to several targets is supposed to share one point.
     // `to` is always playing *incoming*, and gets a second, offset
-    // point reserved for that role. The previous version offset both
-    // ends by the same amount, which fixed the fan-out case but not
-    // this one: a node that is the source of one same-column edge and
-    // the target of another (a DatasetVersion with both an incoming
-    // derived_from and an outgoing evaluated_by, say) still put its own
-    // incoming and outgoing edges on the same pixel — just a different
-    // pixel than before. Splitting by role, not by edge, is what
-    // actually guarantees "everything out of a node lands on one point,
-    // everything into it lands on another" for every node, same-column
-    // neighbour or not.
+    // point reserved for that role, so a node that is both a
+    // same-column source and a same-column target (a DatasetVersion
+    // with an incoming derived_from and an outgoing evaluated_by, say)
+    // never puts its own incoming and outgoing edges on the same pixel.
     const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H * 0.82;
     const x1 = from.x + NODE_W, x2 = to.x + NODE_W;
     const bowX = Math.max(x1, x2) + 64;
-    return { x1, y1, x2, y2, c1x: bowX, c1y: y1, c2x: bowX, c2y: y2 };
+    return { points: [[x1, y1], [bowX, y1], [bowX, y2], [x2, y2]] };
   }
   const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H / 2;
   const x1 = from.x + NODE_W, x2 = to.x;
   const midX = (x1 + x2) / 2;
 
-  // A skip edge (more than one column apart — every trained_with edge,
-  // now that RetrainingDecision sits between DatasetVersion and
-  // TrainingRun) can have another node sitting in a column it passes
-  // over. The default curve here stays within the [y1, y2] band the
-  // whole way across (both control points pinned to an endpoint's own
-  // y), so an obstruction's card — opaque, painted above the SVG —
-  // swallows whatever part of the edge would have crossed behind it.
-  // Detouring above or below that node's row, whichever side is
-  // already closer to this edge's own path, keeps the detour small
-  // instead of routing every such edge to the same side regardless of
-  // where it was headed.
+  // A skip edge can have another node sitting in a column it passes
+  // over. The default route here stays within the [y1, y2] band the
+  // whole way across, so an obstruction's card — opaque, painted above
+  // the SVG — would sit right on top of the straight run through it.
   const lo = Math.min(colOf.get(e.source), colOf.get(e.target));
   const hi = Math.max(colOf.get(e.source), colOf.get(e.target));
   if (hi - lo > 1) {
@@ -3247,11 +3246,37 @@ function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
       const detourY = midY <= (blocked.top + blocked.bottom) / 2
         ? blocked.top - clearance
         : blocked.bottom + clearance;
-      return { x1, y1, x2, y2, c1x: midX, c1y: detourY, c2x: midX, c2y: detourY };
+      const xa = x1 + (x2 - x1) / 3, xb = x1 + (2 * (x2 - x1)) / 3;
+      return { points: [[x1, y1], [xa, y1], [xa, detourY], [xb, detourY], [xb, y2], [x2, y2]] };
     }
   }
 
-  return { x1, y1, x2, y2, c1x: midX, c1y: y1, c2x: midX, c2y: y2 };
+  return { points: [[x1, y1], [midX, y1], [midX, y2], [x2, y2]] };
+}
+
+// A point at fraction `t` (0..1) of the total length along a polyline
+// — the orthogonal-routing equivalent of De Casteljau on a bezier,
+// used the same way: to place an edge's label somewhere along the
+// exact path that got drawn, whatever shape it turned out to be (a
+// plain two-bend hop, a wide detour, a same-column loop).
+function polylinePointAt(points, t) {
+  const segLens = [];
+  let total = 0;
+  for (let i = 1; i < points.length; i++) {
+    segLens.push(Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
+    total += segLens[segLens.length - 1];
+  }
+  let remaining = t * total;
+  for (let i = 0; i < segLens.length; i++) {
+    if (remaining <= segLens[i] || i === segLens.length - 1) {
+      const f = segLens[i] ? Math.min(1, remaining / segLens[i]) : 0;
+      const [x1, y1] = points[i], [x2, y2] = points[i + 1];
+      return { x: x1 + (x2 - x1) * f, y: y1 + (y2 - y1) * f };
+    }
+    remaining -= segLens[i];
+  }
+  const [lx, ly] = points[points.length - 1];
+  return { x: lx, y: ly };
 }
 
 // The node-link graph itself: positions come straight from
@@ -3306,24 +3331,24 @@ function renderLineageGraph(nodes, edges, rootId) {
   const validEdges = edges.filter((e) => pos.has(e.source) && pos.has(e.target));
   for (const e of validEdges) {
     const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
+    const d = g.points.map((p, i) => `${i === 0 ? "M" : "L"}${p[0]},${p[1]}`).join(" ");
     svg.appendChild(svgEl("path", {
-      class: "lineage-edge", d: `M${g.x1},${g.y1} C${g.c1x},${g.c1y} ${g.c2x},${g.c2y} ${g.x2},${g.y2}`,
-      fill: "none", "marker-end": "url(#lineage-arrow)",
+      class: "lineage-edge", d, fill: "none", "marker-end": "url(#lineage-arrow)",
     }));
   }
 
   // Labels, drawn in a second pass and in two stages:
   //
-  // 1. Every edge between the same pair of columns shares one curve
-  //    shape (both control points sit on that gap's centre line), so at
-  //    the curve's true midpoint — where a single-pass version would
+  // 1. Every edge between the same pair of columns shares one route
+  //    shape (both jogs sit on that gap's own midpoint/detour line), so
+  //    at the path's true midpoint — where a single-pass version would
   //    always place the label — a fan of 3+ edges between the same two
   //    columns (exactly what dataset-version=5's TrainingRun/
   //    ModelVersion fan produces) piles every label into the same few
   //    pixels. Grouping by column-pair and spreading each group across
   //    a range of t instead of pinning all of them to t=0.5 moves the
-  //    point *along* the bezier (De Casteljau), which shifts x as well
-  //    as y — labels drift toward whichever end of the curve their row
+  //    point *along* the path (polylinePointAt), which shifts x as well
+  //    as y — labels drift toward whichever end of the route their row
   //    has more separation, rather than collapsing at dead centre.
   // 2. That still leaves the rarer cross-group case — an edge from a
   //    different column pair whose t-shifted point happens to land on
@@ -3344,9 +3369,7 @@ function renderLineageGraph(nodes, edges, rootId) {
     group.forEach((e, i) => {
       const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
       const t = n === 1 ? 0.5 : 0.3 + (0.4 * i) / (n - 1);
-      const mt = 1 - t;
-      const x = mt ** 3 * g.x1 + 3 * mt * mt * t * g.c1x + 3 * mt * t * t * g.c2x + t ** 3 * g.x2;
-      const y = mt ** 3 * g.y1 + 3 * mt * mt * t * g.c1y + 3 * mt * t * t * g.c2y + t ** 3 * g.y2;
+      const { x, y } = polylinePointAt(g.points, t);
       const text = e.type.replace(/_/g, " ");
       labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
     });
