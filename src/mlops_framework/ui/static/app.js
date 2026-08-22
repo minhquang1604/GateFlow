@@ -3281,31 +3281,6 @@ function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   return { points: [[x1, y1], [midX, y1], [midX, y2], [x2, y2]] };
 }
 
-// A point at fraction `t` (0..1) of the total length along a polyline
-// — the orthogonal-routing equivalent of De Casteljau on a bezier,
-// used the same way: to place an edge's label somewhere along the
-// exact path that got drawn, whatever shape it turned out to be (a
-// plain two-bend hop, a wide detour, a same-column loop).
-function polylinePointAt(points, t) {
-  const segLens = [];
-  let total = 0;
-  for (let i = 1; i < points.length; i++) {
-    segLens.push(Math.hypot(points[i][0] - points[i - 1][0], points[i][1] - points[i - 1][1]));
-    total += segLens[segLens.length - 1];
-  }
-  let remaining = t * total;
-  for (let i = 0; i < segLens.length; i++) {
-    if (remaining <= segLens[i] || i === segLens.length - 1) {
-      const f = segLens[i] ? Math.min(1, remaining / segLens[i]) : 0;
-      const [x1, y1] = points[i], [x2, y2] = points[i + 1];
-      return { x: x1 + (x2 - x1) * f, y: y1 + (y2 - y1) * f };
-    }
-    remaining -= segLens[i];
-  }
-  const [lx, ly] = points[points.length - 1];
-  return { x: lx, y: ly };
-}
-
 // The node-link graph itself: positions come straight from
 // (column, row) on a fixed grid via lineageLevels(), same approach as
 // renderDagGraph, with one SVG overlay drawing an arrowed, labelled
@@ -3366,40 +3341,42 @@ function renderLineageGraph(nodes, edges, rootId) {
 
   // Labels, drawn in a second pass and in two stages:
   //
-  // 1. Every edge between the same pair of columns shares one route
-  //    shape (both jogs sit on that gap's own midpoint/detour line), so
-  //    at the path's true midpoint — where a single-pass version would
-  //    always place the label — a fan of 3+ edges between the same two
-  //    columns (exactly what dataset-version=5's TrainingRun/
-  //    ModelVersion fan produces) piles every label into the same few
-  //    pixels. Grouping by column-pair and spreading each group across
-  //    a range of t instead of pinning all of them to t=0.5 moves the
-  //    point *along* the path (polylinePointAt), which shifts x as well
-  //    as y — labels drift toward whichever end of the route their row
-  //    has more separation, rather than collapsing at dead centre.
-  // 2. That still leaves the rarer cross-group case — an edge from a
-  //    different column pair whose t-shifted point happens to land on
-  //    top of someone else's (a long Model->ModelVersion "has version"
-  //    edge crossing paths with a short "trained with" one, say) — so
+  // 1. Anchor each label to its own edge's last vertical run — the leg
+  //    closest to the target, after the path has actually turned toward
+  //    wherever *this* edge is going. A fan of edges sharing a source
+  //    (one dataset version trained_with four different runs) shares
+  //    that source's whole first leg too, right down to the pixel, so
+  //    anchoring anywhere on it piles every one of those labels into
+  //    the same small cluster regardless of how the group as a whole
+  //    gets spread out — confirmed against the live graph: four
+  //    "trained with" tags stacked edge-to-edge a few px apart, right
+  //    where the lines hadn't yet diverged. The last vertical leg has
+  //    no such problem: it runs at each edge's own target row, which is
+  //    exactly the one thing that's different between them.
+  // 2. That still leaves the rarer case of two edges whose last legs
+  //    land close regardless (two targets one row apart, say) — so
   //    every placed label is checked against every earlier one by
   //    simple box overlap and nudged vertically until clear. An opaque
   //    pill behind the text (not just a stroke halo) keeps whatever
   //    overlap survives both passes from reading as a smear.
-  const groups = new Map();
-  for (const e of validEdges) {
-    const key = `${colOf.get(e.source)}>${colOf.get(e.target)}`;
-    (groups.get(key) || groups.set(key, []).get(key)).push(e);
+  function edgeLabelAnchor(points) {
+    for (let i = points.length - 1; i > 0; i--) {
+      const [ax, ay] = points[i - 1], [bx, by] = points[i];
+      if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > 0.5) {
+        return { x: ax, y: (ay + by) / 2 };
+      }
+    }
+    // No vertical leg at all (source and target share a row) — the
+    // last leg's own midpoint is the closest equivalent.
+    const [ax, ay] = points[points.length - 2], [bx, by] = points[points.length - 1];
+    return { x: (ax + bx) / 2, y: (ay + by) / 2 };
   }
   const labels = [];
-  for (const group of groups.values()) {
-    const n = group.length;
-    group.forEach((e, i) => {
-      const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
-      const t = n === 1 ? 0.5 : 0.3 + (0.4 * i) / (n - 1);
-      const { x, y } = polylinePointAt(g.points, t);
-      const text = e.type.replace(/_/g, " ");
-      labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
-    });
+  for (const e of validEdges) {
+    const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
+    const { x, y } = edgeLabelAnchor(g.points);
+    const text = e.type.replace(/_/g, " ");
+    labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
   }
   const placedBoxes = [];
   for (const lb of labels) {
