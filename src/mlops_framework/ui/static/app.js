@@ -2959,23 +2959,25 @@ async function renderLineagePicker(out) {
 // branches of one story. Same type, same column, fixes that outright.
 const LINEAGE_TYPE_COLUMN = {
   DatasetVersion: 0,
-  // Shares the dataset column rather than taking one of its own between
-  // the data and the run — the one exception to "same type, same
-  // column" above, and measured rather than guessed. Giving the
-  // decision its own column is where it sits *causally*, but it forces
-  // every `trained_with` edge to span two columns and sweep straight
-  // through the decision lane: on the demo's own graph that was 6
-  // column-skipping edges and 7.3k px of total edge length, against 1
-  // and 4.4k px here, with the graph a column narrower. Reading it as
-  // an annotation *on the data* — which is exactly what `evaluated_by`
-  // says — also costs nothing semantically: the decision's own edges to
-  // the run and model version still carry the causal direction, and a
-  // blocked decision still renders with nothing to its right, the
-  // visible dead end that is the whole point of drawing it.
-  RetrainingDecision: 0,
-  TrainingRun: 1,
-  ModelVersion: 2,
-  ServingInstance: 3,
+  // Its own column, where it sits causally, between the data it
+  // evaluated and the run it did or didn't authorise. A prior version
+  // of this graph folded it into the dataset column instead — measured
+  // as fewer column-skipping trained_with edges and less total edge
+  // length on the demo's own graph — but it meant every one of a
+  // decision's edges (an incoming evaluated_by *and* an outgoing
+  // authorized/promoted/rejected) shared a lane with the dataset's own
+  // edges. Two rounds of separating those edges' attachment points
+  // (see lineageEdgeGeometry) made the direction of each individually
+  // readable; it never stopped looking like a tangle at a glance, which
+  // is the thing a lineage graph actually has to be. A trained_with
+  // edge skipping over this column now draws exactly like any other
+  // multi-column hop elsewhere in this graph — a shape already legible
+  // everywhere else it appears — rather than the bespoke same-lane bow
+  // this column used to force just for evaluated_by.
+  RetrainingDecision: 1,
+  TrainingRun: 2,
+  ModelVersion: 3,
+  ServingInstance: 4,
 };
 
 function lineageLevels(nodes, edges) {
@@ -3015,9 +3017,8 @@ function lineageLevels(nodes, edges) {
 // Four passes is well past the point this size of graph stops changing.
 //
 // Same-column edges are excluded: `derived_from` between two dataset
-// versions, and now `evaluated_by` from a dataset version to a decision
-// sharing its column, say nothing about vertical order *between* columns
-// and would only make the sweep oscillate.
+// versions says nothing about vertical order *between* columns (both
+// ends are in the same one) and would only make the sweep oscillate.
 function orderByBarycentre(columns, edges) {
   if (columns.length < 2) return columns;
   const colOf = new Map();
@@ -3180,13 +3181,14 @@ function lineageIcon(type, small) {
 // - Different columns (the common case): left-to-right, control points
 //   pinned to the horizontal midpoint between the two nodes — same
 //   curve every lineage graph has always drawn.
-// - Same column (`derived_from` between two dataset versions, and
-//   `evaluated_by` from a dataset version to a decision sharing its
-//   column — see LINEAGE_TYPE_COLUMN): a same-rank edge has nowhere to the side to
-//   run through, so it bows out to the right of the column instead —
-//   exits and re-enters each node's right edge, arcing through a
-//   point past both nodes rather than between them. Reads as "loops
-//   back into this lane," not as a normal downstream hop.
+// - Same column (`derived_from` between two dataset versions — the only
+//   edge left that connects two nodes of the same type, now that
+//   RetrainingDecision has its own column; see LINEAGE_TYPE_COLUMN): a
+//   same-rank edge has nowhere to the side to run through, so it bows
+//   out to the right of the column instead — exits and re-enters each
+//   node's right edge, arcing through a point past both nodes rather
+//   than between them. Reads as "loops back into this lane," not as a
+//   normal downstream hop.
 function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const from = pos.get(e.source), to = pos.get(e.target);
   if (colOf.get(e.source) === colOf.get(e.target)) {
