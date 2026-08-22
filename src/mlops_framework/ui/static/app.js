@@ -3231,21 +3231,48 @@ function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const hi = Math.max(colOf.get(e.source), colOf.get(e.target));
   if (hi - lo > 1) {
     const rowLo = Math.min(y1, y2), rowHi = Math.max(y1, y2);
-    let blocked = null, blockedDist = Infinity;
+    // The *combined* span of every obstructing node, not just the
+    // nearest one — a `promoted`/`rejected` edge from RetrainingDecision
+    // straight to a ModelVersion skips the entire TrainingRun column,
+    // several rows at once, not just whichever run happens to sit
+    // closest to this edge's own midpoint. Routing around only that one
+    // still ran straight through the others (confirmed against the
+    // live graph: a stray line grazing a training run's card that this
+    // edge has nothing to do with). Detouring past the full min-top/
+    // max-bottom extent of everything in the way clears all of them in
+    // one move, the same way a real schematic routes a signal around an
+    // entire block of components rather than weaving between them.
+    // NODE_H (64) is the *layout* grid unit ROW_H is spaced around, not
+    // the real rendered height of a card once its icon, type, label and
+    // meta badge are all stacked — measured against the live graph,
+    // that's 91-110px, not 64. Sizing the obstruction box off the
+    // layout constant instead of the real one is exactly what let a
+    // detour compute as "clear" while still running behind an actual
+    // card: 22px past a 64px box landed inside a 94px-tall one.
+    // OB_HALF_H is a deliberately generous stand-in for "half the real
+    // height of whatever this turns out to be," centred on the same
+    // point (p.y + NODE_H / 2) the layout already treats as this node's
+    // middle — this function has no access to the DOM to measure the
+    // actual box, so a fixed constant with real headroom is the
+    // practical fix, not a regression waiting to happen the next time
+    // a card grows a line.
+    const OB_HALF_H = 60;
+    let obTop = null, obBottom = null;
     for (const [id, p] of pos) {
       const c = colOf.get(id);
       if (c === undefined || c <= lo || c >= hi) continue;
-      const top = p.y, bottom = p.y + NODE_H;
+      const centerY = p.y + NODE_H / 2;
+      const top = centerY - OB_HALF_H, bottom = centerY + OB_HALF_H;
       if (bottom < rowLo || top > rowHi) continue; // this node's row is clear of this edge's span
-      const dist = Math.abs((top + bottom) / 2 - (y1 + y2) / 2);
-      if (dist < blockedDist) { blocked = { top, bottom }; blockedDist = dist; }
+      obTop = obTop === null ? top : Math.min(obTop, top);
+      obBottom = obBottom === null ? bottom : Math.max(obBottom, bottom);
     }
-    if (blocked) {
-      const clearance = 22;
+    if (obTop !== null) {
+      const clearance = 20;
       const midY = (y1 + y2) / 2;
-      const detourY = midY <= (blocked.top + blocked.bottom) / 2
-        ? blocked.top - clearance
-        : blocked.bottom + clearance;
+      const detourY = midY <= (obTop + obBottom) / 2
+        ? obTop - clearance
+        : obBottom + clearance;
       const xa = x1 + (x2 - x1) / 3, xb = x1 + (2 * (x2 - x1)) / 3;
       return { points: [[x1, y1], [xa, y1], [xa, detourY], [xb, detourY], [xb, y2], [x2, y2]] };
     }
