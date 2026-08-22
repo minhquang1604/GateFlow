@@ -3079,7 +3079,9 @@ function lineageNodeMeta(n) {
     // its own span gives *that* box the ordinary block/inline-block
     // overflow context ellipsis actually needs; the CSS lives in
     // app.css next to the .meta .badge rule this is scoped under.
-    return el("span", { class: `badge ${statusKind(a.outcome)}` },
+    // `title` puts the untruncated string back one hover away — the
+    // ellipsis above trims what's shown, not what's known.
+    return el("span", { class: `badge ${statusKind(a.outcome)}`, title: String(label || "—") },
       el("span", { class: "badge-text" }, String(label || "—")));
   }
   if (n.type === "TrainingRun" && a.status) return statusBadge(a.status);
@@ -3188,17 +3190,23 @@ function lineageIcon(type, small) {
 function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const from = pos.get(e.source), to = pos.get(e.target);
   if (colOf.get(e.source) === colOf.get(e.target)) {
-    // A dedicated hub, low on the right edge rather than dead centre —
-    // the generic cross-column hub below sits at exactly that centre
-    // point on every node, for both a node's incoming and its outgoing
-    // edges (the arrowhead of one and the tail of the next land on the
-    // same pixel, which is exactly what made a same-column node's two
-    // directions unreadable: RetrainingDecision's incoming evaluated_by
-    // and outgoing authorized, or a DatasetVersion's incoming
-    // derived_from and outgoing trained_with, drew as what looked like
-    // one bidirectional line). Offsetting this lane's hub is what keeps
-    // it from ever landing on that same point.
-    const y1 = from.y + NODE_H * 0.78, y2 = to.y + NODE_H * 0.78;
+    // Two hubs per node, not two per column-pair: `from` is always
+    // playing the *outgoing* role for this edge, so it uses the exact
+    // same centre-of-right-edge point every other outgoing edge off
+    // that node already uses (trained_with, authorized, ...) — a node
+    // fanning out to several targets is supposed to share one point.
+    // `to` is always playing *incoming*, and gets a second, offset
+    // point reserved for that role. The previous version offset both
+    // ends by the same amount, which fixed the fan-out case but not
+    // this one: a node that is the source of one same-column edge and
+    // the target of another (a DatasetVersion with both an incoming
+    // derived_from and an outgoing evaluated_by, say) still put its own
+    // incoming and outgoing edges on the same pixel — just a different
+    // pixel than before. Splitting by role, not by edge, is what
+    // actually guarantees "everything out of a node lands on one point,
+    // everything into it lands on another" for every node, same-column
+    // neighbour or not.
+    const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H * 0.82;
     const x1 = from.x + NODE_W, x2 = to.x + NODE_W;
     const bowX = Math.max(x1, x2) + 64;
     return { x1, y1, x2, y2, c1x: bowX, c1y: y1, c2x: bowX, c2y: y2 };
