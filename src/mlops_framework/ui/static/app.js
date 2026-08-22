@@ -3356,19 +3356,71 @@ function renderLineageGraph(nodes, edges, rootId) {
       }, svgEl("path", { d: "M0,0 L8,4 L0,8 z", class: "lineage-edge-arrow" }))));
 
   const validEdges = edges.filter((e) => pos.has(e.source) && pos.has(e.target));
-  for (const e of validEdges) {
-    const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
-    const d = g.points.map((p, i) => `${i === 0 ? "M" : "L"}${p[0]},${p[1]}`).join(" ");
+  const geoms = validEdges.map((e) => lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H));
+
+  // Two orthogonal wires crossing on the page read as ambiguous —
+  // "did these join, or did they just happen to cross?" — the one
+  // question this graph never actually has an answer of "joined" for:
+  // every edge here is its own independent source-to-target run: none
+  // of them share a segment or terminate mid-path into another one.
+  // Schematic tools resolve exactly this ambiguity with a small hop —
+  // one wire jumps clear over the other rather than drawing through it
+  // — and that convention is what's missing here, not a routing bug:
+  // the lines are exactly where they should be, they just look like
+  // junctions where two happen to cross. Only horizontal legs get the
+  // hop (collected from every OTHER edge's vertical legs) — the
+  // reverse case, a vertical leg crossing a horizontal one, never
+  // actually arises in this layout (verticals only ever run inside a
+  // column's own jog; two edges' horizontals only ever meet at a
+  // shared row, which the row-hub work three commits back already
+  // keeps from happening on the same pixel).
+  const verticals = [];
+  geoms.forEach((g, ei) => {
+    for (let i = 1; i < g.points.length; i++) {
+      const [ax, ay] = g.points[i - 1], [bx, by] = g.points[i];
+      if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > 0.5) {
+        verticals.push({ x: ax, y1: Math.min(ay, by), y2: Math.max(ay, by), ei });
+      }
+    }
+  });
+
+  const HOP_R = 6;
+  function horizontalWithHops(x1, y, x2, ei) {
+    const dir = x2 >= x1 ? 1 : -1;
+    const lo = Math.min(x1, x2), hi = Math.max(x1, x2);
+    const hops = verticals
+      .filter((v) => v.ei !== ei && v.x > lo + HOP_R * 2 && v.x < hi - HOP_R * 2
+        && v.y1 < y - 1 && v.y2 > y + 1)
+      .map((v) => v.x)
+      .sort((a, b) => (a - b) * dir);
+    let d = "", cur = x1;
+    for (const hx of hops) {
+      const before = hx - dir * HOP_R, after = hx + dir * HOP_R;
+      d += `L${before},${y} A${HOP_R},${HOP_R} 0 0 ${dir > 0 ? 1 : 0} ${after},${y} `;
+      cur = after;
+    }
+    return d + `L${x2},${y}`;
+  }
+
+  geoms.forEach((g, ei) => {
+    let d = `M${g.points[0][0]},${g.points[0][1]}`;
+    for (let i = 1; i < g.points.length; i++) {
+      const [ax, ay] = g.points[i - 1], [bx, by] = g.points[i];
+      d += " " + (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) > 0.5
+        ? horizontalWithHops(ax, ay, bx, ei)
+        : `L${bx},${by}`);
+    }
     svg.appendChild(svgEl("path", {
       class: "lineage-edge", d, fill: "none", "marker-end": "url(#lineage-arrow)",
     }));
-  }
+  });
 
   // Labels, drawn in a second pass and in two stages:
   //
-  // 1. Anchor each label to its own edge's last vertical run — the leg
-  //    closest to the target, after the path has actually turned toward
-  //    wherever *this* edge is going. A fan of edges sharing a source
+  // 1. Anchor each label to its own edge's last horizontal run — the
+  //    leg closest to the target, after the path has actually turned
+  //    toward wherever *this* edge is going. A fan of edges sharing a
+  //    source
   //    (one dataset version trained_with four different runs) shares
   //    that source's whole first leg too, right down to the pixel, so
   //    anchoring anywhere on it piles every one of those labels into
@@ -3401,12 +3453,11 @@ function renderLineageGraph(nodes, edges, rootId) {
     return { x: (ax + bx) / 2, y: (ay + by) / 2 };
   }
   const labels = [];
-  for (const e of validEdges) {
-    const g = lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H);
+  geoms.forEach((g, ei) => {
     const { x, y } = edgeLabelAnchor(g.points);
-    const text = e.type.replace(/_/g, " ");
+    const text = validEdges[ei].type.replace(/_/g, " ");
     labels.push({ x, y, w: text.length * 5.6 + 10, h: 14, text });
-  }
+  });
   const placedBoxes = [];
   for (const lb of labels) {
     let y = lb.y, dir = 1, step = 0, box;
