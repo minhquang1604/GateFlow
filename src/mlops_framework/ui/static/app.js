@@ -3216,6 +3216,41 @@ function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H / 2;
   const x1 = from.x + NODE_W, x2 = to.x;
   const midX = (x1 + x2) / 2;
+
+  // A skip edge (more than one column apart — every trained_with edge,
+  // now that RetrainingDecision sits between DatasetVersion and
+  // TrainingRun) can have another node sitting in a column it passes
+  // over. The default curve here stays within the [y1, y2] band the
+  // whole way across (both control points pinned to an endpoint's own
+  // y), so an obstruction's card — opaque, painted above the SVG —
+  // swallows whatever part of the edge would have crossed behind it.
+  // Detouring above or below that node's row, whichever side is
+  // already closer to this edge's own path, keeps the detour small
+  // instead of routing every such edge to the same side regardless of
+  // where it was headed.
+  const lo = Math.min(colOf.get(e.source), colOf.get(e.target));
+  const hi = Math.max(colOf.get(e.source), colOf.get(e.target));
+  if (hi - lo > 1) {
+    const rowLo = Math.min(y1, y2), rowHi = Math.max(y1, y2);
+    let blocked = null, blockedDist = Infinity;
+    for (const [id, p] of pos) {
+      const c = colOf.get(id);
+      if (c === undefined || c <= lo || c >= hi) continue;
+      const top = p.y, bottom = p.y + NODE_H;
+      if (bottom < rowLo || top > rowHi) continue; // this node's row is clear of this edge's span
+      const dist = Math.abs((top + bottom) / 2 - (y1 + y2) / 2);
+      if (dist < blockedDist) { blocked = { top, bottom }; blockedDist = dist; }
+    }
+    if (blocked) {
+      const clearance = 22;
+      const midY = (y1 + y2) / 2;
+      const detourY = midY <= (blocked.top + blocked.bottom) / 2
+        ? blocked.top - clearance
+        : blocked.bottom + clearance;
+      return { x1, y1, x2, y2, c1x: midX, c1y: detourY, c2x: midX, c2y: detourY };
+    }
+  }
+
   return { x1, y1, x2, y2, c1x: midX, c1y: y1, c2x: midX, c2y: y2 };
 }
 
