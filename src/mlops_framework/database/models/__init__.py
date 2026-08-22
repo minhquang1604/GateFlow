@@ -50,6 +50,10 @@ from mlops_framework.database.models.readiness_evaluation import (
     ReadinessEvaluation,
     ReadinessStatus,
 )
+from mlops_framework.database.models.retraining_decision import (
+    RetrainingDecision,
+    RetrainingOutcomeStatus,
+)
 from mlops_framework.database.models.schedule import Schedule
 from mlops_framework.database.models.serving_instance import ServingInstance
 from mlops_framework.database.models.training_run import (
@@ -76,6 +80,8 @@ __all__ = [
     "ReadinessCheckOutcome",
     "ReadinessEvaluation",
     "ReadinessStatus",
+    "RetrainingDecision",
+    "RetrainingOutcomeStatus",
     "RunStatus",
     "Schedule",
     "ServingInstance",

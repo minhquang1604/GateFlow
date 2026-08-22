@@ -1247,6 +1247,7 @@ details[open] > summary:before { transform: rotate(90deg); }
  * label since (see LineageManager's module docstring), so only four
  * lineage types remain. */
 .lineage-node.DatasetVersion { border-left: 3px solid var(--run); }
+.lineage-node.RetrainingDecision { border-left: 3px solid var(--series-7); }
 .lineage-node.TrainingRun { border-left: 3px solid var(--warn); }
 .lineage-node.ModelVersion { border-left: 3px solid var(--violet); }
 .lineage-node.ServingInstance { border-left: 3px solid var(--ok); }
@@ -1313,6 +1314,7 @@ details[open] > summary:before { transform: rotate(90deg); }
 .icon-chip.family-task { color: var(--run); background: var(--run-bg); }
 .icon-chip.family-model { color: var(--series-4); background: color-mix(in srgb, var(--series-4) 20%, var(--surface)); }
 .icon-chip.family-serving { color: var(--idle); background: var(--idle-bg); }
+.icon-chip.family-governance { color: var(--series-7); background: color-mix(in srgb, var(--series-7) 16%, var(--surface)); }
 
 .lineage-canvas { position: relative; }
 
@@ -1353,6 +1355,7 @@ details[open] > summary:before { transform: rotate(90deg); }
  * third class rather than relying on this block staying below them in
  * the file. */
 .lineage-graph .lineage-node.DatasetVersion,
+.lineage-graph .lineage-node.RetrainingDecision,
 .lineage-graph .lineage-node.TrainingRun,
 .lineage-graph .lineage-node.ModelVersion,
 .lineage-graph .lineage-node.ServingInstance {
@@ -1364,6 +1367,30 @@ details[open] > summary:before { transform: rotate(90deg); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* .badge is nowrap by design (app.css §7) — right for a short fixed
+ * vocabulary like SUCCESS/FAILED/CANDIDATE, wrong for
+ * RetrainingDecision's badge, whose text is a live blocked_at_step name
+ * ("blocked: promotion") with no length ceiling. Unconstrained, that
+ * text ignored the 208px node width entirely and ran past the card's
+ * own border into the canvas behind it. max-width caps the badge to
+ * whatever room .meta actually has (the icon chip + gap already
+ * narrowed that, same box .label truncates into above); the ellipsis
+ * itself lives on .badge-text, not .badge — .badge is
+ * `display: inline-flex` (the status dot is a sibling flex item), and
+ * text-overflow does not reliably ellipsis a flex item's overflow, only
+ * hard-clips it with no "…" cue. Giving the text its own inline-block
+ * box is what makes the "…" actually appear. */
+.lineage-graph .lineage-node .meta { min-width: 0; }
+.lineage-graph .lineage-node .meta .badge { max-width: 100%; min-width: 0; }
+.lineage-graph .lineage-node .meta .badge-text {
+  display: inline-block;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 .lineage-graph .lineage-node.root {
   border-color: var(--accent-border);
@@ -1452,6 +1479,7 @@ details[open] > summary:before { transform: rotate(90deg); }
 .lineage-minimap-node.family-task { fill: var(--run); }
 .lineage-minimap-node.family-model { fill: var(--series-4); }
 .lineage-minimap-node.family-serving { fill: var(--idle); }
+.lineage-minimap-node.family-governance { fill: var(--series-7); }
 .lineage-minimap-viewport {
   position: absolute;
   border: 1.5px solid var(--accent);

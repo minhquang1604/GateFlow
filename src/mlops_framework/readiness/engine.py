@@ -121,6 +121,15 @@ class ReadinessResult:
     dataset_version_id: int
     evaluated_at: datetime
     observed_row_count: int
+    # Primary key of the ReadinessEvaluation row this result was
+    # persisted as. Set by :meth:`ReadinessEngine.evaluate` after the
+    # flush; ``None`` on a result that was built but never stored (only
+    # happens in tests that construct one directly). Carried so that a
+    # caller holding the result — RetrainingWorkflow — can reference the
+    # stored evaluation by foreign key instead of re-querying for "the
+    # most recent row for this dataset version" and hoping it is the
+    # same one.
+    evaluation_id: int | None = None
 
     @property
     def is_ready(self) -> bool:
@@ -136,6 +145,7 @@ class ReadinessResult:
             "reasons": list(self.reasons),
             "checks": self.check_dict(),
             "dataset_version_id": self.dataset_version_id,
+            "evaluation_id": self.evaluation_id,
             "evaluated_at": self.evaluated_at.isoformat(),
             "observed_row_count": self.observed_row_count,
         }
@@ -216,7 +226,7 @@ class ReadinessEngine:
             observed_row_count=dataset_version.row_count,
         )
 
-        self._persist(result, dataset_version)
+        result.evaluation_id = self._persist(result, dataset_version).id
         return result
 
     def get_evaluations(

@@ -118,6 +118,12 @@ class DriftResult:
     feature_results: list[FeatureDrift] = field(default_factory=list)
     method_summary: dict[str, int] = field(default_factory=dict)
     notes: str = ""
+    # Primary key of the DriftEvaluation row this verdict was persisted
+    # as — see the same field on ReadinessResult for why. ``None`` when
+    # the verdict came from :class:`DriftDetector` directly rather than
+    # through :class:`DriftService`, which is the only one of the two
+    # that writes to the database.
+    evaluation_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -125,6 +131,7 @@ class DriftResult:
             "score": self.score,
             "method": self.method,
             "threshold": self.threshold,
+            "evaluation_id": self.evaluation_id,
             "feature_results": [
                 {
                     "feature": f.feature,
@@ -460,6 +467,10 @@ class DriftService:
         )
         self._session.add(row)
         self._session.flush()
+        # After the flush, so ``row.id`` is populated — and after
+        # ``details_json`` was serialized above, which is deliberate: the
+        # stored blob describes the verdict, not the row wrapping it.
+        result.evaluation_id = row.id
         return result
 
     def get_evaluations(

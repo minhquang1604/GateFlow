@@ -39,6 +39,32 @@ Two arrows converging on the same node from overlapping sources read as
 noise, not as two facts — dropped, in favour of the one path that is
 actually true: a model version is trained *via* a run, never directly.
 
+Governance decisions are nodes too
+-----------------------------------
+The chain above answers *what* produced an artifact. It cannot answer
+*why the artifact was allowed to exist* — and for a framework whose
+whole claim is governed retraining, that was the more important of the
+two questions to leave unanswered. A ``RetrainingDecision`` (migration
+012) is one execution of ``RetrainingWorkflow``: the readiness, drift,
+eligibility, approval and promotion verdicts taken as a unit. It enters
+the graph as a node hanging off the dataset version it judged, with
+``authorized``/``promoted``/``rejected`` edges to whatever it let
+happen.
+
+A decision that blocked has *no* outgoing edge, which is the point: it
+shows up as a visible dead end against the dataset version — "something
+was evaluated here and stopped" — where previously a refused retrain
+left no trace in lineage at all and was indistinguishable from a retrain
+nobody ever attempted.
+
+This does put two arrows into ModelVersion (``produced`` from the run,
+``promoted`` from the decision) — the shape the module dropped
+``trained_on`` for. It is not the same situation. ``trained_on`` stated
+the same fact as the two-hop path beneath it, just shorter; ``promoted``
+states a fact no path in the graph states: a run producing a model and a
+governance decision putting it into production are different events, and
+one can happen without the other.
+
 Whole-family view
 ------------------
 :meth:`graph_for_dataset` (and, since they now delegate to it,
@@ -68,6 +94,10 @@ from mlops_framework.database.models.dataset_version import DatasetVersion
 from mlops_framework.database.models.model import Model
 from mlops_framework.database.models.model_version import (
     ModelVersion,
+)
+from mlops_framework.database.models.retraining_decision import (
+    RetrainingDecision,
+    RetrainingOutcomeStatus,
 )
 from mlops_framework.database.models.serving_instance import ServingInstance
 from mlops_framework.database.models.training_run import TrainingRun
@@ -304,6 +334,9 @@ class LineageManager:
             # is not drawn twice.
             for mv in self._model_versions_for_dataset_version(dv.id):
                 self._expand_model_version(graph, mv)
+            # Last, so the runs and model versions a decision points at
+            # are already nodes and the edges can be drawn to them.
+            self._expand_decisions(graph, dv)
 
     def _expand_ancestry(
         self, graph: LineageGraph, dv: DatasetVersion
@@ -406,6 +439,77 @@ class LineageManager:
         for si in self._serving_instances_for(mv.id):
             self._expand_serving_instance(graph, si)
 
+    def _expand_decisions(
+        self, graph: LineageGraph, dv: DatasetVersion
+    ) -> None:
+        """Add every governed retraining attempt made on this version.
+
+        One node per attempt, not per gate. Five nodes for one workflow
+        run would say five times over what the run already says once —
+        and would put the blocked case at a disadvantage in the drawing,
+        since a refusal at readiness would render as a single lonely
+        node while an approval rendered as a chain. The verdicts live in
+        the node's attributes instead, where the console can show them
+        without the graph growing a node type per policy.
+        """
+        for d in self._decisions_for(dv.id):
+            node_id = f"RetrainingDecision:{d.id}"
+            self._add_node(
+                graph,
+                LineageNode(
+                    id=node_id,
+                    type="RetrainingDecision",
+                    label=f"decision {d.id} — {_outcome_label(d)}",
+                    attributes={
+                        "outcome": _enum_value(d.outcome),
+                        "blocked_at_step": d.blocked_at_step,
+                        "blocked_reason": d.blocked_reason,
+                        "eligible": d.eligible,
+                        "approved": d.approved,
+                        "approval_responder": d.approval_responder,
+                        "readiness_evaluation_id": d.readiness_evaluation_id,
+                        "drift_evaluation_id": d.drift_evaluation_id,
+                    },
+                ),
+            )
+            self._add_edge(
+                graph,
+                LineageEdge(
+                    source=f"DatasetVersion:{dv.id}",
+                    target=node_id,
+                    type="evaluated_by",
+                ),
+            )
+            if d.training_run_id is not None and self._has_node(
+                graph, f"TrainingRun:{d.training_run_id}"
+            ):
+                self._add_edge(
+                    graph,
+                    LineageEdge(
+                        source=node_id,
+                        target=f"TrainingRun:{d.training_run_id}",
+                        type="authorized",
+                    ),
+                )
+            if d.model_version_id is not None and self._has_node(
+                graph, f"ModelVersion:{d.model_version_id}"
+            ):
+                # A blocked decision can still name a model version: the
+                # promotion policy rejected a model that had already been
+                # trained. Recording that as "promoted" would invert what
+                # happened, so the two verdicts get two edge types.
+                promoted = (
+                    _enum_value(d.outcome) == RetrainingOutcomeStatus.PROMOTED.value
+                )
+                self._add_edge(
+                    graph,
+                    LineageEdge(
+                        source=node_id,
+                        target=f"ModelVersion:{d.model_version_id}",
+                        type="promoted" if promoted else "rejected",
+                    ),
+                )
+
     def _expand_serving_instance(
         self, graph: LineageGraph, si: ServingInstance
     ) -> None:
@@ -435,6 +539,21 @@ class LineageManager:
     # ------------------------------------------------------------------ #
     # Internal — query helpers
     # ------------------------------------------------------------------ #
+
+    def _decisions_for(
+        self, dataset_version_id: int
+    ) -> list[RetrainingDecision]:
+        return list(
+            self._session.execute(
+                select(RetrainingDecision)
+                .where(
+                    RetrainingDecision.dataset_version_id == dataset_version_id
+                )
+                .order_by(RetrainingDecision.id)
+            )
+            .scalars()
+            .all()
+        )
 
     def _versions_for(self, dataset_id: int) -> list[DatasetVersion]:
         return list(
@@ -515,3 +634,32 @@ class LineageManager:
     @staticmethod
     def _has_node(graph: LineageGraph, node_id: str) -> bool:
         return any(n.id == node_id for n in graph.nodes)
+
+
+# ---------------------------------------------------------------------- #
+# Helpers
+# ---------------------------------------------------------------------- #
+
+
+def _enum_value(v: Any) -> str:
+    """Normalize a column that may come back as an enum member or a str.
+
+    SQLAlchemy's ``Enum`` returns the Python member on some backends and
+    the raw string on others; every read of one of these columns has to
+    cope with both.
+    """
+    return v.value if hasattr(v, "value") else str(v)
+
+
+def _outcome_label(d: RetrainingDecision) -> str:
+    """Short human label for a decision node.
+
+    A blocked decision is named for the gate that stopped it, because
+    "blocked" alone is the least useful thing the graph could say about
+    it — the whole reason to draw the node is to show *where* the chain
+    stopped.
+    """
+    outcome = _enum_value(d.outcome)
+    if outcome == RetrainingOutcomeStatus.BLOCKED.value:
+        return f"blocked at {d.blocked_at_step or 'unknown'}"
+    return outcome.lower()

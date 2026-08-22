@@ -45,6 +45,10 @@ from mlops_framework.database.models.model_version import (
     ModelState,
     ModelVersion,
 )
+from mlops_framework.database.models.retraining_decision import (
+    RetrainingDecision,
+    RetrainingOutcomeStatus,
+)
 from mlops_framework.database.models.training_run import (
     TrainingRun,
 )
@@ -113,6 +117,11 @@ class RetrainingOutcome:
     steps: list[StepResult]
     promoted: bool
     blocked_reason: str | None = None
+    # Primary key of the RetrainingDecision row this outcome was
+    # persisted as — the caller's handle on the stored governance
+    # record, so an SDK or API caller can link straight to the decision
+    # instead of searching for it by dataset version and timestamp.
+    decision_id: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +133,7 @@ class RetrainingOutcome:
             "steps": [s.to_dict() for s in self.steps],
             "promoted": self.promoted,
             "blocked_reason": self.blocked_reason,
+            "decision_id": self.decision_id,
         }
 
 
@@ -860,6 +870,27 @@ class RetrainingWorkflow:
         promoted: bool = False,
         blocked_reason: str | None = None,
     ) -> RetrainingOutcome:
+        """Build the outcome — and write it down.
+
+        Every one of :meth:`run`'s exit paths returns through here, which
+        is what makes this the right and only place to persist the
+        decision: a gate added later cannot forget to record itself, and
+        a path that returns early cannot skip the record, because there
+        is no other way out.
+
+        Everything the row needs is already in ``steps``, so no call site
+        had to change to gain a stored trace.
+        """
+        decision = self._persist_decision(
+            dataset_version=dataset_version,
+            model=model,
+            steps=steps,
+            training_run_id=training_run_id,
+            model_version_id=model_version_id,
+            promotion_event_id=promotion_event_id,
+            promoted=promoted,
+            blocked_reason=blocked_reason,
+        )
         return RetrainingOutcome(
             dataset_version_id=dataset_version.id,
             model_id=model.id,
@@ -869,4 +900,95 @@ class RetrainingWorkflow:
             steps=steps,
             promoted=promoted,
             blocked_reason=blocked_reason,
+            decision_id=decision.id,
         )
+
+    def _persist_decision(
+        self,
+        *,
+        dataset_version: DatasetVersion,
+        model: ModelRow,
+        steps: list[StepResult],
+        training_run_id: int | None,
+        model_version_id: int | None,
+        promotion_event_id: int | None,
+        promoted: bool,
+        blocked_reason: str | None,
+    ) -> RetrainingDecision:
+        """Write the :class:`RetrainingDecision` row for this execution."""
+        by_name = {s.name: s for s in steps}
+
+        readiness = by_name.get("readiness")
+        drift = by_name.get("drift")
+        eligibility = by_name.get("eligibility")
+        approval = by_name.get("approval")
+
+        if promoted:
+            outcome = RetrainingOutcomeStatus.PROMOTED
+        elif blocked_reason is not None:
+            outcome = RetrainingOutcomeStatus.BLOCKED
+        else:
+            outcome = RetrainingOutcomeStatus.COMPLETED
+
+        # The gate that stopped it is the last one that failed. Only
+        # meaningful on a blocked run: on a promoted one the "event" step
+        # fails whenever no publisher is configured, which is a normal
+        # configuration, not a governance refusal.
+        blocked_at_step: str | None = None
+        if blocked_reason is not None:
+            blocked_at_step = next(
+                (s.name for s in reversed(steps) if not s.passed), None
+            )
+
+        row = RetrainingDecision(
+            dataset_version_id=dataset_version.id,
+            model_id=model.id,
+            readiness_evaluation_id=_step_evaluation_id(readiness),
+            drift_evaluation_id=_step_evaluation_id(drift),
+            training_run_id=training_run_id,
+            model_version_id=model_version_id,
+            promotion_event_id=promotion_event_id,
+            outcome=outcome,
+            blocked_at_step=blocked_at_step,
+            blocked_reason=blocked_reason,
+            # None, not False, when the gate never ran — see the column
+            # comments on RetrainingDecision.
+            eligible=eligibility.passed if eligibility is not None else None,
+            approved=approval.passed if approval is not None else None,
+            approval_responder=(
+                approval.data.get("responder") if approval is not None else None
+            ),
+            approval_reason=(
+                approval.data.get("reason") if approval is not None else None
+            ),
+            steps_json=json.dumps([s.to_dict() for s in steps]),
+        )
+        self._session.add(row)
+        self._session.flush()
+        return row
+
+
+# ---------------------------------------------------------------------- #
+# Helpers
+# ---------------------------------------------------------------------- #
+
+
+def _step_evaluation_id(step: StepResult | None) -> int | None:
+    """The stored evaluation row a readiness/drift step came from.
+
+    ``ReadinessResult`` and ``DriftResult`` both carry the primary key of
+    the row they were persisted as, and both are serialized wholesale
+    into the step's ``data``. Reading it back from there beats
+    re-querying for "the newest evaluation on this dataset version": two
+    concurrent workflows on the same version would each find the other's
+    row half the time, and the foreign key would quietly point at the
+    wrong decision's evidence.
+
+    ``None`` when the step did not run, or when the result was built
+    without being stored — a ``DriftResult`` from a bare
+    :class:`DriftDetector`, for instance.
+    """
+    if step is None:
+        return None
+    value = step.data.get("evaluation_id")
+    return value if isinstance(value, int) else None

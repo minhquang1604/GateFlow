@@ -46,6 +46,7 @@ from mlops_framework.database.models.model import Model as ModelRow
 from mlops_framework.database.models.model_promotion_event import ModelPromotionEvent
 from mlops_framework.database.models.model_version import ModelVersion
 from mlops_framework.database.models.readiness_evaluation import ReadinessEvaluation
+from mlops_framework.database.models.retraining_decision import RetrainingDecision
 from mlops_framework.database.models.training_run import TrainingRun
 from mlops_framework.events.store import GovernanceEventStore
 from mlops_framework.exceptions import ModelVersionNotFoundError
@@ -70,6 +71,18 @@ def _ts(dt: datetime | None) -> str:
 
 def _enum_value(v: Any) -> str:
     return v.value if hasattr(v, "value") else str(v)
+
+
+def _tri(v: bool | None) -> str:
+    """Render a gate verdict that has three states, not two.
+
+    ``None`` means the gate never ran — the workflow returned before
+    reaching it, or none was configured. Rendering that as "no" would
+    report a refusal that never happened.
+    """
+    if v is None:
+        return "—"
+    return "yes" if v else "no"
 
 
 def build_report(
@@ -115,6 +128,23 @@ def build_report(
                     | (DriftEvaluation.current_dataset_version_id == dataset_version.id)
                 )
                 .order_by(DriftEvaluation.created_at.desc())
+            ).scalars().all()
+        )
+
+    # Every governed retraining attempt made on the same dataset version,
+    # not only the one that produced this model. An attempt that was
+    # refused before it ever trained is part of the answer to "how did
+    # this model version come to be the one in production" — it is the
+    # record of the alternatives that were considered and declined.
+    decision_rows: list[RetrainingDecision] = []
+    if dataset_version is not None:
+        decision_rows = list(
+            session.execute(
+                select(RetrainingDecision)
+                .where(
+                    RetrainingDecision.dataset_version_id == dataset_version.id
+                )
+                .order_by(RetrainingDecision.id.desc())
             ).scalars().all()
         )
 
@@ -170,6 +200,7 @@ def build_report(
         "dataset_version": dataset_version,
         "training_run": run,
         "lineage": lineage,
+        "decision_rows": decision_rows,
         "readiness_rows": readiness_rows,
         "drift_rows": drift_rows,
         "promotion_rows": promotion_rows,
@@ -289,6 +320,30 @@ def _render_markdown(ctx: dict[str, Any]) -> str:
             ["From", "To", "Relationship"],
             [[e["source"], e["target"], e["type"]] for e in edges],
         ))
+
+    lines.append("## Governance decisions")
+    lines.append("")
+    lines.append(
+        "_One row per governed retraining attempt on this dataset "
+        "version. `—` in a gate column means the gate was never "
+        "reached, which is not the same as a refusal._"
+    )
+    lines.append("")
+    lines.append(_md_table(
+        ["When", "Outcome", "Stopped at", "Reason", "Eligible", "Approved", "By"],
+        [
+            [
+                _ts(d.created_at),
+                _enum_value(d.outcome),
+                d.blocked_at_step or "—",
+                d.blocked_reason or "—",
+                _tri(d.eligible),
+                _tri(d.approved),
+                d.approval_responder or "—",
+            ]
+            for d in ctx["decision_rows"]
+        ],
+    ))
 
     lines.append("## Readiness decisions")
     lines.append("")

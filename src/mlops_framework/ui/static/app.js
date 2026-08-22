@@ -114,7 +114,7 @@ function svgEl(tag, attrs = {}, ...children) {
 
 function statusKind(status) {
   const s = String(status || "").toLowerCase();
-  if (["success", "ready", "production", "passed", "approved_ok", "no_drift"].includes(s)) return "success";
+  if (["success", "ready", "production", "passed", "approved_ok", "no_drift", "promoted", "completed"].includes(s)) return "success";
   if (["failed", "rejected", "blocked", "upstream_failed", "drift_detected"].includes(s)) return "failed";
   if (["running", "queued"].includes(s)) return "running";
   if (["pending", "training", "scheduled", "candidate"].includes(s)) return "pending";
@@ -2959,22 +2959,102 @@ async function renderLineagePicker(out) {
 // branches of one story. Same type, same column, fixes that outright.
 const LINEAGE_TYPE_COLUMN = {
   DatasetVersion: 0,
+  // Shares the dataset column rather than taking one of its own between
+  // the data and the run — the one exception to "same type, same
+  // column" above, and measured rather than guessed. Giving the
+  // decision its own column is where it sits *causally*, but it forces
+  // every `trained_with` edge to span two columns and sweep straight
+  // through the decision lane: on the demo's own graph that was 6
+  // column-skipping edges and 7.3k px of total edge length, against 1
+  // and 4.4k px here, with the graph a column narrower. Reading it as
+  // an annotation *on the data* — which is exactly what `evaluated_by`
+  // says — also costs nothing semantically: the decision's own edges to
+  // the run and model version still carry the causal direction, and a
+  // blocked decision still renders with nothing to its right, the
+  // visible dead end that is the whole point of drawing it.
+  RetrainingDecision: 0,
   TrainingRun: 1,
   ModelVersion: 2,
   ServingInstance: 3,
 };
 
-function lineageLevels(nodes) {
-  // Row order within a column follows node-array order, which is the
-  // backend's own discovery order — dataset version 1's whole branch
-  // (its training run, its model version, its serving instance) before
-  // version 2's — so branches stack into aligned rows without this
-  // function needing to know anything about edges at all. An unknown
-  // future type falls through to column 0 rather than being dropped.
+function lineageLevels(nodes, edges) {
+  // Row order starts as node-array order — the backend's own discovery
+  // order, dataset version 1's whole branch before version 2's — and is
+  // then refined against the edges by orderByBarycentre below. An
+  // unknown future type falls through to column 0 rather than being
+  // dropped.
   const columns = [];
   for (const n of nodes) {
     const col = LINEAGE_TYPE_COLUMN[n.type] ?? 0;
     (columns[col] || (columns[col] = [])).push(n.id);
+  }
+  // Compact away unoccupied columns before returning. Assigning by type
+  // index leaves *holes* whenever a type is absent — a graph with no
+  // RetrainingDecision (every graph, until the first governed retrain
+  // runs) leaves index 1 empty — and a sparse array breaks the caller
+  // two ways at once: it lays nodes out at `PAD + ci * COL_W` using the
+  // raw index, so the gap either side of the missing column is drawn
+  // twice as wide as a real one; and `Math.max(1, ...cols.map(c =>
+  // c.length))` spreads the hole as `undefined`, making maxRows NaN and
+  // the graph's height with it, which collapses the minimap to a blank
+  // box. Filtering keeps the ordering the type map defines while
+  // guaranteeing the dense array every consumer already assumed.
+  return orderByBarycentre(columns.filter((c) => c && c.length), edges || []);
+}
+
+// Reduce edge crossings by the barycentre heuristic: sweep the columns
+// repeatedly, each time reordering one column so every node sits at the
+// average row of the neighbours it connects to in the column being swept
+// from. Left-to-right passes pull a node towards its sources,
+// right-to-left towards its targets; alternating a few times settles.
+//
+// Discovery order alone put run 1, run 3 and run 4 (dataset version 1's)
+// above run 2 and run 5 (version 2's) purely because version 1 was
+// walked first, so version 2's edges had to cross back over all three.
+// Four passes is well past the point this size of graph stops changing.
+//
+// Same-column edges are excluded: `derived_from` between two dataset
+// versions, and now `evaluated_by` from a dataset version to a decision
+// sharing its column, say nothing about vertical order *between* columns
+// and would only make the sweep oscillate.
+function orderByBarycentre(columns, edges) {
+  if (columns.length < 2) return columns;
+  const colOf = new Map();
+  columns.forEach((col, ci) => col.forEach((id) => colOf.set(id, ci)));
+
+  const sources = new Map(), targets = new Map();
+  for (const e of edges) {
+    const cs = colOf.get(e.source), ct = colOf.get(e.target);
+    if (cs === undefined || ct === undefined || cs === ct) continue;
+    (targets.get(e.source) || targets.set(e.source, []).get(e.source)).push(e.target);
+    (sources.get(e.target) || sources.set(e.target, []).get(e.target)).push(e.source);
+  }
+
+  const rowOf = new Map();
+  const reindex = () => columns.forEach((c) => c.forEach((id, i) => rowOf.set(id, i)));
+  reindex();
+
+  const sweep = (order, adj) => {
+    for (const ci of order) {
+      const col = columns[ci];
+      const key = new Map();
+      col.forEach((id, i) => {
+        const rows = (adj.get(id) || []).map((n) => rowOf.get(n)).filter((v) => v !== undefined);
+        // A node with no neighbour in the swept direction keeps its
+        // current row as its key, so it holds position instead of being
+        // shoved to the top by a 0 it never earned.
+        key.set(id, rows.length ? rows.reduce((a, b) => a + b, 0) / rows.length : i);
+      });
+      col.sort((a, b) => key.get(a) - key.get(b));
+      reindex();
+    }
+  };
+
+  const indices = [...columns.keys()];
+  for (let pass = 0; pass < 4; pass++) {
+    sweep(indices.slice(1), sources);
+    sweep(indices.slice(0, -1).reverse(), targets);
   }
   return columns;
 }
@@ -2986,6 +3066,22 @@ function lineageLevels(nodes) {
 // identity-only nodes (Dataset, Model) whose label already says it all.
 function lineageNodeMeta(n) {
   const a = n.attributes || {};
+  if (n.type === "RetrainingDecision") {
+    // The outcome alone under-reports a refusal: "BLOCKED" without the
+    // gate that blocked it is the least useful thing this card could
+    // say, since the whole point of drawing the node is to show where
+    // the chain stopped.
+    const label = a.blocked_at_step ? `blocked: ${a.blocked_at_step}` : a.outcome;
+    // .badge is `display: inline-flex` (the dot + text are flex items),
+    // and text-overflow doesn't reliably ellipsis a flex item's
+    // overflowing content the way it does plain inline text — it just
+    // hard-clips mid-word with no "…" cue. Wrapping the text alone in
+    // its own span gives *that* box the ordinary block/inline-block
+    // overflow context ellipsis actually needs; the CSS lives in
+    // app.css next to the .meta .badge rule this is scoped under.
+    return el("span", { class: `badge ${statusKind(a.outcome)}` },
+      el("span", { class: "badge-text" }, String(label || "—")));
+  }
   if (n.type === "TrainingRun" && a.status) return statusBadge(a.status);
   if (n.type === "ModelVersion" && a.state) return statusBadge(a.state);
   if (n.type === "ServingInstance") {
@@ -3040,6 +3136,7 @@ function lineageNodeHref(n, byId, edges) {
 // own icon or colour.
 const LINEAGE_FAMILY = {
   DatasetVersion: "dataset",
+  RetrainingDecision: "governance",
   TrainingRun: "task",
   ModelVersion: "model",
   ServingInstance: "serving",
@@ -3048,6 +3145,8 @@ const LINEAGE_FAMILY = {
 // Minimal stroke icons (feather/lucide-style paths, currentColor).
 const LINEAGE_ICON_PATHS = {
   DatasetVersion: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/>',
+  // A shield: the gate, not the thing that passed through it.
+  RetrainingDecision: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><polyline points="9 12 11 14 15 10"/>',
   TrainingRun: '<polyline points="3 12 8 12 10 18 14 6 16 12 21 12"/>',
   ModelVersion: '<path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><line x1="12" y1="13" x2="12" y2="21"/>',
   ServingInstance: '<rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/>',
@@ -3079,21 +3178,32 @@ function lineageIcon(type, small) {
 // - Different columns (the common case): left-to-right, control points
 //   pinned to the horizontal midpoint between the two nodes — same
 //   curve every lineage graph has always drawn.
-// - Same column (currently only `derived_from`, DatasetVersion ->
-//   DatasetVersion — see LINEAGE_TYPE_COLUMN on why same type now
-//   means same column): a same-rank edge has nowhere to the side to
+// - Same column (`derived_from` between two dataset versions, and
+//   `evaluated_by` from a dataset version to a decision sharing its
+//   column — see LINEAGE_TYPE_COLUMN): a same-rank edge has nowhere to the side to
 //   run through, so it bows out to the right of the column instead —
 //   exits and re-enters each node's right edge, arcing through a
 //   point past both nodes rather than between them. Reads as "loops
 //   back into this lane," not as a normal downstream hop.
 function lineageEdgeGeometry(e, pos, colOf, NODE_W, NODE_H) {
   const from = pos.get(e.source), to = pos.get(e.target);
-  const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H / 2;
   if (colOf.get(e.source) === colOf.get(e.target)) {
+    // A dedicated hub, low on the right edge rather than dead centre —
+    // the generic cross-column hub below sits at exactly that centre
+    // point on every node, for both a node's incoming and its outgoing
+    // edges (the arrowhead of one and the tail of the next land on the
+    // same pixel, which is exactly what made a same-column node's two
+    // directions unreadable: RetrainingDecision's incoming evaluated_by
+    // and outgoing authorized, or a DatasetVersion's incoming
+    // derived_from and outgoing trained_with, drew as what looked like
+    // one bidirectional line). Offsetting this lane's hub is what keeps
+    // it from ever landing on that same point.
+    const y1 = from.y + NODE_H * 0.78, y2 = to.y + NODE_H * 0.78;
     const x1 = from.x + NODE_W, x2 = to.x + NODE_W;
     const bowX = Math.max(x1, x2) + 64;
     return { x1, y1, x2, y2, c1x: bowX, c1y: y1, c2x: bowX, c2y: y2 };
   }
+  const y1 = from.y + NODE_H / 2, y2 = to.y + NODE_H / 2;
   const x1 = from.x + NODE_W, x2 = to.x;
   const midX = (x1 + x2) / 2;
   return { x1, y1, x2, y2, c1x: midX, c1y: y1, c2x: midX, c2y: y2 };
@@ -3117,13 +3227,24 @@ function renderLineageGraph(nodes, edges, rootId) {
   // columns gives every curve (and its label) real room to separate
   // before the next node's edge starts.
   const COL_W = 496, ROW_H = 112, NODE_W = 208, NODE_H = 64, PAD = 12;
-  const levels = lineageLevels(nodes);
+  const levels = lineageLevels(nodes, edges);
+  const maxRows = Math.max(1, ...levels.map((c) => c.length));
   const pos = new Map();
   const colOf = new Map();
   levels.forEach((col, ci) => {
-    col.forEach((id, ri) => { pos.set(id, { x: PAD + ci * COL_W, y: PAD + ri * ROW_H }); colOf.set(id, ci); });
+    // Centre each column against the tallest one instead of hanging
+    // every column from the top. Top-aligning left the single serving
+    // instance level with the *first* of five training runs rather than
+    // with the model it serves, so short columns pulled all their edges
+    // into a diagonal towards row 0 and the graph carried a block of
+    // dead space under them. Half-row offsets are fine — nothing here
+    // requires a node to sit on an integer row.
+    const offset = (maxRows - col.length) / 2;
+    col.forEach((id, ri) => {
+      pos.set(id, { x: PAD + ci * COL_W, y: PAD + (ri + offset) * ROW_H });
+      colOf.set(id, ci);
+    });
   });
-  const maxRows = Math.max(1, ...levels.map((c) => c.length));
   const width = PAD * 2 + Math.max(0, levels.length - 1) * COL_W + NODE_W;
   const height = PAD * 2 + (maxRows - 1) * ROW_H + NODE_H;
 
@@ -3239,7 +3360,7 @@ function renderLineageGraph(nodes, edges, rootId) {
 // nodes themselves use so the legend is a real key and not a second
 // vocabulary to cross-reference.
 function renderLineageLegend(nodes) {
-  const order = ["DatasetVersion", "TrainingRun", "ModelVersion", "ServingInstance"];
+  const order = ["DatasetVersion", "RetrainingDecision", "TrainingRun", "ModelVersion", "ServingInstance"];
   const present = order.filter((t) => nodes.some((n) => n.type === t));
   return el("div", { class: "legend lineage-legend" },
     el("span", { class: "legend-label" }, "Legend"),
