@@ -3005,57 +3005,82 @@ function lineageLevels(nodes, edges) {
   return orderByBarycentre(columns.filter((c) => c && c.length), edges || []);
 }
 
-// Reduce edge crossings by the barycentre heuristic: sweep the columns
-// repeatedly, each time reordering one column so every node sits at the
-// average row of the neighbours it connects to in the column being swept
-// from. Left-to-right passes pull a node towards its sources,
-// right-to-left towards its targets; alternating a few times settles.
+// Every lineage node id ends in ":<its own numeric primary key>" (a
+// plain "TrainingRun:5", or a ServingInstance's compound
+// "ServingInstance:<slug>:5") — the DB's own insertion/creation order,
+// and the one a reader scans for ("where's run 4?") without being told
+// to. Used below as the tiebreak that decides a column's order
+// whenever grouping by source doesn't (see orderByBarycentre).
+function nodeOrdinal(id) {
+  const n = Number(id.slice(id.lastIndexOf(":") + 1));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// Group each column by its own upstream source's row, one left-to-right
+// pass — a run sits with the dataset version that trained it, a model
+// version with the run that produced it, and so on down the chain —
+// then, within a group, order by id. Same-column edges (`derived_from`
+// between two dataset versions) are excluded: both ends are in the
+// column being placed, so "source" here only ever means something in
+// an *earlier* column, never a sibling in the one being sorted.
 //
-// Discovery order alone put run 1, run 3 and run 4 (dataset version 1's)
-// above run 2 and run 5 (version 2's) purely because version 1 was
-// walked first, so version 2's edges had to cross back over all three.
-// Four passes is well past the point this size of graph stops changing.
-//
-// Same-column edges are excluded: `derived_from` between two dataset
-// versions says nothing about vertical order *between* columns (both
-// ends are in the same one) and would only make the sweep oscillate.
+// This one direction is deliberate, not a simplification of something
+// bidirectional: an earlier version of this function also swept
+// right-to-left, pulling each column toward the average row of its
+// *downstream* neighbours too, on the theory that a few alternating
+// passes would settle somewhere better than either direction alone.
+// Reported against the live graph instead: run 5 sitting between run 3
+// and run 4, both dataset version 1's, because run 5's own downstream
+// model version had landed in a row that pulled it up out of dataset
+// version 2's block entirely — the exact "runs read in a jumbled
+// order" a lineage graph exists to not do. A run's row answers "which
+// dataset trained it," not "which row did its model happen to end up
+// in" — that's what the source-only pass actually encodes, and
+// nothing here needs a second direction to be well-defined: column 1
+// only ever depends on column 0, already finalised by the time it's
+// column 1's turn, all the way across.
 function orderByBarycentre(columns, edges) {
   if (columns.length < 2) return columns;
   const colOf = new Map();
   columns.forEach((col, ci) => col.forEach((id) => colOf.set(id, ci)));
 
-  const sources = new Map(), targets = new Map();
+  const sources = new Map();
   for (const e of edges) {
     const cs = colOf.get(e.source), ct = colOf.get(e.target);
     if (cs === undefined || ct === undefined || cs === ct) continue;
-    (targets.get(e.source) || targets.set(e.source, []).get(e.source)).push(e.target);
+    // RetrainingDecision reads as an annotation *on* the dataset/model it
+    // touches (see LINEAGE_TYPE_COLUMN's own comment on why it gets a
+    // column at all), never a second lineage branch — but averaged in as
+    // a source unconditionally, it still acted like one: TrainingRun:5
+    // is both trained_with a DatasetVersion *and* authorized by a
+    // RetrainingDecision, and the decision's own row (it's alone in its
+    // column, so always row 0) pulled run 5's average up and out of its
+    // dataset version's block — the same "runs out of order" bug this
+    // whole rewrite exists to fix, just from a source this function
+    // didn't know to discount. A node's real grouping question is
+    // always "which dataset/run/model produced it," which a governance
+    // verdict about that same node never changes.
+    if (e.source.startsWith("RetrainingDecision:")) continue;
     (sources.get(e.target) || sources.set(e.target, []).get(e.target)).push(e.source);
   }
 
+  columns[0].sort((a, b) => nodeOrdinal(a) - nodeOrdinal(b));
   const rowOf = new Map();
-  const reindex = () => columns.forEach((c) => c.forEach((id, i) => rowOf.set(id, i)));
-  reindex();
+  columns[0].forEach((id, i) => rowOf.set(id, i));
 
-  const sweep = (order, adj) => {
-    for (const ci of order) {
-      const col = columns[ci];
-      const key = new Map();
-      col.forEach((id, i) => {
-        const rows = (adj.get(id) || []).map((n) => rowOf.get(n)).filter((v) => v !== undefined);
-        // A node with no neighbour in the swept direction keeps its
-        // current row as its key, so it holds position instead of being
-        // shoved to the top by a 0 it never earned.
-        key.set(id, rows.length ? rows.reduce((a, b) => a + b, 0) / rows.length : i);
-      });
-      col.sort((a, b) => key.get(a) - key.get(b));
-      reindex();
-    }
-  };
-
-  const indices = [...columns.keys()];
-  for (let pass = 0; pass < 4; pass++) {
-    sweep(indices.slice(1), sources);
-    sweep(indices.slice(0, -1).reverse(), targets);
+  for (let ci = 1; ci < columns.length; ci++) {
+    const col = columns[ci];
+    const key = new Map();
+    col.forEach((id, i) => {
+      const rows = (sources.get(id) || []).map((n) => rowOf.get(n)).filter((v) => v !== undefined);
+      // A node with no source in an earlier column (nothing points at
+      // it from the left) keeps its discovery-order position as its
+      // key, so it holds place rather than being shoved to row 0 by an
+      // average it never earned.
+      key.set(id, rows.length ? rows.reduce((a2, b2) => a2 + b2, 0) / rows.length : i);
+    });
+    col.sort((a, b) => (key.get(a) - key.get(b)) || (nodeOrdinal(a) - nodeOrdinal(b)));
+    col.forEach((id, i) => rowOf.set(id, i));
   }
   return columns;
 }
@@ -3350,9 +3375,12 @@ function renderLineageGraph(nodes, edges, rootId) {
   //    the same small cluster regardless of how the group as a whole
   //    gets spread out — confirmed against the live graph: four
   //    "trained with" tags stacked edge-to-edge a few px apart, right
-  //    where the lines hadn't yet diverged. The last vertical leg has
-  //    no such problem: it runs at each edge's own target row, which is
-  //    exactly the one thing that's different between them.
+  //    where the lines hadn't yet diverged. The last horizontal leg —
+  //    the short run directly into the target's own left edge — has no
+  //    such problem: every edge has its own, sitting right where the
+  //    label reads most naturally, immediately before the node it
+  //    names a relationship to, rather than out in the middle of the
+  //    canvas on the vertical jog that got it there.
   // 2. That still leaves the rarer case of two edges whose last legs
   //    land close regardless (two targets one row apart, say) — so
   //    every placed label is checked against every earlier one by
@@ -3362,12 +3390,13 @@ function renderLineageGraph(nodes, edges, rootId) {
   function edgeLabelAnchor(points) {
     for (let i = points.length - 1; i > 0; i--) {
       const [ax, ay] = points[i - 1], [bx, by] = points[i];
-      if (Math.abs(ax - bx) < 0.5 && Math.abs(ay - by) > 0.5) {
-        return { x: ax, y: (ay + by) / 2 };
+      if (Math.abs(ay - by) < 0.5 && Math.abs(ax - bx) > 0.5) {
+        return { x: (ax + bx) / 2, y: ay };
       }
     }
-    // No vertical leg at all (source and target share a row) — the
-    // last leg's own midpoint is the closest equivalent.
+    // No horizontal leg at all (shouldn't happen — every shape this
+    // function draws ends with one — but a same-row edge with a
+    // zero-length final leg falls back to its own midpoint).
     const [ax, ay] = points[points.length - 2], [bx, by] = points[points.length - 1];
     return { x: (ax + bx) / 2, y: (ay + by) / 2 };
   }
